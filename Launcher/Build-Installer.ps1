@@ -253,7 +253,7 @@ foreach ($required in @('ToolkitFingerprint','TranslationFingerprint','NativeToo
 
 $manifest = [ordered]@{
     SchemaVersion = 2
-    ProductVersion = '0.2.22'
+    ProductVersion = '0.2.23'
     ExpectedGameId = $pins.GameId
     ExpectedDolSha256 = $pins.DolSha256
     ExpectedRelSha256 = $pins.RelSha256

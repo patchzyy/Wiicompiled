@@ -121,7 +121,7 @@ internal static class PlatformChecks
 internal static class ProductInfo
 {
     public const string Name = "WiiCompiled";
-    public const string Version = "0.2.22";
+    public const string Version = "0.2.23";
 
     /// <summary>
     /// The setup executable is copied into the installation under this name. It is the launcher and
