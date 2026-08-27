@@ -122,7 +122,7 @@ target_precompile_headers(mkw_runtime_common PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/
 mkw_apply_common_compile_options(mkw_runtime_common)
 
 # Host ISA guard. Everything in MKW_ALL_BUILD_TARGETS below is compiled with
-# -march=x86-64-v3; this object library deliberately is not, which
+# -march=x86-64-v2; this object library deliberately is not, which
 # is the whole point of keeping it out of mkw_runtime_common. It runs a CPUID
 # check from a C initializer so an unsupported machine gets a readable error
 # instead of an illegal-instruction crash. Excluded from the unity build and the
@@ -169,7 +169,7 @@ endif()
 function(mkw_configure_product target)
     target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_runtime_common>)
     # Startup CPU check. Must stay a separate object library so it keeps the
-    # plain baseline ISA while everything around it is built for x86-64-v3.
+    # plain baseline ISA while everything around it is built for x86-64-v2
     target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_cpu_baseline>)
     target_include_directories(${target} PRIVATE
         "${MKW_RUNTIME_SOURCE_DIR}/include"
