@@ -899,6 +899,74 @@ REGISTER_NATIVE_FUNCTION_AS(0x80169BCC, ISFS_OpenLib_HLE_80169BCC, "ISFS_OpenLib
 // IOS_Ioctlv HLE - Vector Ioctl for complex ISFS operations
 // ============================================================================
 
+static int32_t HandleIsfsReadDir(uint32_t numIn, uint32_t numOut, uint32_t vectorPtr) {
+    const bool countOnly = (numIn == 1 && numOut == 1);
+    if (!countOnly && !(numIn == 2 && numOut == 2)) {
+        LogNandWarning("IOS_Ioctlv", "READDIR unsupported vector shape numIn=%u numOut=%u",
+                numIn, numOut);
+        return ISFS_EINVAL;
+    }
+
+    const IosVector pathVec = ReadIosVector(vectorPtr, 0);
+    const std::string wiiPath = ReadGuestCString(pathVec.address, 64);
+    if (wiiPath.empty()) {
+        return ISFS_EINVAL;
+    }
+    const std::string hostPath = TranslateNandPath(wiiPath.c_str());
+    if (!IsDirectory(hostPath)) {
+        return ISFS_ENOENT;
+    }
+
+    // NAND names are at most 12 characters; longer host names cannot exist on
+    // a real NAND (this also hides *.nandsafe.tmp write shadows).
+    constexpr size_t kMaxNandNameLength = 12;
+    std::vector<std::string> names;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(hostPath, ec)) {
+        std::string name = entry.path().filename().string();
+        if (name.empty() || name.size() > kMaxNandNameLength) {
+            continue;
+        }
+        names.push_back(std::move(name));
+    }
+    std::sort(names.begin(), names.end());
+
+    if (countOnly) {
+        const IosVector countOut = ReadIosVector(vectorPtr, 1);
+        if (countOut.size < 4 || !Memory::Contains(countOut.address, 4)) {
+            return ISFS_EINVAL;
+        }
+        Memory::Write32(countOut.address, static_cast<uint32_t>(names.size()));
+        return ISFS_OK;
+    }
+
+    const IosVector maxVec = ReadIosVector(vectorPtr, 1);
+    const IosVector namesOut = ReadIosVector(vectorPtr, 2);
+    const IosVector countOut = ReadIosVector(vectorPtr, 3);
+    if (maxVec.size < 4 || !Memory::Contains(maxVec.address, 4) ||
+        countOut.size < 4 || !Memory::Contains(countOut.address, 4) ||
+        !IsValidGuestRange(namesOut.address, namesOut.size)) {
+        return ISFS_EINVAL;
+    }
+    const uint32_t maxCount = Memory::Read32(maxVec.address);
+
+    constexpr uint32_t kEntryWindow = 13; // 12 chars + terminator
+    uint32_t cursor = 0;
+    uint32_t written = 0;
+    for (const std::string& name : names) {
+        if (written >= maxCount || cursor + kEntryWindow > namesOut.size) {
+            break;
+        }
+        uint8_t* out = Memory::GetPointer(namesOut.address + cursor, kEntryWindow);
+        std::memset(out, 0, kEntryWindow);
+        std::memcpy(out, name.data(), name.size());
+        cursor += static_cast<uint32_t>(name.size()) + 1;
+        ++written;
+    }
+    Memory::Write32(countOut.address, written);
+    return ISFS_OK;
+}
+
 extern "C" int32_t NAND_IOS_Ioctlv_HLE(
     uint32_t fd,
     uint32_t cmd,
@@ -917,6 +985,16 @@ extern "C" int32_t NAND_IOS_Ioctlv_HLE(
 
     if (fd == DOLPHIN_DEV_FD) {
         return HandleDolphinIoctlv(cmd, numIn, numOut, vectorPtr);
+    }
+
+    if (fd == ISFS_DEV_FD) {
+        if (!vectorPtr || !Memory::Contains(vectorPtr, static_cast<size_t>(numIn + numOut) * 8u)) {
+            return ISFS_EINVAL;
+        }
+        if (cmd == ISFS_IOCTL_READDIR) {
+            return HandleIsfsReadDir(numIn, numOut, vectorPtr);
+        }
+        return ISFS_OK;
     }
 
     if (fd == ES_DEV_FD) {
