@@ -44,7 +44,6 @@ struct CpuFeature {
     unsigned subleaf;
     unsigned reg;  // index into the eax/ebx/ecx/edx array filled by HostCpuId
     unsigned bit;
-    bool isOsXsave;
 };
 
 // Everything x86-64-v2 implies
@@ -97,7 +96,6 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
         }
 
         if (present) {
-            haveOsXsave = haveOsXsave || feature.isOsXsave;
             continue;
         }
 
@@ -106,17 +104,6 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
         }
         missing.Append(feature.name);
         ok = false;
-    }
-
-    // CPUID reporting AVX is not sufficient: the OS also has to have enabled
-    // XMM and YMM state saving or every VEX-encoded instruction faults. This is
-    // the same guard a compiler's own runtime feature dispatch applies.
-    if (ok && haveOsXsave) {
-        constexpr uint64_t kXmmAndYmmState = 0x6u;
-        if ((ReadXcr0() & kXmmAndYmmState) != kXmmAndYmmState) {
-            missing.Append("operating system support for AVX register state (XCR0 YMM bits)");
-            ok = false;
-        }
     }
 
     return ok;
