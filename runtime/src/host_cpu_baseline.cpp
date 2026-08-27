@@ -129,12 +129,12 @@ void WriteStdErrEarly(const char* text) {
 [[noreturn]] void ReportUnsupportedCpu(const char* missing) {
     TextBuffer message;
     message.Append(
-        "This build needs a processor that supports AVX2 and the rest of the "
-        "x86-64-v3 instruction set.\n\nMissing on this machine: ");
+        "This build needs a processor that supports the x86-64-v2 "
+        "instruction set.\n\nMissing on this machine: ");
     message.Append(missing);
     message.Append(
-        "\n\nx86-64-v3 covers Intel Core processors from Haswell (4th "
-        "generation, 2013) onward and AMD processors from Excavator (2015) onward.");
+        "\n\nx86-64-v2 is supported by Intel Nehalem-era processors and newer "
+        "and AMD Family 10h-era processors and newer.");
 
     // The tag matches RT_TAG_RUNTIME in runtime_log.h. It is spelled out here
     // because this translation unit must not include runtime-wide headers (see
