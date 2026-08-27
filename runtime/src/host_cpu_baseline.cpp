@@ -48,13 +48,13 @@ struct CpuFeature {
 
 // Everything x86-64-v2 implies
 constexpr CpuFeature kRequiredFeatures[] = {
-    {"SSE3", 1, 0, 2, 0, false},
-    {"SSSE3", 1, 0, 2, 9, false},
-    {"CMPXCHG16B", 1, 0, 2, 13, false},
-    {"SSE4.1", 1, 0, 2, 19, false},
-    {"SSE4.2", 1, 0, 2, 20, false},
-    {"POPCNT", 1, 0, 2, 23, false},
-    {"LAHF-SAHF", 0x80000001u, 0, 2, 0, false},
+    {"SSE3", 1, 0, 2, 0},
+    {"SSSE3", 1, 0, 2, 9},
+    {"CMPXCHG16B", 1, 0, 2, 13},
+    {"SSE4.1", 1, 0, 2, 19},
+    {"SSE4.2", 1, 0, 2, 20},
+    {"POPCNT", 1, 0, 2, 23},
+    {"LAHF-SAHF", 0x80000001u, 0, 2, 0},
 };
 
 // Fixed-capacity text accumulation: no allocation, no exceptions, nothing that
