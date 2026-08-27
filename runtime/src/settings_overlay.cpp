@@ -1,5 +1,6 @@
 #include "settings_overlay.h"
 #include "audio_backend.h"
+#include "controller_mapping_wizard.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -320,6 +321,7 @@ void DrawControllerSettings() {
     }
 
     ImGui::Separator();
+    controller_mapping_wizard::DrawSetupList();
     const uint32_t controllerCount = PADCount();
     if (controllerCount == 0) {
         ImGui::TextDisabled("No controller connected");
@@ -840,6 +842,7 @@ void PersistDisplayModeIfChanged() {
 } // namespace
 
 void InitializeRuntimeSettings() noexcept {
+    controller_mapping_wizard::LoadPersistedMappings();
     ApplyConfiguredMappings();
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
     AudioBackend::Instance().SetMuted(g_audioMuted);
@@ -872,6 +875,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
         }
+        controller_mapping_wizard::HandleSdlEvent(ev->sdl);
         if (IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
             SetTopBarVisible(!g_topBarVisible);
         }
@@ -893,6 +897,10 @@ void Draw() noexcept {
     }
     DrawFpsOverlay();
     DrawTopBar();
+    controller_mapping_wizard::Draw();
+    // The wizard captures raw presses; keep them out of the game even when the
+    // top bar is hidden mid-setup.
+    PADBlockInput(g_topBarVisible || controller_mapping_wizard::IsActive());
     DrawStartupScreen();
 }
 

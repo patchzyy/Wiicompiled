@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <iostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -103,17 +104,26 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
         [&state]() { return NextOsReportDouble(state); },
         [](uint32_t address) { return ReadGuestStringForReport(address); });
 
+    // nw4r warnings arrive as "<file>:<line> Warning:" plus a bare newline, so
+    // consecutive identical messages never land back to back. Blank lines are
+    // transparent to the repeat tracker so the pair still collapses.
     static thread_local std::string lastBuffer;
     static thread_local size_t repeated = 0;
-    if (buffer == lastBuffer) {
+    const bool blank = buffer.find_first_not_of(" \t\r\n") == std::string::npos;
+    if (blank) {
+        if (repeated != 0) {
+            return;
+        }
+    } else if (buffer == lastBuffer) {
         ++repeated;
         return;
+    } else {
+        if (repeated != 0) {
+            std::cout << "[OSReport] previous message repeated " << repeated << " time(s)" << std::endl;
+            repeated = 0;
+        }
+        lastBuffer = buffer;
     }
-    if (repeated != 0) {
-        std::cout << "[OSReport] previous message repeated " << repeated << " time(s)" << std::endl;
-        repeated = 0;
-    }
-    lastBuffer = buffer;
 
     std::cout << "[OSReport] " << buffer;
 
@@ -128,9 +138,23 @@ static void HLE_LogOSReport(CpuContext* cpu, const char* fmt)
     // the guest caller because OS__Report is an HLE boundary. The context is
     // synchronized at this boundary, so capture the guest backchain at the
     // first warning/panic instead of attributing the later PPCHalt unwind.
+    //
+    // The dump is expensive and stdio is an unbuffered pipe, so a guest that
+    // warns every frame would stall the game thread on backpressure. One dump
+    // per distinct site, with an overall cap.
     if (buffer.find(" Warning:") != std::string::npos ||
         buffer.find(" Panic:") != std::string::npos) {
-        SystemBridge::DumpCpuState(cpu);
+        constexpr size_t kMaxWarningDumps = 8;
+        static thread_local std::set<std::string> dumpedSites;
+        static thread_local size_t dumpsEmitted = 0;
+        if (dumpsEmitted < kMaxWarningDumps && dumpedSites.insert(buffer).second) {
+            ++dumpsEmitted;
+            SystemBridge::DumpCpuState(cpu);
+            if (dumpsEmitted == kMaxWarningDumps) {
+                std::cerr << "[runtime] guest warning context dumps capped at " << kMaxWarningDumps
+                          << "; further warnings log the message only." << std::endl;
+            }
+        }
     }
 }
 

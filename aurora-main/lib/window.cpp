@@ -294,6 +294,15 @@ void process_event(SDL_Event& event) {
     });
     break;
   }
+  case SDL_EVENT_GAMEPAD_REMAPPED: {
+    if (input::refresh_controller(event.gdevice.which)) {
+      g_events.push_back(AuroraEvent{
+          .type = AURORA_CONTROLLER_ADDED,
+          .controller = event.gdevice.which,
+      });
+    }
+    break;
+  }
   case SDL_EVENT_GAMEPAD_REMOVED: {
     input::remove_controller(event.gdevice.which);
     g_events.push_back(AuroraEvent{
