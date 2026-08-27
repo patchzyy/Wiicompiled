@@ -287,6 +287,6 @@ set(MKW_ALL_BUILD_TARGETS
     mkw_retro_rewind_functions WiiCompiled RetroRewind)
 foreach(target IN LISTS MKW_ALL_BUILD_TARGETS)
     if(TARGET ${target})
-        target_compile_options(${target} PRIVATE -march=x86-64-v3)
+        target_compile_options(${target} PRIVATE -march=x86-64-v2 -mtune=nehalem)
     endif()
 endforeach()
