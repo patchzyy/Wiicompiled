@@ -163,15 +163,50 @@ void PatchDawnVulkanLoaderForWine() {
         if (importDescriptor->FirstThunk == 0 || !ImportModuleNameMatchesKernel32(moduleName)) {
             continue;
         }
-        // Some linkers omit the Import Name Table (OriginalFirstThunk) and only
-        // emit the IAT; fall back to walking FirstThunk for names in that case
-        // (it still holds unbound name-thunk data until the loader binds it,
-        // and we only read it here before ever writing to it).
-        const DWORD nameThunkRva =
-            importDescriptor->OriginalFirstThunk != 0 ? importDescriptor->OriginalFirstThunk : importDescriptor->FirstThunk;
-        auto* nameThunk = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + nameThunkRva);
         auto* addressThunk = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + importDescriptor->FirstThunk);
         int entryCount = 0;
+
+        if (importDescriptor->OriginalFirstThunk == 0) {
+            // No Import Lookup Table: FirstThunk is the only thunk array, and
+            // by the time GetModuleHandleA above succeeded the loader had
+            // already bound it - its entries are resolved function addresses,
+            // not name-table RVAs, so they must not be walked as
+            // IMAGE_IMPORT_BY_NAME (that would dereference a function address
+            // as if it were an RVA). Identify LoadLibraryExA by its resolved
+            // address instead.
+            const HMODULE kernel32Module = ::GetModuleHandleA("kernel32.dll");
+            const auto realLoadLibraryExA = kernel32Module
+                ? reinterpret_cast<LoadLibraryExA_t>(::GetProcAddress(kernel32Module, "LoadLibraryExA"))
+                : nullptr;
+            if (!realLoadLibraryExA) {
+                RT_LOG(RT_TAG_RUNTIME) << "[runtime] Could not resolve kernel32.dll!LoadLibraryExA; skipping module '"
+                    << moduleName << "' (no Import Lookup Table to walk by name)." << std::endl;
+                continue;
+            }
+            for (; addressThunk->u1.Function != 0; ++addressThunk, ++entryCount) {
+                if (reinterpret_cast<LoadLibraryExA_t>(addressThunk->u1.Function) != realLoadLibraryExA) {
+                    continue;
+                }
+                g_realLoadLibraryExA = realLoadLibraryExA;
+                DWORD oldProtect = 0;
+                if (::VirtualProtect(&addressThunk->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+                    addressThunk->u1.Function = reinterpret_cast<ULONGLONG>(&HookedLoadLibraryExA);
+                    DWORD ignored = 0;
+                    ::VirtualProtect(&addressThunk->u1.Function, sizeof(void*), oldProtect, &ignored);
+                    RT_LOG(RT_TAG_RUNTIME) << "[runtime] Patched webgpu_dawn.dll's LoadLibraryExA import (module="
+                        << moduleName << ") to work around a Wine LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR bug." << std::endl;
+                } else {
+                    RT_LOG(RT_TAG_RUNTIME) << "[runtime] Found LoadLibraryExA import but VirtualProtect failed, error="
+                        << ::GetLastError() << std::endl;
+                }
+                return;
+            }
+            RT_LOG(RT_TAG_RUNTIME) << "[runtime] Matched import module '" << moduleName << "' (" << entryCount
+                << " entries, no Import Lookup Table) but did not find a bound LoadLibraryExA in it." << std::endl;
+            continue;
+        }
+
+        auto* nameThunk = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + importDescriptor->OriginalFirstThunk);
         for (; nameThunk->u1.AddressOfData != 0; ++nameThunk, ++addressThunk, ++entryCount) {
             if (IMAGE_SNAP_BY_ORDINAL64(nameThunk->u1.Ordinal)) {
                 continue;
