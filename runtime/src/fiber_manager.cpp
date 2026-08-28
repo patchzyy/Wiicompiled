@@ -251,17 +251,22 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     auto existingIt = s_fibers.find(guestThreadAddr);
     if (existingIt != s_fibers.end()) {
 #if defined(_WIN32)
-        // Delete the old fiber if it exists and is not the scheduler fiber. Per Win32,
-        // DeleteFiber on the fiber that is currently executing terminates the calling thread -
-        // same hazard ExitGuestThread already guards against below, but this call site is
-        // guest-triggerable directly (a guest thread re-targeting OSCreateThread at its own,
-        // currently-running OSThread address), so defer deletion the same way.
+        // A guest thread cannot sensibly replace the fiber it is currently running on: even
+        // deferring the DeleteFiber call (as ExitGuestThread does for its own, different hazard)
+        // still erases and reinserts this map entry while the old fiber's FiberProc is live on
+        // this very call stack, so that code's own later s_fibers[guestThreadAddr] lookups would
+        // find the brand-new, not-yet-started fiber instead of itself - corrupting whichever of
+        // the two the guest actually meant to affect. Refuse outright instead.
+        if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber &&
+            existingIt->second.fiber == GetCurrentFiber()) {
+            RT_LOG(RT_TAG_OS) << "CreateGuestFiber: refusing to replace the fiber currently "
+                                 "executing for thread 0x" << std::hex << guestThreadAddr
+                              << std::dec << std::endl;
+            return false;
+        }
+        // Delete the old fiber if it exists and is not the scheduler fiber.
         if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber) {
-            if (existingIt->second.fiber == GetCurrentFiber()) {
-                s_fibersPendingDelete.push_back(existingIt->second.fiber);
-            } else {
-                DeleteFiber(existingIt->second.fiber);
-            }
+            DeleteFiber(existingIt->second.fiber);
         }
 #endif
         s_fibers.erase(existingIt);

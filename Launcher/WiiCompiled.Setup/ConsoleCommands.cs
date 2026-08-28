@@ -95,7 +95,11 @@ internal static class ConsoleCommands
 
     public static async Task<int> Install(CommandLine command, CancellationToken cancellationToken = default)
     {
-        var logPath = Path.Combine(Path.GetTempPath(), "WiiCompiled-setup.log");
+        // Per-process file name: a fixed shared path let two concurrent invocations (e.g. two
+        // installs to different directories) race to open the same file, and the loser's
+        // StreamWriter constructor throws before the try/ndjson protocol below is even set up -
+        // an unhandled crash instead of a clean NDJSON failure line (flagged by CodeRabbit).
+        var logPath = Path.Combine(Path.GetTempPath(), $"WiiCompiled-setup-{Environment.ProcessId}.log");
         var logLock = new object();
         // A build/repair can emit thousands of log lines; keep one file handle open for the
         // duration instead of paying an open+append+close syscall round trip per line.
@@ -192,7 +196,9 @@ internal static class ConsoleCommands
     public static async Task<int> RepairProducts(CommandLine command,
         CancellationToken cancellationToken = default)
     {
-        var logPath = Path.Combine(Path.GetTempPath(), "WiiCompiled-repair.log");
+        // See Install() above: per-process file name so two concurrent invocations can't race to
+        // open the same fixed path before either has acquired its InstallOperationLock.
+        var logPath = Path.Combine(Path.GetTempPath(), $"WiiCompiled-repair-{Environment.ProcessId}.log");
         var logLock = new object();
         // A build/repair can emit thousands of log lines; keep one file handle open for the
         // duration instead of paying an open+append+close syscall round trip per line.

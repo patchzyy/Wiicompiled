@@ -96,6 +96,14 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
         LogNandError("NANDOpen", "invalid params: path=%p fileInfo=0x%08X", path, fileInfoPtr);
         return NAND_RESULT_INVALID;
     }
+    // Both fields this function writes on success must be reachable before anything is opened.
+    // Otherwise a fileInfoPtr that maps its first bytes but not offset 0x8a (e.g. straddling an
+    // unmapped page) would let AllocateFd register a live FILE*/fd, then throw on the write below
+    // - caught, but with no unregistration, leaking the descriptor and the open file handle.
+    if (!Memory::Contains(fileInfoPtr, 4) || !Memory::Contains(fileInfoPtr + 0x8a, 1)) {
+        LogNandError("NANDOpen", "invalid params: fileInfo=0x%08X does not cover the full structure", fileInfoPtr);
+        return NAND_RESULT_INVALID;
+    }
 
     std::string hostPath = TranslateNandPath(path);
 

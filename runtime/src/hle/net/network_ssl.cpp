@@ -296,21 +296,26 @@ static bool VerifyServerCertificateChain(CtxtHandle& context, const std::string&
         ~ChainContextGuard() { if (chain) CertFreeCertificateChain(chain); }
     } chainGuard{chainContext};
 
-    std::wstring wideHostname;
-    if (!hostname.empty()) {
-        const int required = MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, nullptr, 0);
-        if (required > 0) {
-            wideHostname.resize(static_cast<size_t>(required) - 1);
-            MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, wideHostname.data(), required);
-        }
+    // A null pwszServerName tells CERT_CHAIN_POLICY_SSL to skip the hostname match and validate
+    // chain-of-trust only - which by itself proves nothing about *who* the peer is, just that its
+    // certificate chains to some trusted root. Any site with a valid certificate (including an
+    // attacker's own unrelated, legitimately-issued one) would pass. Require a hostname rather
+    // than silently degrading to that weaker check.
+    if (hostname.empty()) {
+        return false;
     }
+    std::wstring wideHostname;
+    const int required = MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, nullptr, 0);
+    if (required <= 0) {
+        return false;
+    }
+    wideHostname.resize(static_cast<size_t>(required) - 1);
+    MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, wideHostname.data(), required);
 
     HTTPSPolicyCallbackData httpsPolicy{};
     httpsPolicy.cbStruct = sizeof(httpsPolicy);
     httpsPolicy.dwAuthType = AUTHTYPE_SERVER;
-    // A null server name skips the hostname match (still enforces chain-of-trust) for the rare
-    // case a caller never supplied one; every IOCTLV_NET_SSL_NEW/CONNECT path in this file does.
-    httpsPolicy.pwszServerName = wideHostname.empty() ? nullptr : wideHostname.data();
+    httpsPolicy.pwszServerName = wideHostname.data();
 
     CERT_CHAIN_POLICY_PARA policyPara{};
     policyPara.cbSize = sizeof(policyPara);

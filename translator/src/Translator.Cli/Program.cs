@@ -2614,7 +2614,31 @@ static string SanitizeOutputFileNameComponent(string name)
         sb.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
     }
 
-    return sb.ToString();
+    var sanitized = sb.ToString();
+    // Windows reserves these as device names regardless of extension - "CON.cpp" still refers to
+    // the console device, not a file named CON.cpp - so a map entry literally named "con" or
+    // "com1" would otherwise produce an output path that silently fails to behave like a normal
+    // file. Checked against the whole sanitized name, since it's always used as a bare basename
+    // (SanitizeOutputFileNameComponent(work.Name) + ".cpp", never with a directory of its own).
+    return IsReservedWindowsBaseName(sanitized) ? "_" + sanitized : sanitized;
+}
+
+static bool IsReservedWindowsBaseName(string value)
+{
+    ReadOnlySpan<string> reserved =
+    [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    foreach (var name in reserved)
+    {
+        if (string.Equals(value, name, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 ProgramImage BuildSyntheticModProgramImage(string outDir, OverlayBuildResult overlayBuild)

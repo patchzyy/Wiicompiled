@@ -396,6 +396,15 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
         LogNandError("NANDSafeOpen", "FAILED: invalid access type %u", mode);
         return NAND_RESULT_INVALID;
     }
+    // Same leak hazard as NANDOpen_HLE (nand_api.cpp): every field this function writes on success
+    // (0x88, 0, 0x8a) must be reachable before a FILE*/fd is ever allocated for it, or a
+    // page-straddling fileInfoPtr could let AllocateFd register a live handle just before a later
+    // write throws, with nothing to unregister it.
+    if (!Memory::Contains(fileInfoPtr + 0x88, 1) || !Memory::Contains(fileInfoPtr, 4) ||
+        !Memory::Contains(fileInfoPtr + 0x8a, 1)) {
+        LogNandError("NANDSafeOpen", "invalid params: fileInfo=0x%08X does not cover the full structure", fileInfoPtr);
+        return NAND_RESULT_INVALID;
+    }
 
     const std::string hostPath = TranslateNandPath(path);
     if (hostPath.empty()) {

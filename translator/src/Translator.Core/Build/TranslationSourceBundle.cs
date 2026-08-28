@@ -49,11 +49,29 @@ public sealed class TranslationSourceBundle
         return false;
     }
 
+    /// <summary>
+    /// Rejects a virtual path that Read() would itself reject, so a bad path fails loudly at write
+    /// time instead of silently producing a bundle nothing can read back
+    /// (Path.Combine(baseFunctionsDir/modCppDir/cppDirectory, entry.VirtualPath) is the eventual
+    /// consumer). Shared by both writers and by Read, so the two directions can never drift apart.
+    /// </summary>
+    internal static void ValidateVirtualPath(string virtualPath, string context)
+    {
+        if (string.IsNullOrWhiteSpace(virtualPath) ||
+            Path.IsPathRooted(virtualPath) ||
+            virtualPath.Split('/', '\\').Any(component => component == ".."))
+        {
+            throw new InvalidDataException($"Invalid virtual path '{virtualPath}' in translation source bundle '{context}'.");
+        }
+    }
+
     public static void Write(string path, IEnumerable<TranslationSourceBundleEntry> entries)
     {
         var ordered = entries.OrderBy(static entry => entry.EntryPoint).ThenBy(static entry => entry.VirtualPath, StringComparer.Ordinal).ToArray();
         if (ordered.Select(static entry => (entry.EntryPoint, entry.VirtualPath)).Distinct().Count() != ordered.Length)
             throw new InvalidDataException("Translation source bundle contains duplicate address/path identities.");
+        foreach (var entry in ordered)
+            ValidateVirtualPath(entry.VirtualPath, path);
         var fullPath = Path.GetFullPath(path);
         Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         var temporary = $"{fullPath}.tmp.{Guid.NewGuid():N}";
@@ -94,16 +112,7 @@ public sealed class TranslationSourceBundle
         {
             var address = reader.ReadUInt32();
             var virtualPath = Encoding.UTF8.GetString(ReadBoundedBytes(reader, 1 << 20));
-            // Mirrors the RelativePath validation BaseTranslationOutputMetadataFile.Read applies to
-            // its sibling format: this path is later combined with an output directory
-            // (Path.Combine(baseFunctionsDir/modCppDir/cppDirectory, entry.VirtualPath)), so a rooted
-            // path or ".." component must be rejected here rather than trusted from the bundle file.
-            if (string.IsNullOrWhiteSpace(virtualPath) ||
-                Path.IsPathRooted(virtualPath) ||
-                virtualPath.Split('/', '\\').Any(component => component == ".."))
-            {
-                throw new InvalidDataException($"Invalid virtual path '{virtualPath}' in translation source bundle '{path}'.");
-            }
+            ValidateVirtualPath(virtualPath, path);
             var sourceLength = reader.ReadInt32();
             var hash = reader.ReadBytes(32);
             if (sourceLength < 0) throw new InvalidDataException("Negative translation source length.");
@@ -187,6 +196,7 @@ public sealed class TranslationSourceBundleWriter : IDisposable
     public void Write(TranslationSourceBundleEntry entry)
     {
         if (_completed || _written >= _expectedCount) throw new InvalidOperationException("Translation source bundle writer is complete.");
+        TranslationSourceBundle.ValidateVirtualPath(entry.VirtualPath, _path);
         var virtualPath = entry.VirtualPath.Replace('\\', '/');
         if (_previous is { } previous &&
             (entry.EntryPoint < previous.Address ||

@@ -293,7 +293,11 @@ public sealed class RelFile
 
     private static ushort ReadUInt16(IReadOnlyList<byte> data, int offset)
     {
-        if (offset < 0 || offset + 2 > data.Count)
+        // "offset + 2 > data.Count" can itself overflow when offset is near int.MaxValue (reachable
+        // from a crafted RelocationOffset via the uint->int cast in ApplyRelocations), wrapping to a
+        // negative value that would wrongly pass this check. Subtracting from data.Count instead
+        // cannot overflow the same way.
+        if (offset < 0 || offset > data.Count - 2)
         {
             throw new InvalidDataException("Attempted to read past end of REL payload");
         }
@@ -305,7 +309,9 @@ public sealed class RelFile
 
     private static uint ReadUInt32(IReadOnlyList<byte> data, int offset)
     {
-        if (offset < 0 || offset + 4 > data.Count)
+        // See ReadUInt16 above: compare via subtraction, not addition, to avoid an int overflow
+        // near int.MaxValue letting an out-of-range offset slip past this check.
+        if (offset < 0 || offset > data.Count - 4)
         {
             throw new InvalidDataException("Attempted to read past end of REL payload");
         }
