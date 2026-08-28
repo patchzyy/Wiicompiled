@@ -379,8 +379,11 @@ int32_t CommitAndCloseFd(const char* who, int32_t fd, bool missingFdIsError) {
     return NAND_RESULT_OK;
 }
 
+// Same unguarded-guest-pointer bug class as nand_api.cpp's NAND*_HLE functions (an out-of-range
+// pathPtr/fileInfoPtr throws Memory::AccessViolation uncaught, crashing the whole runtime) - not
+// covered by that file's wrapping since this is a separate entry point.
 extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t mode,
-                                     uint32_t tempBufferPtr, uint32_t tempBufferSize) {
+                                     uint32_t tempBufferPtr, uint32_t tempBufferSize) try {
     (void)tempBufferPtr;
     (void)tempBufferSize;
 
@@ -469,23 +472,21 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     Memory::Write32(fileInfoPtr, static_cast<uint32_t>(fd));
     Memory::Write8(fileInfoPtr + 0x8a, NAND_OPEN_FLAG_SAFE_OPEN);
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019CB74, NANDSafeOpen_HLE, int32_t,
     (uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t mode, uint32_t tempBufferPtr, uint32_t tempBufferSize),
     (pathPtr, fileInfoPtr, mode, tempBufferPtr, tempBufferSize));
 
-extern "C" int32_t NANDSafeClose_HLE(uint32_t fileInfoPtr) {
+extern "C" int32_t NANDSafeClose_HLE(uint32_t fileInfoPtr) try {
     if (!fileInfoPtr) {
         return NAND_RESULT_INVALID;
     }
 
-    uint8_t openFlag = 0;
-    try {
-        openFlag = Memory::Read8(fileInfoPtr + 0x8a);
-    } catch (const Memory::AccessViolation&) {
-        LogNandError("NANDSafeClose", "memory access violation while reading open flag");
-        return NAND_RESULT_INVALID;
-    }
+    // The Memory::Read32/Write8 calls further down (fileInfoPtr, unlike the +0x8a flag byte just
+    // read) are not individually guarded, so the whole function shares this one handler.
+    uint8_t openFlag = Memory::Read8(fileInfoPtr + 0x8a);
 
     if (openFlag == NAND_OPEN_FLAG_OPEN) {
         // Handle came from a plain NANDOpen; there is no pending commit to publish.
@@ -509,5 +510,8 @@ extern "C" int32_t NANDSafeClose_HLE(uint32_t fileInfoPtr) {
                    (openFlag == NAND_OPEN_FLAG_SAFE_OPEN) ? NAND_OPEN_FLAG_SAFE_CLOSED
                                                           : NAND_OPEN_FLAG_SAFE_CLOSED_ASYNC);
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    LogNandError("NANDSafeClose", "memory access violation");
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019CF28, NANDSafeClose_HLE, int32_t, (uint32_t fileInfoPtr), (fileInfoPtr));

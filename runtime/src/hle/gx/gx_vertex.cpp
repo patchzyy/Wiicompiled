@@ -59,10 +59,14 @@ PPC_NATIVE_OVERRIDE_VOID(8016d3a4, GX__SetVtxDesc_8016d3a4, (uint32_t a, uint32_
 
 extern "C" void GX__SetVtxDescv_8016d608(uint32_t la) {
     if(!la) return; uint32_t p=la;
-    while(true){
-        uint32_t a=Memory::Read32(p);
-        if(a==0xFFu) break;
-        GX__SetVtxDesc_8016d3a4(a, Memory::Read32(p+4));
+    // Real tables terminate with the 0xFF sentinel well within GX_VA_MAX_ATTR (26) entries; cap
+    // the walk generously above that and use TryRead32 so a missing/corrupted terminator on a
+    // guest table can't run off the end of mapped memory (crash) or loop indefinitely.
+    for (int guard = 0; guard < 64; ++guard) {
+        uint32_t a=0, t=0;
+        if(!Memory::TryRead32(p, a) || a==0xFFu) break;
+        if(!Memory::TryRead32(p+4, t)) break;
+        GX__SetVtxDesc_8016d3a4(a, t);
         p+=8;
     }
 }
@@ -126,10 +130,13 @@ PPC_NATIVE_OVERRIDE_VOID(8016dc68, GX__SetVtxAttrFmt_8016dc68, (uint32_t vf, uin
 
 extern "C" void GX__SetVtxAttrFmtv_8016de08(uint32_t vf, uint32_t la) {
     if(!la) return; uint32_t p=la;
-    while(true){
-        uint32_t a=Memory::Read32(p);
-        if(a==0xFFu) break;
-        GX__SetVtxAttrFmt_8016dc68(vf, a, Memory::Read32(p+4), Memory::Read32(p+8), Memory::Read32(p+12)&0xFFu);
+    // See GX__SetVtxDescv_8016d608 above: bounded, fault-tolerant walk instead of an unguarded
+    // while(true) driven purely by a guest-supplied terminator.
+    for (int guard = 0; guard < 64; ++guard) {
+        uint32_t a=0, c=0, t=0, fr=0;
+        if(!Memory::TryRead32(p, a) || a==0xFFu) break;
+        if(!Memory::TryRead32(p+4, c) || !Memory::TryRead32(p+8, t) || !Memory::TryRead32(p+12, fr)) break;
+        GX__SetVtxAttrFmt_8016dc68(vf, a, c, t, fr&0xFFu);
         p+=16;
     }
 }

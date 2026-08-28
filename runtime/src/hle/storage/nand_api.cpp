@@ -84,7 +84,13 @@ extern "C" int32_t NANDCheck_HLE(uint32_t blockSize, uint32_t blockCount, uint32
 }
 PPC_NATIVE_OVERRIDE(8019EAD0, NANDCheck_HLE, int32_t, (uint32_t blockSize, uint32_t blockCount, uint32_t outResults), (blockSize, blockCount, outResults));
 
-extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t mode) {
+// Every function below touches guest memory (path strings, fileInfoPtr fields) with no
+// Memory::Contains pre-check; an out-of-range guest pointer throws Memory::AccessViolation, which
+// would otherwise unwind uncaught through translated PPC call frames and take down the whole
+// runtime for what should be a recoverable NAND error (same bug class already fixed in
+// NAND_IOS_Ioctl_HLE and the read/write length checks above). nand_async.cpp forwards its async
+// entry points to these same functions by name, so wrapping here covers that path too.
+extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t mode) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path || !fileInfoPtr) {
         LogNandError("NANDOpen", "invalid params: path=%p fileInfo=0x%08X", path, fileInfoPtr);
@@ -166,14 +172,16 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
     Memory::Write32(fileInfoPtr, static_cast<uint32_t>(fd));
     Memory::Write8(fileInfoPtr + 0x8a, NAND_OPEN_FLAG_OPEN);
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019C800, NANDOpen_HLE, int32_t, (uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t mode), (pathPtr, fileInfoPtr, mode));
 
-extern "C" int32_t NANDClose_HLE(uint32_t fileInfoPtr) {
+extern "C" int32_t NANDClose_HLE(uint32_t fileInfoPtr) try {
     if (!fileInfoPtr) {
         return NAND_RESULT_INVALID;
     }
-    
+
     uint8_t openFlag = Memory::Read8(fileInfoPtr + 0x8a);
     if (openFlag == NAND_OPEN_FLAG_SAFE_OPEN || openFlag == NAND_OPEN_FLAG_SAFE_OPEN_ASYNC) {
         // Console behaviour (nandClose @ 0x8019CA80): only openFlag==1 is accepted, a safe
@@ -198,10 +206,12 @@ extern "C" int32_t NANDClose_HLE(uint32_t fileInfoPtr) {
 
     Memory::Write8(fileInfoPtr + 0x8a, NAND_OPEN_FLAG_CLOSED); // Mark as closed
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019CA80, NANDClose_HLE, int32_t, (uint32_t fileInfoPtr), (fileInfoPtr));
 
-extern "C" int32_t NANDRead_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length) {
+extern "C" int32_t NANDRead_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length) try {
     if (!fileInfoPtr) {
         return NAND_RESULT_INVALID;
     }
@@ -211,6 +221,18 @@ extern "C" int32_t NANDRead_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32
         return NAND_RESULT_INVALID;
     }
 
+    if (length == 0) {
+        return 0;
+    }
+
+    // Memory::GetPointer(addr) with no length only validates a single byte at bufferPtr; fread
+    // below transfers `length` bytes starting there, so the guest-controlled length must be
+    // range-checked against the buffer before use or a large `length` overruns the flat guest
+    // region into unrelated host heap memory (a corrupt/malicious save file writes host memory
+    // past the buffer on read, or leaks host heap contents into the save file on write).
+    if (!Memory::Contains(bufferPtr, length)) {
+        return NAND_RESULT_INVALID;
+    }
     uint8_t* buffer = (uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         return NAND_RESULT_INVALID;
@@ -218,10 +240,12 @@ extern "C" int32_t NANDRead_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32
 
     size_t bytesRead = std::fread(buffer, 1, length, handle->file);
     return static_cast<int32_t>(bytesRead);
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019B7A4, NANDRead_HLE, int32_t, (uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length), (fileInfoPtr, bufferPtr, length));
 
-extern "C" int32_t NANDWrite_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length) {
+extern "C" int32_t NANDWrite_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length) try {
     if (!fileInfoPtr) {
         return NAND_RESULT_INVALID;
     }
@@ -231,6 +255,16 @@ extern "C" int32_t NANDWrite_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint3
         return NAND_RESULT_INVALID;
     }
 
+    if (length == 0) {
+        return 0;
+    }
+
+    // See NANDRead_HLE above: GetPointer(addr) alone only validates one byte, so `length` must be
+    // range-checked before fwrite reads it out of guest memory, or an over-length call leaks
+    // unrelated host heap contents into the save file.
+    if (!Memory::Contains(bufferPtr, length)) {
+        return NAND_RESULT_INVALID;
+    }
     const uint8_t* buffer = (const uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         return NAND_RESULT_INVALID;
@@ -239,10 +273,12 @@ extern "C" int32_t NANDWrite_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint3
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
     return static_cast<int32_t>(bytesWritten);
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019B884, NANDWrite_HLE, int32_t, (uint32_t fileInfoPtr, uint32_t bufferPtr, uint32_t length), (fileInfoPtr, bufferPtr, length));
 
-extern "C" int32_t NANDSeek_HLE(uint32_t fileInfoPtr, int32_t offset, int32_t whence) {
+extern "C" int32_t NANDSeek_HLE(uint32_t fileInfoPtr, int32_t offset, int32_t whence) try {
     if (!fileInfoPtr) {
         return NAND_RESULT_INVALID;
     }
@@ -257,10 +293,12 @@ extern "C" int32_t NANDSeek_HLE(uint32_t fileInfoPtr, int32_t offset, int32_t wh
     }
 
     return static_cast<int32_t>(std::ftell(handle->file));
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019B964, NANDSeek_HLE, int32_t, (uint32_t fileInfoPtr, int32_t offset, int32_t whence), (fileInfoPtr, offset, whence));
 
-extern "C" int32_t NANDGetLength_HLE(uint32_t fileInfoPtr, uint32_t outLengthPtr) {
+extern "C" int32_t NANDGetLength_HLE(uint32_t fileInfoPtr, uint32_t outLengthPtr) try {
     if (!fileInfoPtr || !outLengthPtr) {
         return NAND_RESULT_INVALID;
     }
@@ -273,10 +311,12 @@ extern "C" int32_t NANDGetLength_HLE(uint32_t fileInfoPtr, uint32_t outLengthPtr
     const NandFileExtent extent = NandProbeFileExtent(handle->file);
     Memory::Write32(outLengthPtr, static_cast<uint32_t>(extent.size));
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019BF4C, NANDGetLength_HLE, int32_t, (uint32_t fileInfoPtr, uint32_t outLengthPtr), (fileInfoPtr, outLengthPtr));
 
-extern "C" int32_t NANDCreate_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr) {
+extern "C" int32_t NANDCreate_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path) {
         return NAND_RESULT_INVALID;
@@ -296,12 +336,14 @@ extern "C" int32_t NANDCreate_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr
         return NAND_RESULT_UNKNOWN;
     }
     std::fclose(f);
-    
+
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019B43C, NANDCreate_HLE, int32_t, (uint32_t pathPtr, uint32_t perm, uint32_t attr), (pathPtr, perm, attr));
 
-extern "C" int32_t NANDDelete_HLE(uint32_t pathPtr) {
+extern "C" int32_t NANDDelete_HLE(uint32_t pathPtr) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path) {
         return NAND_RESULT_INVALID;
@@ -318,10 +360,12 @@ extern "C" int32_t NANDDelete_HLE(uint32_t pathPtr) {
     }
     
     return NAND_RESULT_UNKNOWN;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019B59C, NANDDelete_HLE, int32_t, (uint32_t pathPtr), (pathPtr));
 
-extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr) {
+extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path) {
         return NAND_RESULT_INVALID;
@@ -346,10 +390,12 @@ extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t a
     }
     
     return NAND_RESULT_UNKNOWN;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019BBE0, NANDCreateDir_HLE, int32_t, (uint32_t pathPtr, uint32_t perm, uint32_t attr), (pathPtr, perm, attr));
 
-extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
+extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) try {
     const char* srcPath = srcPathPtr ? (const char*)Memory::GetPointer(srcPathPtr) : nullptr;
     const char* dstPath = dstPathPtr ? (const char*)Memory::GetPointer(dstPathPtr) : nullptr;
     
@@ -387,10 +433,12 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
 
     LogNandError("NANDMove", "FAILED error=%d message='%s'", ec.value(), ec.message().c_str());
     return NAND_RESULT_UNKNOWN;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019BEE8, NANDMove_HLE, int32_t, (uint32_t srcPathPtr, uint32_t dstPathPtr), (srcPathPtr, dstPathPtr));
 
-extern "C" int32_t NANDGetStatus_HLE(uint32_t pathPtr, uint32_t outStatusPtr) {
+extern "C" int32_t NANDGetStatus_HLE(uint32_t pathPtr, uint32_t outStatusPtr) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path || !outStatusPtr) {
         return NAND_RESULT_INVALID;
@@ -405,13 +453,15 @@ extern "C" int32_t NANDGetStatus_HLE(uint32_t pathPtr, uint32_t outStatusPtr) {
     // NANDStatus structure - fill with fake values
     // This is typically used to check permissions and file type
     Memory::Write32(outStatusPtr, 0);      // Magic/type
-    Memory::Write32(outStatusPtr + 4, 0);  // Permissions  
-    
+    Memory::Write32(outStatusPtr + 4, 0);  // Permissions
+
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019C380, NANDGetStatus_HLE, int32_t, (uint32_t pathPtr, uint32_t outStatusPtr), (pathPtr, outStatusPtr));
 
-extern "C" int32_t NANDGetType_HLE(uint32_t pathPtr, uint32_t outTypePtr) {
+extern "C" int32_t NANDGetType_HLE(uint32_t pathPtr, uint32_t outTypePtr) try {
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : nullptr;
     if (!path || !outTypePtr) {
         return NAND_RESULT_INVALID;
@@ -427,6 +477,8 @@ extern "C" int32_t NANDGetType_HLE(uint32_t pathPtr, uint32_t outTypePtr) {
     uint8_t type = IsDirectory(hostPath) ? 2 : 1;
     Memory::Write8(outTypePtr, type);
     return NAND_RESULT_OK;
+} catch (const Memory::AccessViolation&) {
+    return NAND_RESULT_INVALID;
 }
 PPC_NATIVE_OVERRIDE(8019E770, NANDGetType_HLE, int32_t, (uint32_t pathPtr, uint32_t outTypePtr), (pathPtr, outTypePtr));
 

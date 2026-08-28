@@ -94,6 +94,16 @@ public sealed class TranslationSourceBundle
         {
             var address = reader.ReadUInt32();
             var virtualPath = Encoding.UTF8.GetString(ReadBoundedBytes(reader, 1 << 20));
+            // Mirrors the RelativePath validation BaseTranslationOutputMetadataFile.Read applies to
+            // its sibling format: this path is later combined with an output directory
+            // (Path.Combine(baseFunctionsDir/modCppDir/cppDirectory, entry.VirtualPath)), so a rooted
+            // path or ".." component must be rejected here rather than trusted from the bundle file.
+            if (string.IsNullOrWhiteSpace(virtualPath) ||
+                Path.IsPathRooted(virtualPath) ||
+                virtualPath.Split('/', '\\').Any(component => component == ".."))
+            {
+                throw new InvalidDataException($"Invalid virtual path '{virtualPath}' in translation source bundle '{path}'.");
+            }
             var sourceLength = reader.ReadInt32();
             var hash = reader.ReadBytes(32);
             if (sourceLength < 0) throw new InvalidDataException("Negative translation source length.");

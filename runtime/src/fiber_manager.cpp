@@ -251,9 +251,17 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     auto existingIt = s_fibers.find(guestThreadAddr);
     if (existingIt != s_fibers.end()) {
 #if defined(_WIN32)
-        // Delete the old fiber if it exists and is not the scheduler fiber
+        // Delete the old fiber if it exists and is not the scheduler fiber. Per Win32,
+        // DeleteFiber on the fiber that is currently executing terminates the calling thread -
+        // same hazard ExitGuestThread already guards against below, but this call site is
+        // guest-triggerable directly (a guest thread re-targeting OSCreateThread at its own,
+        // currently-running OSThread address), so defer deletion the same way.
         if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber) {
-            DeleteFiber(existingIt->second.fiber);
+            if (existingIt->second.fiber == GetCurrentFiber()) {
+                s_fibersPendingDelete.push_back(existingIt->second.fiber);
+            } else {
+                DeleteFiber(existingIt->second.fiber);
+            }
         }
 #endif
         s_fibers.erase(existingIt);

@@ -59,7 +59,9 @@ PPC_NATIVE_OVERRIDE_VOID(8017295c, GX__SetDstAlpha_8017295c, (uint32_t en, uint3
 // ============================================================================
 
 extern "C" void GX__SetFog_801722cc(uint32_t t, float sz, float ez, float nz, float fz, uint32_t cp) {
-    GXSetFog((GXFogType)t, sz, ez, nz, fz, DecodeGxColor(Memory::Read32(cp)));
+    uint32_t raw = 0;
+    if (!Memory::TryRead32(cp, raw)) return;
+    GXSetFog((GXFogType)t, sz, ez, nz, fz, DecodeGxColor(raw));
 }
 PPC_NATIVE_OVERRIDE_VOID(801722cc, GX__SetFog_801722cc, (uint32_t t, float sz, float ez, float nz, float fz, uint32_t cp), (t, sz, ez, nz, fz, cp));
 

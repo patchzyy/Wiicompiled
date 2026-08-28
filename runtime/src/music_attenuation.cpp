@@ -298,9 +298,12 @@ void SetSoundPlayerVolume(uint32_t soundPlayer, float requestedVolume) {
         applied = AppliedSoundPlayerVolume(playerIndex, clamped, ShouldAttenuate());
         g_lastAppliedSoundPlayerVolumes[playerIndex] = applied;
     }
-    // Preserve the original function's access semantics. An invalid player is
-    // a guest bug and must not be converted into a silent successful call.
-    Memory::Write32(soundPlayer + kSoundPlayerVolumeOffset, std::bit_cast<uint32_t>(applied));
+    // Preserve the original function's access semantics: write back to the guest object
+    // regardless of whether it was found in the tracked array. Routed through WriteGuestFloat
+    // (as every other guest write in this file is) so a stale/unmapped `soundPlayer` pointer -
+    // e.g. a scene-teardown race - can't throw an uncaught Memory::AccessViolation through this
+    // native-override boundary and take down the whole runtime.
+    WriteGuestFloat(soundPlayer + kSoundPlayerVolumeOffset, applied);
 }
 
 } // namespace MusicAttenuation

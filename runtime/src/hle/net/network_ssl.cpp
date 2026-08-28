@@ -263,6 +263,67 @@ static void ClearSslSession(SslSession& ssl) {
     ssl = {};
 }
 
+// SCH_CRED_MANUAL_CRED_VALIDATION (below) tells Schannel to complete the handshake regardless of
+// whether the peer certificate is trustworthy, deferring the trust decision to the caller. This is
+// that manual check: without it, every "SSL" connection this runtime makes is unauthenticated and
+// trivially interceptable by anyone on-path. CERT_CHAIN_POLICY_SSL is the same policy WinHTTP/WinInet
+// use for HTTPS - it validates the chain to a trusted root and, when a server name is supplied,
+// matches it against the certificate's subject/SAN.
+static bool VerifyServerCertificateChain(CtxtHandle& context, const std::string& hostname) {
+    PCCERT_CONTEXT rawCertContext = nullptr;
+    const SECURITY_STATUS certStatus =
+        QueryContextAttributesA(&context, SECPKG_ATTR_REMOTE_CERT_CONTEXT, &rawCertContext);
+    if (certStatus != SEC_E_OK || !rawCertContext) {
+        return false;
+    }
+    struct CertContextGuard {
+        PCCERT_CONTEXT ctx;
+        ~CertContextGuard() { if (ctx) CertFreeCertificateContext(ctx); }
+    } certGuard{rawCertContext};
+
+    CERT_CHAIN_PARA chainPara{};
+    chainPara.cbSize = sizeof(chainPara);
+    PCCERT_CHAIN_CONTEXT chainContext = nullptr;
+    // CACHE_ONLY avoids a blocking revocation-check network round trip during the handshake;
+    // that's a latency/robustness tradeoff, not a step back from the current "no check at all".
+    const DWORD chainFlags = CERT_CHAIN_REVOCATION_CHECK_CACHE_ONLY;
+    if (!CertGetCertificateChain(nullptr, rawCertContext, nullptr, rawCertContext->hCertStore,
+                                  &chainPara, chainFlags, nullptr, &chainContext)) {
+        return false;
+    }
+    struct ChainContextGuard {
+        PCCERT_CHAIN_CONTEXT chain;
+        ~ChainContextGuard() { if (chain) CertFreeCertificateChain(chain); }
+    } chainGuard{chainContext};
+
+    std::wstring wideHostname;
+    if (!hostname.empty()) {
+        const int required = MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, nullptr, 0);
+        if (required > 0) {
+            wideHostname.resize(static_cast<size_t>(required) - 1);
+            MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, wideHostname.data(), required);
+        }
+    }
+
+    HTTPSPolicyCallbackData httpsPolicy{};
+    httpsPolicy.cbStruct = sizeof(httpsPolicy);
+    httpsPolicy.dwAuthType = AUTHTYPE_SERVER;
+    // A null server name skips the hostname match (still enforces chain-of-trust) for the rare
+    // case a caller never supplied one; every IOCTLV_NET_SSL_NEW/CONNECT path in this file does.
+    httpsPolicy.pwszServerName = wideHostname.empty() ? nullptr : wideHostname.data();
+
+    CERT_CHAIN_POLICY_PARA policyPara{};
+    policyPara.cbSize = sizeof(policyPara);
+    policyPara.pvExtraPolicyPara = &httpsPolicy;
+
+    CERT_CHAIN_POLICY_STATUS policyStatus{};
+    policyStatus.cbSize = sizeof(policyStatus);
+    if (!CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_SSL, chainContext, &policyPara, &policyStatus)) {
+        return false;
+    }
+    return policyStatus.dwError == 0;
+}
+
 static int32_t EnsureSslCredentials(SslSession& ssl) {
     if (ssl.haveCred) {
         return SSL_OK;
@@ -348,6 +409,11 @@ static int32_t SslHandshakeImpl(SslSession& ssl) {
         if (status == SEC_E_OK) {
             if (inDescPtr) {
                 KeepExtraBuffer(ssl.encryptedExtra, inBuffers[1]);
+            }
+            // Manual validation: EnsureSslCredentials sets SCH_CRED_MANUAL_CRED_VALIDATION, so
+            // Schannel reaches SEC_E_OK regardless of whether the peer certificate is trustworthy.
+            if (!VerifyServerCertificateChain(ssl.context, ssl.hostname)) {
+                return SSL_ERR_VCOMMONNAME;
             }
             const SECURITY_STATUS sizeStatus =
                 QueryContextAttributesA(&ssl.context, SECPKG_ATTR_STREAM_SIZES, &ssl.sizes);
@@ -567,10 +633,10 @@ int32_t HandleSslIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const std
 
     switch (cmd) {
     case IOCTLV_NET_SSL_NEW: {
-        // out[0] carries the verify option. Its value is not consulted - every
-        // certificate check is delegated to Schannel with
-        // SCH_CRED_MANUAL_CRED_VALIDATION - but it is still read so that a
-        // request pointing outside guest memory faults here as it always has.
+        // out[0] carries the guest's verify option. Its value is not consulted - this runtime
+        // always performs full certificate chain + hostname validation (VerifyServerCertificateChain
+        // in SslHandshakeImpl) regardless of what the guest requested - but it is still read so that
+        // a request pointing outside guest memory faults here as it always has.
         if (!out.empty() && out[0].address && out[0].size >= 4) {
             (void)Memory::Read32(out[0].address);
         }

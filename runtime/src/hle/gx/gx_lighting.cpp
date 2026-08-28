@@ -76,14 +76,18 @@ PPC_NATIVE_OVERRIDE_VOID(80170320, GX__LoadLightObjImm_80170320, (uint32_t la, u
 
 extern "C" void GX__SetChanAmbColor_8017039c(uint32_t c, uint32_t cp) {
     EnsureAuroraFrameActive();
-    GXColor color = DecodeGxColor(Memory::Read32(cp));
+    uint32_t raw = 0;
+    if (!Memory::TryRead32(cp, raw)) return;
+    GXColor color = DecodeGxColor(raw);
     GXSetChanAmbColor((GXChannelID)c, color);
 }
 PPC_NATIVE_OVERRIDE_VOID(8017039c, GX__SetChanAmbColor_8017039c, (uint32_t c, uint32_t cp), (c, cp));
 
 extern "C" void GX__SetChanMatColor_80170474(uint32_t c, uint32_t cp) {
     EnsureAuroraFrameActive();
-    GXColor color = DecodeGxColor(Memory::Read32(cp));
+    uint32_t raw = 0;
+    if (!Memory::TryRead32(cp, raw)) return;
+    GXColor color = DecodeGxColor(raw);
     GXSetChanMatColor((GXChannelID)c, color);
 }
 PPC_NATIVE_OVERRIDE_VOID(80170474, GX__SetChanMatColor_80170474, (uint32_t c, uint32_t cp), (c, cp));

@@ -144,7 +144,19 @@ internal static class FileSystemUtilities
         if (!string.IsNullOrEmpty(windows) && PathContains(windows, full))
             throw new InvalidOperationException($"{subject} cannot be inside the Windows directory.");
 
-        foreach (var folder in ReservedLocations)
+        foreach (var folder in ReservedProgramLocations)
+        {
+            var reserved = Environment.GetFolderPath(folder);
+            // Unlike UserProfile/Documents/AppData below, no subfolder of Program Files or the
+            // Windows system directories is ever a reasonable install target either - same
+            // containment rule already applied to the Windows directory check above, just missing
+            // here previously (only exact equality to the root was rejected).
+            if (!string.IsNullOrEmpty(reserved) && PathContains(reserved, full))
+                throw new InvalidOperationException(
+                    $"{subject} cannot be inside {reserved}. Choose a dedicated folder.");
+        }
+
+        foreach (var folder in ReservedExactLocations)
         {
             var reserved = Environment.GetFolderPath(folder);
             if (string.IsNullOrEmpty(reserved)) continue;
@@ -161,13 +173,20 @@ internal static class FileSystemUtilities
     private const int MaximumLocationLength = 180;
 
     /// <summary>Well-known folders that must never <em>be</em> an installation or portable root.</summary>
-    private static readonly Environment.SpecialFolder[] ReservedLocations =
+    // No subfolder of any of these is ever a reasonable install target, so containment is rejected.
+    private static readonly Environment.SpecialFolder[] ReservedProgramLocations =
     [
         Environment.SpecialFolder.ProgramFiles,
         Environment.SpecialFolder.ProgramFilesX86,
         Environment.SpecialFolder.CommonProgramFiles,
         Environment.SpecialFolder.System,
         Environment.SpecialFolder.SystemX86,
+    ];
+
+    // A subfolder of any of these (e.g. "Documents\Games\WiiCompiled") is a completely normal
+    // install target, so only the exact special folder itself is rejected.
+    private static readonly Environment.SpecialFolder[] ReservedExactLocations =
+    [
         Environment.SpecialFolder.UserProfile,
         Environment.SpecialFolder.LocalApplicationData,
         Environment.SpecialFolder.ApplicationData,

@@ -410,13 +410,20 @@ extern "C" int32_t NAND_IOS_Read_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t l
     if (!bufferPtr || length == 0) {
         return 0;
     }
-    
+
+    // GetPointer(addr) with no length arg only validates one byte at bufferPtr; fread below
+    // transfers `length` (guest-controlled) bytes starting there, so the full range must be
+    // checked first or a large `length` overruns the flat guest region into host heap memory.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Read", "buffer ptr 0x%08X does not cover length=%u", bufferPtr, length);
+        return ISFS_EINVAL;
+    }
     uint8_t* buffer = (uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         LogNandError("IOS_Read", "invalid buffer ptr 0x%08X", bufferPtr);
         return ISFS_EINVAL;
     }
-    
+
     size_t bytesRead = std::fread(buffer, 1, length, handle->file);
     handle->position += static_cast<uint32_t>(bytesRead);
     
@@ -434,13 +441,19 @@ extern "C" int32_t NAND_IOS_Write_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t 
     if (!bufferPtr || length == 0) {
         return 0;
     }
-    
+
+    // See NAND_IOS_Read_HLE above: GetPointer(addr) alone only validates one byte, so the full
+    // `length` range must be checked before fwrite reads it out of guest memory.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Write", "buffer ptr 0x%08X does not cover length=%u", bufferPtr, length);
+        return ISFS_EINVAL;
+    }
     const uint8_t* buffer = (const uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         LogNandError("IOS_Write", "invalid buffer ptr 0x%08X", bufferPtr);
         return ISFS_EINVAL;
     }
-    
+
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
     handle->position += static_cast<uint32_t>(bytesWritten);

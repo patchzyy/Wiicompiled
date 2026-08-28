@@ -696,17 +696,25 @@ extern "C" int32_t Network_HLE_Ioctl(uint32_t fd, uint32_t cmd, uint32_t inBuf, 
     if (!device) {
         return -101;
     }
-    switch (*device) {
-    case DeviceKind::KdRequest:
-        return HandleKdIoctl(cmd, inBuf, inLen, outBuf, outLen);
-    case DeviceKind::KdTime:
-        return HandleKdTimeIoctl(cmd, inBuf, inLen, outBuf, outLen);
-    case DeviceKind::IpTop:
-        return HandleIpTopIoctl(cmd, inBuf, inLen, outBuf, outLen);
-    case DeviceKind::NcdManage:
-        return 0;
-    case DeviceKind::Ssl:
-        return 0;
+    // The handlers below read/write inBuf/outBuf via Memory::Read*/Write*/GetPointer with no
+    // Memory::Contains pre-check; an out-of-range guest address throws Memory::AccessViolation,
+    // which would otherwise unwind uncaught through translated PPC call frames and take down the
+    // whole runtime (same bug class already found and fixed in NAND_IOS_Ioctl_HLE).
+    try {
+        switch (*device) {
+        case DeviceKind::KdRequest:
+            return HandleKdIoctl(cmd, inBuf, inLen, outBuf, outLen);
+        case DeviceKind::KdTime:
+            return HandleKdTimeIoctl(cmd, inBuf, inLen, outBuf, outLen);
+        case DeviceKind::IpTop:
+            return HandleIpTopIoctl(cmd, inBuf, inLen, outBuf, outLen);
+        case DeviceKind::NcdManage:
+            return 0;
+        case DeviceKind::Ssl:
+            return 0;
+        }
+    } catch (const Memory::AccessViolation&) {
+        return -SO_EINVAL;
     }
     return -101;
 }
@@ -726,26 +734,34 @@ extern "C" int32_t Network_HLE_Ioctlv(uint32_t fd, uint32_t cmd, uint32_t numIn,
         return -SO_EINVAL;
     }
 
-    const std::vector<IoVector> vectors = ReadVectors(vectorPtr, static_cast<uint32_t>(vectorCount));
-    const std::vector<IoVector> in(vectors.begin(), vectors.begin() + numIn);
-    const std::vector<IoVector> out(vectors.begin() + numIn, vectors.end());
+    // Same unguarded-guest-pointer bug class as Network_HLE_Ioctl above: the vector addresses
+    // themselves are range-checked, but the handlers below dereference guest memory at offsets
+    // derived from vector contents (and ReadVectors itself reads guest memory) with no
+    // Memory::Contains pre-check, so an out-of-range address throws Memory::AccessViolation.
+    try {
+        const std::vector<IoVector> vectors = ReadVectors(vectorPtr, static_cast<uint32_t>(vectorCount));
+        const std::vector<IoVector> in(vectors.begin(), vectors.begin() + numIn);
+        const std::vector<IoVector> out(vectors.begin() + numIn, vectors.end());
 
-    switch (*device) {
-    case DeviceKind::NcdManage:
-        return HandleNcdIoctlv(cmd, in, out);
-    case DeviceKind::IpTop:
-        return HandleIpTopIoctlv(cmd, in, out);
-    case DeviceKind::KdRequest:
-        return HandleKdIoctlv(cmd, in, out);
-    case DeviceKind::KdTime: {
-        const uint32_t inBuf = in.empty() ? 0 : in[0].address;
-        const uint32_t inLen = in.empty() ? 0 : in[0].size;
-        const uint32_t outBuf = out.empty() ? 0 : out[0].address;
-        const uint32_t outLen = out.empty() ? 0 : out[0].size;
-        return HandleKdTimeIoctl(cmd, inBuf, inLen, outBuf, outLen);
-    }
-    case DeviceKind::Ssl:
-        return HandleSslIoctlv(cmd, in, out);
+        switch (*device) {
+        case DeviceKind::NcdManage:
+            return HandleNcdIoctlv(cmd, in, out);
+        case DeviceKind::IpTop:
+            return HandleIpTopIoctlv(cmd, in, out);
+        case DeviceKind::KdRequest:
+            return HandleKdIoctlv(cmd, in, out);
+        case DeviceKind::KdTime: {
+            const uint32_t inBuf = in.empty() ? 0 : in[0].address;
+            const uint32_t inLen = in.empty() ? 0 : in[0].size;
+            const uint32_t outBuf = out.empty() ? 0 : out[0].address;
+            const uint32_t outLen = out.empty() ? 0 : out[0].size;
+            return HandleKdTimeIoctl(cmd, inBuf, inLen, outBuf, outLen);
+        }
+        case DeviceKind::Ssl:
+            return HandleSslIoctlv(cmd, in, out);
+        }
+    } catch (const Memory::AccessViolation&) {
+        return -SO_EINVAL;
     }
     return -101;
 }
