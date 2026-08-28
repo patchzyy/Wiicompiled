@@ -337,7 +337,9 @@ static bool ExtractFromU8(const std::string& archivePath, const char* targetName
         if (fullPath == targetName || std::strcmp(name, targetName) == 0) {
             const uint32_t fileOffset = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->dataOffset));
             const uint32_t fileSize = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->size));
-            if (fileOffset + fileSize > data.size()) {
+            // 64-bit sum: fileOffset + fileSize as uint32_t can wrap and bypass this check on a
+            // corrupt/crafted archive, letting the iterator arithmetic below run out of range.
+            if (static_cast<uint64_t>(fileOffset) + fileSize > data.size()) {
                 return false;
             }
             outData.assign(data.begin() + fileOffset, data.begin() + fileOffset + fileSize);

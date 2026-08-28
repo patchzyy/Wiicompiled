@@ -673,9 +673,7 @@ public sealed partial class CxxLinearCodeGenerator
             stateFreeVariantFacts);
     }
 
-    private static string EscapeCxxStringLiteral(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
+    private static string EscapeCxxStringLiteral(string value) => CxxStringLiteralEscaping.Escape(value);
 
     private static uint? TryGetLocalFallthroughLr(
         IReadOnlyList<IrInstruction> instructions,

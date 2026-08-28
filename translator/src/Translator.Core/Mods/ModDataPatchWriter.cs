@@ -1,4 +1,5 @@
 using System.Text;
+using Translator.Core.CodeGen;
 using Translator.Core.IO;
 using Translator.Core.Parsing.Kamek;
 using Translator.Core.Mods.Mkwii;
@@ -471,7 +472,5 @@ public static class ModDataPatchWriter
         sb.AppendLine("    }");
     }
 
-    private static string EscapeCxxStringLiteral(string value) =>
-        value.Replace("\\", "\\\\", StringComparison.Ordinal)
-            .Replace("\"", "\\\"", StringComparison.Ordinal);
+    private static string EscapeCxxStringLiteral(string value) => CxxStringLiteralEscaping.Escape(value);
 }

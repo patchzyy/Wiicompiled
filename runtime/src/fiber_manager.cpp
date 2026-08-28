@@ -251,7 +251,20 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     auto existingIt = s_fibers.find(guestThreadAddr);
     if (existingIt != s_fibers.end()) {
 #if defined(_WIN32)
-        // Delete the old fiber if it exists and is not the scheduler fiber
+        // A guest thread cannot sensibly replace the fiber it is currently running on: even
+        // deferring the DeleteFiber call (as ExitGuestThread does for its own, different hazard)
+        // still erases and reinserts this map entry while the old fiber's FiberProc is live on
+        // this very call stack, so that code's own later s_fibers[guestThreadAddr] lookups would
+        // find the brand-new, not-yet-started fiber instead of itself - corrupting whichever of
+        // the two the guest actually meant to affect. Refuse outright instead.
+        if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber &&
+            existingIt->second.fiber == GetCurrentFiber()) {
+            RT_LOG(RT_TAG_OS) << "CreateGuestFiber: refusing to replace the fiber currently "
+                                 "executing for thread 0x" << std::hex << guestThreadAddr
+                              << std::dec << std::endl;
+            return false;
+        }
+        // Delete the old fiber if it exists and is not the scheduler fiber.
         if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber) {
             DeleteFiber(existingIt->second.fiber);
         }

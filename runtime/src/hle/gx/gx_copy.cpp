@@ -98,8 +98,8 @@ PPC_NATIVE_OVERRIDE_VOID(8016f4dc, GX__SetTexCopyDst_8016f4dc, (uint32_t w, uint
 
 extern "C" void GX__SetCopyFilter_8016fa40(uint32_t aa, uint32_t spa, uint32_t vf, uint32_t vfa) {
     uint8_t sp[12][2]={}, vfb[7]={};
-    if(spa) std::memcpy(sp, GuestToHostPtr(spa, 24), 24);
-    if(vfa) std::memcpy(vfb, GuestToHostPtr(vfa, 7), 7);
+    if(spa) { if(const void* p = GuestToHostPtr(spa, 24)) std::memcpy(sp, p, 24); }
+    if(vfa) { if(const void* p = GuestToHostPtr(vfa, 7)) std::memcpy(vfb, p, 7); }
     GXSetCopyFilter((GXBool)aa, sp, (GXBool)vf, vfb);
 }
 PPC_NATIVE_OVERRIDE_VOID(8016fa40, GX__SetCopyFilter_8016fa40, (uint32_t aa, uint32_t spa, uint32_t vf, uint32_t vfa), (aa, spa, vf, vfa));

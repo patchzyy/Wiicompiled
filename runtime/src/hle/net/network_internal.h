@@ -45,6 +45,7 @@
 #define SECURITY_WIN32
 #include <security.h>
 #include <schannel.h>
+#include <wincrypt.h>
 #ifndef SIO_UDP_CONNRESET
 #define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
 #endif

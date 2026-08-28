@@ -131,15 +131,23 @@ inline bool StartsWith(std::string_view text, std::string_view prefix) {
 // Converts only element and attribute data from pugixml. Riivolution carries
 // its data in attributes, so text, declarations, comments, and CDATA do not
 // need to become part of the contract's data model.
-inline XmlNode CopyXmlNode(const pugi::xml_node& source) {
+// depth guards against unbounded native-stack recursion: riivolution.xml is a user-authored file
+// (SD card / mod pack), and a real pack never nests more than a handful of levels deep, so a
+// crafted pack with deliberately deep nesting is a stack-overflow DoS without this cap. Nodes
+// beyond the cap are kept (with their attributes) but their own children are dropped rather than
+// failing the whole parse over one malformed branch.
+inline XmlNode CopyXmlNode(const pugi::xml_node& source, int depth = 0) {
     XmlNode destination;
     destination.name = source.name();
     for (const pugi::xml_attribute& attribute : source.attributes()) {
         destination.attributes.emplace_back(attribute.name(), attribute.value());
     }
-    for (const pugi::xml_node& child : source.children()) {
-        if (child.type() == pugi::node_element) {
-            destination.children.push_back(CopyXmlNode(child));
+    constexpr int kMaxXmlDepth = 64;
+    if (depth < kMaxXmlDepth) {
+        for (const pugi::xml_node& child : source.children()) {
+            if (child.type() == pugi::node_element) {
+                destination.children.push_back(CopyXmlNode(child, depth + 1));
+            }
         }
     }
     return destination;

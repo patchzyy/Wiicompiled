@@ -113,7 +113,9 @@ PPC_NATIVE_OVERRIDE_VOID(80173430, GX__SetScissor_80173430, (uint32_t l, uint32_
 // ============================================================================
 
 extern "C" void GX__SetProjection_8017301c(uint32_t ma, uint32_t pt) {
-    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma, 64); float m[16];
+    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma, 64);
+    if (!raw) return;
+    float m[16];
     SwapBeF32ArrayToHost(raw, m, 16);
     GXSetProjection(m, (GXProjectionType)pt);
     UpdateProjectionVectorFromMatrix(m, (GXProjectionType)pt);
@@ -121,7 +123,9 @@ extern "C" void GX__SetProjection_8017301c(uint32_t ma, uint32_t pt) {
 PPC_NATIVE_OVERRIDE_VOID(8017301c, GX__SetProjection_8017301c, (uint32_t ma, uint32_t pt), (ma, pt));
 
 extern "C" void GX__SetProjectionv_80173080(uint32_t pa) {
-    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(pa, 28); float v[7];
+    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(pa, 28);
+    if (!raw) return;
+    float v[7];
     SwapBeF32ArrayToHost(raw, v, 7);
     GXProjectionType pt=(v[0]!=0.f)?GX_ORTHOGRAPHIC:GX_PERSPECTIVE;
     float m[16]={0.f}; m[0]=v[1]; m[5]=v[3]; m[10]=v[5]; m[11]=v[6];
@@ -133,6 +137,7 @@ PPC_NATIVE_OVERRIDE_VOID(80173080, GX__SetProjectionv_80173080, (uint32_t pa), (
 
 extern "C" void GX__GetProjectionv_801730cc(uint32_t pa) {
     uint8_t* out = static_cast<uint8_t*>(GuestToHostPtr(pa, 28));
+    if (!out) return;
     for (int i = 0; i < 7; ++i) {
         BigEndian::WriteFloat32(out + i * sizeof(float), g_projectionVector[i]);
     }

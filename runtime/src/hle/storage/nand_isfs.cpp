@@ -410,13 +410,20 @@ extern "C" int32_t NAND_IOS_Read_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t l
     if (!bufferPtr || length == 0) {
         return 0;
     }
-    
+
+    // GetPointer(addr) with no length arg only validates one byte at bufferPtr; fread below
+    // transfers `length` (guest-controlled) bytes starting there, so the full range must be
+    // checked first or a large `length` overruns the flat guest region into host heap memory.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Read", "buffer ptr 0x%08X does not cover length=%u", bufferPtr, length);
+        return ISFS_EINVAL;
+    }
     uint8_t* buffer = (uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         LogNandError("IOS_Read", "invalid buffer ptr 0x%08X", bufferPtr);
         return ISFS_EINVAL;
     }
-    
+
     size_t bytesRead = std::fread(buffer, 1, length, handle->file);
     handle->position += static_cast<uint32_t>(bytesRead);
     
@@ -434,13 +441,19 @@ extern "C" int32_t NAND_IOS_Write_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t 
     if (!bufferPtr || length == 0) {
         return 0;
     }
-    
+
+    // See NAND_IOS_Read_HLE above: GetPointer(addr) alone only validates one byte, so the full
+    // `length` range must be checked before fwrite reads it out of guest memory.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Write", "buffer ptr 0x%08X does not cover length=%u", bufferPtr, length);
+        return ISFS_EINVAL;
+    }
     const uint8_t* buffer = (const uint8_t*)Memory::GetPointer(bufferPtr);
     if (!buffer) {
         LogNandError("IOS_Write", "invalid buffer ptr 0x%08X", bufferPtr);
         return ISFS_EINVAL;
     }
-    
+
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
     handle->position += static_cast<uint32_t>(bytesWritten);
@@ -487,7 +500,7 @@ enum ISFSCommand {
     ISFS_IOCTL_SHUTDOWN = 13,
 };
 
-extern "C" int32_t NAND_IOS_Ioctl_HLE(
+static int32_t NAND_IOS_Ioctl_HLE_Impl(
     uint32_t fd,
     uint32_t cmd,
     uint32_t inBufPtr, uint32_t inLen,
@@ -677,6 +690,24 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
     
     // Unknown command - return success to not block game
     return ISFS_OK;
+}
+
+extern "C" int32_t NAND_IOS_Ioctl_HLE(
+    uint32_t fd,
+    uint32_t cmd,
+    uint32_t inBufPtr, uint32_t inLen,
+    uint32_t outBufPtr, uint32_t outLen)
+{
+    // The ISFS path/attribute handlers above read guest buffers via Memory::GetPointer without
+    // first checking Memory::Contains for the full path length; an out-of-range inBufPtr/outBufPtr
+    // throws Memory::AccessViolation, which would otherwise unwind uncaught through translated PPC
+    // call frames and take down the whole runtime for what should be a recoverable ISFS error.
+    try {
+        return NAND_IOS_Ioctl_HLE_Impl(fd, cmd, inBufPtr, inLen, outBufPtr, outLen);
+    } catch (const Memory::AccessViolation& ex) {
+        LogNandWarning("IOS_Ioctl", "cmd=%u faulted on guest memory access: %s", cmd, ex.what());
+        return ISFS_EINVAL;
+    }
 }
 
 // The stack frame a guest thread parks on while a deferred network ioctl runs.

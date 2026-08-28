@@ -713,7 +713,7 @@ int RunTranslateRecursive(string[] argsTail)
             // whole-program pass only needs its compact GQR projection; release
             // the full graph here and rebuild it once, with final facts, during
             // the emission wave.
-            var outputPath = Path.Combine(outDir, $"{work.Name}.cpp");
+            var outputPath = Path.Combine(outDir, $"{SanitizeOutputFileNameComponent(work.Name)}.cpp");
             if (!baseOutputPaths.Add(Path.GetFullPath(outputPath)))
             {
                 throw new InvalidOperationException(
@@ -2591,6 +2591,54 @@ static string ModuleFunctionName(uint address)
     // identity for the translated function and remains useful when inspecting
     // generated output.
     return $"rr_kamek_{address:X8}";
+}
+
+/// <summary>
+/// Neutralizes a function-map symbol name for use as a single output-file-name component. Map
+/// entries come from an externally-sourced text file (community-maintained MAP.txt); a name
+/// containing a path separator, a drive letter, or ".." would otherwise let
+/// Path.Combine(outDir, $"{name}.cpp") write outside outDir entirely.
+/// </summary>
+static string SanitizeOutputFileNameComponent(string name)
+{
+    if (string.IsNullOrEmpty(name))
+    {
+        return "_";
+    }
+
+    // ':' is deliberately excluded even though demangled names commonly contain "::" -
+    // NTFS treats "name:suffix" as an alternate-data-stream reference, not a distinct file.
+    var sb = new StringBuilder(name.Length);
+    foreach (var ch in name)
+    {
+        sb.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+    }
+
+    var sanitized = sb.ToString();
+    // Windows reserves these as device names regardless of extension - "CON.cpp" still refers to
+    // the console device, not a file named CON.cpp - so a map entry literally named "con" or
+    // "com1" would otherwise produce an output path that silently fails to behave like a normal
+    // file. Checked against the whole sanitized name, since it's always used as a bare basename
+    // (SanitizeOutputFileNameComponent(work.Name) + ".cpp", never with a directory of its own).
+    return IsReservedWindowsBaseName(sanitized) ? "_" + sanitized : sanitized;
+}
+
+static bool IsReservedWindowsBaseName(string value)
+{
+    ReadOnlySpan<string> reserved =
+    [
+        "CON", "PRN", "AUX", "NUL",
+        "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+        "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    foreach (var name in reserved)
+    {
+        if (string.Equals(value, name, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 ProgramImage BuildSyntheticModProgramImage(string outDir, OverlayBuildResult overlayBuild)

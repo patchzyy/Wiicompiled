@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Translator.Core.CodeGen;
 using Translator.Core.IO;
 using Translator.Core.Loading;
 using Translator.Core.Mods;
@@ -1121,7 +1122,7 @@ public static partial class TranslatedBuildShardEmitter
 
     private static string Bool(bool value) => value ? "true" : "false";
     private static string CMakePath(string value) => Path.GetFullPath(value).Replace('\\', '/').Replace("\"", "\\\"");
-    private static string Escape(string value) => value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    private static string Escape(string value) => CxxStringLiteralEscaping.Escape(value);
     private static uint ParseHexUInt32(string value) => GuestTargetParser.ParseHexAddress(value);
 
     private static Regex BaseRegistrationRegex() => GeneratedMarkers.BaseRegistrationPattern();
