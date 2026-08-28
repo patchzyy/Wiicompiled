@@ -487,8 +487,9 @@ inline double PPC_PsMulNoNiInline(double lhs, double rhs)
 
 inline double PPC_PsMsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(_mm_fmsub_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor)));
+    return PpcM128ToPsInline(_mm_sub_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(subtractor)));
 }
 
 inline double PPC_PsMsubNoNiInline(double multiplicand, double multiplier, double subtractor)
@@ -498,8 +499,9 @@ inline double PPC_PsMsubNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsMaddNoNiInline(double multiplicand, double multiplier, double addend)
@@ -509,20 +511,23 @@ inline double PPC_PsMaddNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMadds0Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcBroadcastPs0Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcBroadcastPs0Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsMadds1Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcBroadcastPs1Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcBroadcastPs1Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsNmsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmsub_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor))));
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_sub_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(subtractor))));
 }
 
 inline double PPC_PsNmsubNoNiInline(double multiplicand, double multiplier, double subtractor)
@@ -532,26 +537,11 @@ inline double PPC_PsNmsubNoNiInline(double multiplicand, double multiplier, doub
 
 inline double PPC_PsNmaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend))));
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(addend))));
 }
 
-inline double PPC_PsMuls0Inline(double aValue, double cValue)
-{
-    return PpcFlushPairedForNiInline(PpcM128ToPsInline(
-        _mm_mul_ps(PpcPsToM128Inline(aValue), PpcBroadcastPs0Inline(cValue))));
-}
-
-inline double PPC_PsMuls1Inline(double aValue, double cValue)
-{
-    return PpcFlushPairedForNiInline(PpcM128ToPsInline(
-        _mm_mul_ps(PpcPsToM128Inline(aValue), PpcBroadcastPs1Inline(cValue))));
-}
-
-inline PPC_FPR PpcMakePairedResultInline(float ps0, float ps1);
-
-inline double PPC_PsFromScalarInline(double value)
-{
     // Representation conversion, not an architectural operation: Gekko has no
     // "scalar to paired" instruction, so there is no NI rounding point here.
     // If the scalar is a single-denormal it stays one; MXCSR.DAZ flushes it as
