@@ -487,7 +487,7 @@ enum ISFSCommand {
     ISFS_IOCTL_SHUTDOWN = 13,
 };
 
-extern "C" int32_t NAND_IOS_Ioctl_HLE(
+static int32_t NAND_IOS_Ioctl_HLE_Impl(
     uint32_t fd,
     uint32_t cmd,
     uint32_t inBufPtr, uint32_t inLen,
@@ -677,6 +677,24 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
     
     // Unknown command - return success to not block game
     return ISFS_OK;
+}
+
+extern "C" int32_t NAND_IOS_Ioctl_HLE(
+    uint32_t fd,
+    uint32_t cmd,
+    uint32_t inBufPtr, uint32_t inLen,
+    uint32_t outBufPtr, uint32_t outLen)
+{
+    // The ISFS path/attribute handlers above read guest buffers via Memory::GetPointer without
+    // first checking Memory::Contains for the full path length; an out-of-range inBufPtr/outBufPtr
+    // throws Memory::AccessViolation, which would otherwise unwind uncaught through translated PPC
+    // call frames and take down the whole runtime for what should be a recoverable ISFS error.
+    try {
+        return NAND_IOS_Ioctl_HLE_Impl(fd, cmd, inBufPtr, inLen, outBufPtr, outLen);
+    } catch (const Memory::AccessViolation& ex) {
+        LogNandWarning("IOS_Ioctl", "cmd=%u faulted on guest memory access: %s", cmd, ex.what());
+        return ISFS_EINVAL;
+    }
 }
 
 // The stack frame a guest thread parks on while a deferred network ioctl runs.

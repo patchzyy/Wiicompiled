@@ -204,8 +204,8 @@ public sealed class RelFile
             while (true)
             {
                 var delta = ReadUInt16(_raw, (int)cursor);
-                var type = (RelocationType)_raw[cursor + 2];
-                var symbolSection = _raw[cursor + 3];
+                var type = (RelocationType)ReadByte(_raw, (int)cursor + 2);
+                var symbolSection = ReadByte(_raw, (int)cursor + 3);
                 var addend = ReadUInt32(_raw, (int)cursor + 4);
                 cursor += 8;
 
@@ -282,9 +282,18 @@ public sealed class RelFile
         }
     }
 
+    private static byte ReadByte(IReadOnlyList<byte> data, int offset)
+    {
+        if (offset < 0 || offset >= data.Count)
+        {
+            throw new InvalidDataException("Attempted to read past end of REL payload");
+        }
+        return data[offset];
+    }
+
     private static ushort ReadUInt16(IReadOnlyList<byte> data, int offset)
     {
-        if (offset + 2 > data.Count)
+        if (offset < 0 || offset + 2 > data.Count)
         {
             throw new InvalidDataException("Attempted to read past end of REL payload");
         }
@@ -296,7 +305,7 @@ public sealed class RelFile
 
     private static uint ReadUInt32(IReadOnlyList<byte> data, int offset)
     {
-        if (offset + 4 > data.Count)
+        if (offset < 0 || offset + 4 > data.Count)
         {
             throw new InvalidDataException("Attempted to read past end of REL payload");
         }

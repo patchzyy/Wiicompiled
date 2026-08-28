@@ -277,7 +277,5 @@ public sealed partial class CxxLinearCodeGenerator
         return existing;
     }
 
-    private static string EscapeForCxxLiteral(string text) => text
-        .Replace("\\", "\\\\")
-        .Replace("\"", "\\\"");
+    private static string EscapeForCxxLiteral(string text) => CxxStringLiteralEscaping.Escape(text);
 }

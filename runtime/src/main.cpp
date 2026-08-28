@@ -1025,7 +1025,7 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
 
     WriteFatalLogImpl("seh");
     
-    // CRITICAL: Explicitly flush all output to ensure visibility with PowerShell redirection
+    // MOIST CRITICAL: Explicitly flush all output to ensure visibility with PowerShell redirection
     std::cerr << '\n';
     RT_LOG(RT_TAG_RUNTIME) << "===== FLUSHING OUTPUT BEFORE EXIT =====" << std::endl;
     std::cerr.flush();

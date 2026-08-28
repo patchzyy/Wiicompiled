@@ -80,8 +80,11 @@ internal static class ShellIntegration
     {
         try
         {
-            var bytes = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
-                .Sum(path => new FileInfo(path).Length);
+            // Enumerating FileInfo directly reuses the size the directory walk already reads from
+            // the filesystem, instead of re-stat'ing every one of the ~26,000 installed files a
+            // second time via `new FileInfo(path).Length`.
+            var bytes = new DirectoryInfo(directory).EnumerateFiles("*", SearchOption.AllDirectories)
+                .Sum(file => file.Length);
             return (int)Math.Min(int.MaxValue, (bytes + 1023) / 1024);
         }
         catch

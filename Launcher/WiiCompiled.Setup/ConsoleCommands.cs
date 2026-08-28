@@ -97,14 +97,19 @@ internal static class ConsoleCommands
     {
         var logPath = Path.Combine(Path.GetTempPath(), "WiiCompiled-setup.log");
         var logLock = new object();
+        // A build/repair can emit thousands of log lines; keep one file handle open for the
+        // duration instead of paying an open+append+close syscall round trip per line.
+        using var logWriter = new StreamWriter(logPath, append: false) { AutoFlush = false };
         void Log(string message)
         {
             lock (logLock)
             {
-                File.AppendAllText(logPath, $"[{DateTime.Now:O}] {message}{Environment.NewLine}");
+                logWriter.Write($"[{DateTime.Now:O}] {message}{Environment.NewLine}");
+                logWriter.Flush();
             }
         }
-        File.WriteAllText(logPath, $"{ProductInfo.Name} setup {ProductInfo.Version}{Environment.NewLine}");
+        logWriter.Write($"{ProductInfo.Name} setup {ProductInfo.Version}{Environment.NewLine}");
+        logWriter.Flush();
 
         var ndjson = command.ProgressJson ? new NdjsonInstallReporter(Log) : null;
         IInstallReporter reporter = ndjson ?? (IInstallReporter)new ConsoleInstallReporter(Log);
@@ -189,11 +194,15 @@ internal static class ConsoleCommands
     {
         var logPath = Path.Combine(Path.GetTempPath(), "WiiCompiled-repair.log");
         var logLock = new object();
+        // A build/repair can emit thousands of log lines; keep one file handle open for the
+        // duration instead of paying an open+append+close syscall round trip per line.
+        using var logWriter = new StreamWriter(logPath, append: false) { AutoFlush = false };
         void Log(string message)
         {
             lock (logLock)
             {
-                File.AppendAllText(logPath, $"[{DateTime.Now:O}] {message}{Environment.NewLine}");
+                logWriter.Write($"[{DateTime.Now:O}] {message}{Environment.NewLine}");
+                logWriter.Flush();
             }
         }
 

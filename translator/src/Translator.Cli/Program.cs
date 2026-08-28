@@ -713,7 +713,7 @@ int RunTranslateRecursive(string[] argsTail)
             // whole-program pass only needs its compact GQR projection; release
             // the full graph here and rebuild it once, with final facts, during
             // the emission wave.
-            var outputPath = Path.Combine(outDir, $"{work.Name}.cpp");
+            var outputPath = Path.Combine(outDir, $"{SanitizeOutputFileNameComponent(work.Name)}.cpp");
             if (!baseOutputPaths.Add(Path.GetFullPath(outputPath)))
             {
                 throw new InvalidOperationException(
@@ -2591,6 +2591,30 @@ static string ModuleFunctionName(uint address)
     // identity for the translated function and remains useful when inspecting
     // generated output.
     return $"rr_kamek_{address:X8}";
+}
+
+/// <summary>
+/// Neutralizes a function-map symbol name for use as a single output-file-name component. Map
+/// entries come from an externally-sourced text file (community-maintained MAP.txt); a name
+/// containing a path separator, a drive letter, or ".." would otherwise let
+/// Path.Combine(outDir, $"{name}.cpp") write outside outDir entirely.
+/// </summary>
+static string SanitizeOutputFileNameComponent(string name)
+{
+    if (string.IsNullOrEmpty(name))
+    {
+        return "_";
+    }
+
+    // ':' is deliberately excluded even though demangled names commonly contain "::" -
+    // NTFS treats "name:suffix" as an alternate-data-stream reference, not a distinct file.
+    var sb = new StringBuilder(name.Length);
+    foreach (var ch in name)
+    {
+        sb.Append(char.IsLetterOrDigit(ch) || ch == '_' ? ch : '_');
+    }
+
+    return sb.ToString();
 }
 
 ProgramImage BuildSyntheticModProgramImage(string outDir, OverlayBuildResult overlayBuild)
