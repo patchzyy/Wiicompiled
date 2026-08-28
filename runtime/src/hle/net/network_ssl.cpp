@@ -304,13 +304,19 @@ static bool VerifyServerCertificateChain(CtxtHandle& context, const std::string&
     if (hostname.empty()) {
         return false;
     }
+    // MB_ERR_INVALID_CHARS makes malformed UTF-8 fail outright instead of silently becoming
+    // U+FFFD replacement characters that would then reach certificate hostname matching.
     std::wstring wideHostname;
-    const int required = MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, nullptr, 0);
+    const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, hostname.c_str(), -1, nullptr, 0);
     if (required <= 0) {
         return false;
     }
     wideHostname.resize(static_cast<size_t>(required) - 1);
-    MultiByteToWideChar(CP_UTF8, 0, hostname.c_str(), -1, wideHostname.data(), required);
+    const int written = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, hostname.c_str(), -1,
+                                             wideHostname.data(), required);
+    if (written != required) {
+        return false;
+    }
 
     HTTPSPolicyCallbackData httpsPolicy{};
     httpsPolicy.cbStruct = sizeof(httpsPolicy);

@@ -270,9 +270,20 @@ extern "C" void OSCreateThread_HLE_801a9e84(CpuContext* ctx)
         return;
     }
     
-    // Create the guest fiber
+    // Create the guest fiber. A rejected/failed creation (self-replacement of the currently
+    // running fiber, or the underlying CreateFiber call failing) must not fall through to the
+    // guest-thread-structure initialization below: that path unconditionally reports success,
+    // which would hand the guest a "thread" with no working host fiber behind it - it hangs or
+    // crashes the first time the scheduler tries to run it, and on the self-replacement path the
+    // *existing* fiber for threadPtr is also left registered, so this thread struct's real backing
+    // fiber would then be silently reinitialized out from under whatever was still using it.
     if (Fiber::GuestFiberManager::IsInitialized()) {
-        Fiber::GuestFiberManager::CreateGuestFiber(threadPtr, entryFunc, entryArg, stackTop);
+        if (!Fiber::GuestFiberManager::CreateGuestFiber(threadPtr, entryFunc, entryArg, stackTop)) {
+            RT_LOG(RT_TAG_OS) << "OSCreateThread: fiber creation failed for thread 0x"
+                              << std::hex << threadPtr << std::dec << std::endl;
+            cpu->gpr[3] = 0; // Return failure
+            return;
+        }
 
         if (Fiber::GuestFiberManager::GetFiber(threadPtr) != nullptr) {
             const uint32_t hid2 = cpu->hid2 != 0 ? cpu->hid2 : 0x10000000u;

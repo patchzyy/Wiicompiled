@@ -57,9 +57,20 @@ public sealed class TranslationSourceBundle
     /// </summary>
     internal static void ValidateVirtualPath(string virtualPath, string context)
     {
-        if (string.IsNullOrWhiteSpace(virtualPath) ||
-            Path.IsPathRooted(virtualPath) ||
-            virtualPath.Split('/', '\\').Any(component => component == ".."))
+        if (string.IsNullOrWhiteSpace(virtualPath))
+        {
+            throw new InvalidDataException($"Invalid virtual path '{virtualPath}' in translation source bundle '{context}'.");
+        }
+
+        // Path.IsPathRooted is host-OS-dependent (e.g. Path.IsPathRooted(@"\foo") is false on
+        // Unix), so a writer running on one OS could accept a path that the '/'-normalized
+        // serialized form - read back on the same OS, let alone a different one - then rejects as
+        // rooted, producing a bundle its own writer can't round-trip. Normalize separators first
+        // and check rootedness/drive-prefix explicitly so the rule is identical on every OS.
+        var normalized = virtualPath.Replace('\\', '/');
+        var hasDrivePrefix = normalized.Length >= 2 && normalized[1] == ':';
+        if (normalized.StartsWith('/') || hasDrivePrefix ||
+            normalized.Split('/').Any(component => component == ".."))
         {
             throw new InvalidDataException($"Invalid virtual path '{virtualPath}' in translation source bundle '{context}'.");
         }
