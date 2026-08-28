@@ -1220,7 +1220,7 @@ int RuntimeMain(int argc, char** argv) {
             const char* configName;
             AuroraBackend backend;
         };
-        static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
+        static constexpr std::array<GraphicsBackendEntry, 4> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"d3d11", BACKEND_D3D11}, {"d3d12", BACKEND_D3D12}, {"vulkan", BACKEND_VULKAN},
         }};
         const auto backendDisplayName = [](AuroraBackend value) -> const char* {
