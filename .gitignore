@@ -25,6 +25,9 @@ Code.pul
 # Build output
 /build/
 /build-*/
+/.build-output/
+/.build-test/
+/native-build/
 /dist/
 /out/
 [Bb]in/

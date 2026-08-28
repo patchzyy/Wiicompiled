@@ -47,6 +47,7 @@
 #include "system_bridge.h"
 #include "ppc_runtime.h"
 #include "aurora_events.h"
+#include "wup028_adapter.h"
 #include "fiber_manager.h"
 #include "hle_stubs.h"
 #include "runtime_config.h"
@@ -1252,6 +1253,7 @@ int RuntimeMain(int argc, char** argv) {
         }
         aurora_set_frame_worker_wait_callback(ServiceGuestTimingDuringAuroraFrameWait);
         GxGuestWrite::InstallAuroraHooks();
+        Wup028Adapter::Initialize();
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
@@ -1293,6 +1295,7 @@ int RuntimeMain(int argc, char** argv) {
         // Shutdown fiber system
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wup028Adapter::Shutdown();
         aurora_shutdown();
         SetRuntimeExitCodeImpl(0);
         ShutdownProcessTranscript();
@@ -1310,6 +1313,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wup028Adapter::Shutdown();
         aurora_shutdown();
         ShutdownProcessTranscript();
         return 1;
@@ -1321,6 +1325,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wup028Adapter::Shutdown();
         aurora_shutdown();
         ShutdownProcessTranscript();
         return 1;

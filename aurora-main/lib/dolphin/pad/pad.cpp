@@ -5,6 +5,7 @@
 #include <SDL3/SDL_mouse.h>
 
 #include <array>
+#include <atomic>
 #include <sys/stat.h>
 #include <ranges>
 
@@ -283,7 +284,7 @@ constexpr PADCLampRegion ClampRegion{
 
 bool g_initialized;
 bool g_keyboardBindingsLoaded = false;
-bool g_blockPAD = false;
+std::atomic_bool g_blockPAD{false};
 bool g_suppressHeldOnRead = false;
 std::array<PADButton, PAD_CHANMAX> g_suppressedButtons{};
 std::array<bool, PAD_CHANMAX> g_suppressLeftTrigger{};
@@ -659,7 +660,8 @@ u32 PADRead(PADStatus* status) {
 
   int numKeys = 0;
   const bool* kbState = SDL_GetKeyboardState(&numKeys);
-  const bool captureHeldInput = g_suppressHeldOnRead && !g_blockPAD;
+  const bool inputBlocked = g_blockPAD.load(std::memory_order_acquire);
+  const bool captureHeldInput = g_suppressHeldOnRead && !inputBlocked;
   g_suppressHeldOnRead = false;
 
   uint32_t rumbleSupport = 0;
@@ -882,7 +884,7 @@ u32 PADRead(PADStatus* status) {
       }
     }
 
-    if (g_blockPAD) {
+    if (inputBlocked) {
       neutralize_status(status[i]);
     } else {
       apply_unblock_suppression(status[i], i, captureHeldInput);
@@ -1530,11 +1532,12 @@ void PADRestoreDefaultMapping(const u32 port) {
 }
 
 void PADBlockInput(const bool block) {
-  if (g_blockPAD && !block) {
+  if (g_blockPAD.exchange(block, std::memory_order_acq_rel) && !block) {
     g_suppressHeldOnRead = true;
   }
-  g_blockPAD = block;
 }
+
+bool PADIsInputBlocked() { return g_blockPAD.load(std::memory_order_acquire); }
 
 SDL_Gamepad* PADGetSDLGamepadForIndex(const u32 index) {
   const auto* ctrl = __PADGetControllerForIndex(index);
