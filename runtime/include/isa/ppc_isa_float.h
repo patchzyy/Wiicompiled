@@ -561,6 +561,23 @@ inline double PPC_PsToScalarInline(double value)
     return static_cast<double>(PpcGetPs0Inline(value));
 }
 
+inline double PPC_PsMuls0Inline(double aValue, double cValue)
+{
+    return PpcFlushPairedForNiInline(PpcM128ToPsInline(
+        _mm_mul_ps(PpcPsToM128Inline(aValue), PpcBroadcastPs0Inline(cValue))));
+}
+
+inline double PPC_PsMuls1Inline(double aValue, double cValue)
+{
+    return PpcFlushPairedForNiInline(PpcM128ToPsInline(
+        _mm_mul_ps(PpcPsToM128Inline(aValue), PpcBroadcastPs1Inline(cValue))));
+}
+
+inline PPC_FPR PpcMakePairedResultInline(float ps0, float ps1);
+
+inline double PPC_PsFromScalarInline(double value)
+{
+
 // ps_merge* are pure lane selections (result.ps0 from frA, result.ps1 from frB); with lane 0
 // == ps1 and lane 1 == ps0, two shuffles build the result bit-exact instead of round-tripping
 // through the pack helper.
