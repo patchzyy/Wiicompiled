@@ -136,7 +136,7 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 // Must stay in step with the backend table in main.cpp, which is what actually
 // maps these to AuroraBackend.
 inline bool IsSupportedGraphicsApi(std::string_view value) {
-    static constexpr std::array<std::string_view, 3> values{"auto", "d3d12", "vulkan"};
+    static constexpr std::array<std::string_view, 4> values{"auto", "d3d11", "d3d12", "vulkan"};
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 

@@ -44,29 +44,17 @@ struct CpuFeature {
     unsigned subleaf;
     unsigned reg;  // index into the eax/ebx/ecx/edx array filled by HostCpuId
     unsigned bit;
-    bool isOsXsave;
 };
 
-// Everything x86-64-v3 implies, which includes all of x86-64-v2. Spelled out so
-// the error message can name the exact instruction sets the machine lacks
-// rather than only "AVX2", which is merely the best known member of the set.
+// Everything x86-64-v2 implies
 constexpr CpuFeature kRequiredFeatures[] = {
-    {"SSE3", 1, 0, 2, 0, false},
-    {"SSSE3", 1, 0, 2, 9, false},
-    {"FMA", 1, 0, 2, 12, false},
-    {"CMPXCHG16B", 1, 0, 2, 13, false},
-    {"SSE4.1", 1, 0, 2, 19, false},
-    {"SSE4.2", 1, 0, 2, 20, false},
-    {"MOVBE", 1, 0, 2, 22, false},
-    {"POPCNT", 1, 0, 2, 23, false},
-    {"OSXSAVE", 1, 0, 2, 27, true},
-    {"AVX", 1, 0, 2, 28, false},
-    {"F16C", 1, 0, 2, 29, false},
-    {"BMI1", 7, 0, 1, 3, false},
-    {"AVX2", 7, 0, 1, 5, false},
-    {"BMI2", 7, 0, 1, 8, false},
-    {"LAHF-SAHF", 0x80000001u, 0, 2, 0, false},
-    {"LZCNT", 0x80000001u, 0, 2, 5, false},
+    {"SSE3", 1, 0, 2, 0},
+    {"SSSE3", 1, 0, 2, 9},
+    {"CMPXCHG16B", 1, 0, 2, 13},
+    {"SSE4.1", 1, 0, 2, 19},
+    {"SSE4.2", 1, 0, 2, 20},
+    {"POPCNT", 1, 0, 2, 23},
+    {"LAHF-SAHF", 0x80000001u, 0, 2, 0},
 };
 
 // Fixed-capacity text accumulation: no allocation, no exceptions, nothing that
@@ -108,7 +96,6 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
         }
 
         if (present) {
-            haveOsXsave = haveOsXsave || feature.isOsXsave;
             continue;
         }
 
@@ -117,17 +104,6 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
         }
         missing.Append(feature.name);
         ok = false;
-    }
-
-    // CPUID reporting AVX is not sufficient: the OS also has to have enabled
-    // XMM and YMM state saving or every VEX-encoded instruction faults. This is
-    // the same guard a compiler's own runtime feature dispatch applies.
-    if (ok && haveOsXsave) {
-        constexpr uint64_t kXmmAndYmmState = 0x6u;
-        if ((ReadXcr0() & kXmmAndYmmState) != kXmmAndYmmState) {
-            missing.Append("operating system support for AVX register state (XCR0 YMM bits)");
-            ok = false;
-        }
     }
 
     return ok;
@@ -153,12 +129,12 @@ void WriteStdErrEarly(const char* text) {
 [[noreturn]] void ReportUnsupportedCpu(const char* missing) {
     TextBuffer message;
     message.Append(
-        "This build needs a processor that supports AVX2 and the rest of the "
-        "x86-64-v3 instruction set.\n\nMissing on this machine: ");
+        "This build needs a processor that supports the x86-64-v2 "
+        "instruction set.\n\nMissing on this machine: ");
     message.Append(missing);
     message.Append(
-        "\n\nx86-64-v3 covers Intel Core processors from Haswell (4th "
-        "generation, 2013) onward and AMD processors from Excavator (2015) onward.");
+        "\n\nx86-64-v2 is supported by Intel Nehalem-era processors and newer "
+        "and AMD Family 10h-era processors and newer.");
 
     // The tag matches RT_TAG_RUNTIME in runtime_log.h. It is spelled out here
     // because this translation unit must not include runtime-wide headers (see

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-2.0-or-later
+// SPDX-License-Identifier: GPL-2.0-or-later
 //
 // Copyright 2018 Dolphin Emulator Project
 //
@@ -487,8 +487,9 @@ inline double PPC_PsMulNoNiInline(double lhs, double rhs)
 
 inline double PPC_PsMsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(_mm_fmsub_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor)));
+    return PpcM128ToPsInline(_mm_sub_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(subtractor)));
 }
 
 inline double PPC_PsMsubNoNiInline(double multiplicand, double multiplier, double subtractor)
@@ -498,8 +499,9 @@ inline double PPC_PsMsubNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsMaddNoNiInline(double multiplicand, double multiplier, double addend)
@@ -509,20 +511,23 @@ inline double PPC_PsMaddNoNiInline(double multiplicand, double multiplier, doubl
 
 inline double PPC_PsMadds0Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcBroadcastPs0Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcBroadcastPs0Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsMadds1Inline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcBroadcastPs1Inline(multiplier), PpcPsToM128Inline(addend)));
+    return PpcM128ToPsInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcBroadcastPs1Inline(multiplier)), 
+        PpcPsToM128Inline(addend)));
 }
 
 inline double PPC_PsNmsubInline(double multiplicand, double multiplier, double subtractor)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmsub_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(subtractor))));
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_sub_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(subtractor))));
 }
 
 inline double PPC_PsNmsubNoNiInline(double multiplicand, double multiplier, double subtractor)
@@ -532,8 +537,9 @@ inline double PPC_PsNmsubNoNiInline(double multiplicand, double multiplier, doub
 
 inline double PPC_PsNmaddInline(double multiplicand, double multiplier, double addend)
 {
-    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_fmadd_ps(
-        PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier), PpcPsToM128Inline(addend))));
+    return PpcM128ToPsInline(PpcNegateNonNanLanesInline(_mm_add_ps(
+        _mm_mul_ps(PpcPsToM128Inline(multiplicand), PpcPsToM128Inline(multiplier)), 
+        PpcPsToM128Inline(addend))));
 }
 
 inline double PPC_PsMuls0Inline(double aValue, double cValue)
