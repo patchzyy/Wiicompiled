@@ -91,7 +91,7 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
         return NAND_RESULT_INVALID;
     }
 
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
 
     // Existing-file write opens go through a shadow copy seeded from the original, so a
     // crash between NANDWrite and NANDClose cannot leave a torn file (the game patches
@@ -101,23 +101,23 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
             // Another live handle already refers to this file. A shadow would hide the
             // writes from that handle, so stay in place for this open.
             LogNandWarning("NANDOpen", "WARNING: '%s' already has a live handle, writing in place",
-                           hostPath.c_str());
+                           HostPathText(hostPath).c_str());
         } else {
-            const std::string tempPath = SafeTempPathFor(hostPath);
+            const std::filesystem::path tempPath = SafeTempPathFor(hostPath);
             if (DiscardStaleSafeTemp(tempPath)) {
                 std::error_code ec;
                 std::filesystem::copy_file(hostPath, tempPath,
                                            std::filesystem::copy_options::overwrite_existing, ec);
                 if (ec) {
                     LogNandWarning("NANDOpen", "WARNING: could not seed shadow '%s' (%s), writing in place",
-                                   tempPath.c_str(), ec.message().c_str());
-                    std::remove(tempPath.c_str());
+                                   HostPathText(tempPath).c_str(), ec.message().c_str());
+                    NandRemove(tempPath);
                 } else {
-                    FILE* shadow = std::fopen(tempPath.c_str(), "r+b");
+                    FILE* shadow = NandFopen(tempPath, "r+b");
                     if (!shadow) {
                         LogNandWarning("NANDOpen", "WARNING: could not open shadow '%s', writing in place",
-                                       tempPath.c_str());
-                        std::remove(tempPath.c_str());
+                                       HostPathText(tempPath).c_str());
+                        NandRemove(tempPath);
                     } else {
                         const int32_t shadowFd = AllocateFd(tempPath, shadow, static_cast<int32_t>(mode));
                         {
@@ -141,20 +141,20 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
     else if (mode == 2) fopenMode = "r+b";
     else if (mode == 3) fopenMode = "r+b";
     
-    FILE* file = std::fopen(hostPath.c_str(), fopenMode);
+    FILE* file = NandFopen(hostPath, fopenMode);
     if (!file && mode >= 2) {
         // Try creating for write modes
-        file = std::fopen(hostPath.c_str(), "w+b");
+        file = NandFopen(hostPath, "w+b");
     }
     
     // Create parent directories and retry
     if (!file && CreateParentDirectories(hostPath)) {
-        file = std::fopen(hostPath.c_str(), mode >= 2 ? "w+b" : "rb");
+        file = NandFopen(hostPath, mode >= 2 ? "w+b" : "rb");
     }
 
     if (!file) {
         if (IsFaceLibResourcePath(path) && SeedFaceLibResource(hostPath)) {
-            file = std::fopen(hostPath.c_str(), fopenMode);
+            file = NandFopen(hostPath, fopenMode);
         }
         if (!file) {
             LogNandError("NANDOpen", "FAILED to open");
@@ -282,7 +282,7 @@ extern "C" int32_t NANDCreate_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr
         return NAND_RESULT_INVALID;
     }
     
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
     CreateParentDirectories(hostPath);
 
     // Check if file already exists
@@ -291,7 +291,7 @@ extern "C" int32_t NANDCreate_HLE(uint32_t pathPtr, uint32_t perm, uint32_t attr
     }
     
     // Create empty file
-    FILE* f = std::fopen(hostPath.c_str(), "wb");
+    FILE* f = NandFopen(hostPath, "wb");
     if (!f) {
         return NAND_RESULT_UNKNOWN;
     }
@@ -307,13 +307,13 @@ extern "C" int32_t NANDDelete_HLE(uint32_t pathPtr) {
         return NAND_RESULT_INVALID;
     }
 
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
 
     if (!PathExists(hostPath)) {
         return NAND_RESULT_NOEXISTS;
     }
     
-    if (std::remove(hostPath.c_str()) == 0) {
+    if (NandRemove(hostPath)) {
         return NAND_RESULT_OK;
     }
     
@@ -327,7 +327,7 @@ extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t a
         return NAND_RESULT_INVALID;
     }
 
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
 
     if (PathExists(hostPath)) {
         if (IsDirectory(hostPath)) {
@@ -337,11 +337,6 @@ extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t a
     }
     
     if (CreateDirectoryPath(hostPath)) {
-#ifdef _WIN32
-        _mkdir(hostPath.c_str());
-#else
-        mkdir(hostPath.c_str(), 0755);
-#endif
         return NAND_RESULT_OK;
     }
     
@@ -369,13 +364,13 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
     // filename (for example /tmp/banner.bin -> <title home>/banner.bin).
     const std::filesystem::path dstHost = dstDirectoryHost / srcName;
 
-    if (!PathExists(srcHost.string())) {
+    if (!PathExists(srcHost)) {
         return NAND_RESULT_NOEXISTS;
     }
-    if (!IsDirectory(dstDirectoryHost.string())) {
+    if (!IsDirectory(dstDirectoryHost)) {
         return NAND_RESULT_NOEXISTS;
     }
-    if (PathExists(dstHost.string())) {
+    if (PathExists(dstHost)) {
         return NAND_RESULT_EXISTS;
     }
 
@@ -396,7 +391,7 @@ extern "C" int32_t NANDGetStatus_HLE(uint32_t pathPtr, uint32_t outStatusPtr) {
         return NAND_RESULT_INVALID;
     }
 
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
 
     if (!PathExists(hostPath)) {
         return NAND_RESULT_NOEXISTS;
@@ -417,7 +412,7 @@ extern "C" int32_t NANDGetType_HLE(uint32_t pathPtr, uint32_t outTypePtr) {
         return NAND_RESULT_INVALID;
     }
     
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
     
     if (!PathExists(hostPath)) {
         return NAND_RESULT_NOEXISTS;

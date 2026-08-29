@@ -67,6 +67,18 @@ struct RuntimeUserConfig {
 
 namespace RuntimeConfigFile {
 
+// Narrow path strings are UTF-8 everywhere in the runtime; string() and the
+// char path constructor would use the ANSI codepage on Windows, which drops
+// characters the codepage cannot represent.
+inline std::string PathToUtf8(const std::filesystem::path& path) {
+    const std::u8string text = path.u8string();
+    return std::string(text.begin(), text.end());
+}
+
+inline std::filesystem::path PathFromUtf8(std::string_view text) {
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
 inline constexpr const char* kConfigFileName = "Config.toml";
 inline constexpr const char* kApplicationDirectoryName = "WiiCompiled";
 
@@ -419,7 +431,7 @@ inline RuntimeUserConfig ParseConfig(std::istream& input, std::string sourceName
 inline RuntimeUserConfig LoadConfigFile() {
     EnsureConfigFile();
     std::ifstream file(ResolveConfigPath(), std::ios::binary);
-    return file ? ParseConfig(file, ResolveConfigPath().string()) : RuntimeUserConfig{};
+    return file ? ParseConfig(file, PathToUtf8(ResolveConfigPath())) : RuntimeUserConfig{};
 }
 
 inline const RuntimeUserConfig& Get() {
@@ -510,7 +522,7 @@ inline bool WriteSetting(std::string_view section, std::string_view key, std::st
     }
     std::ofstream output(path, std::ios::trunc);
     if (!output) {
-        std::cerr << "[runtime-config] Unable to write " << path.string() << std::endl;
+        std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << std::endl;
         return false;
     }
     for (const auto& outputLine : lines) {
@@ -776,7 +788,7 @@ inline std::string DvdRoot(std::string fallback = "") {
 // never to the process working directory (docs/WHEELWIZARD_CONTRACT.md).
 inline std::filesystem::path ResolveRelativeTo(const std::filesystem::path& base,
                                                const std::string& value) {
-    std::filesystem::path path(value);
+    std::filesystem::path path = PathFromUtf8(value);
     if (path.is_relative()) {
         path = base / path;
     }
@@ -806,7 +818,7 @@ inline void LogLoadedConfig() {
     static const bool logged = [] {
         const auto& config = Get();
         const auto configPath = ResolveConfigPath();
-        std::cout << "[runtime-config] " << configPath.string();
+        std::cout << "[runtime-config] " << PathToUtf8(configPath);
         if (!std::filesystem::exists(configPath)) {
             std::cout << " not found; using built-in defaults";
         } else {

@@ -175,7 +175,7 @@ void CARDInit(const char* game, const char* maker) {
 
   std::filesystem::path cardWorkingDir;
   if (aurora::g_config.userPath != nullptr)
-    cardWorkingDir = reinterpret_cast<const char8_t*>(aurora::g_config.userPath);
+    cardWorkingDir = fs_path_from_string(aurora::g_config.userPath);
   else
     cardWorkingDir = std::filesystem::current_path();
 

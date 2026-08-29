@@ -2,6 +2,7 @@
 
 #include "clear.hpp"
 #include "../gx/pipeline.hpp"
+#include "../fs_helper.hpp"
 #include "../sqlite_utils.hpp"
 #include "../webgpu/gpu.hpp"
 
@@ -715,7 +716,7 @@ static bool prepare_pipeline_cache_db() {
     return true;
   }
 
-  const auto path = (std::filesystem::path{g_config.pipelineCachePath} / "pipeline_cache.db").string();
+  const auto path = fs_path_to_string(fs_path_from_string(g_config.pipelineCachePath) / "pipeline_cache.db");
   auto ret = sqlite3_open(path.c_str(), &g_pipelineCacheDb);
   if (ret != SQLITE_OK) {
     Log.error("Failed to open pipeline cache database: {}", sqlite3_errmsg(g_pipelineCacheDb));

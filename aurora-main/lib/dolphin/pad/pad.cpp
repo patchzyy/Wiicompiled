@@ -1,3 +1,4 @@
+#include "../../fs_helper.hpp"
 #include "../../input.hpp"
 #include "../../internal.hpp"
 #include <dolphin/pad.h>
@@ -492,7 +493,7 @@ void __PADLoadMapping(aurora::input::GameController* controller) /*  NOLINT(*-re
     return;
   }
 
-  std::string basePath{aurora::g_config.userPath};
+  const std::filesystem::path basePath = fs_path_from_string(aurora::g_config.userPath);
   if (!controller->m_mappingLoaded) {
     __PADSetDefaultMapping(controller);
     controller->m_axisMapping = g_defaultAxes;
@@ -500,8 +501,9 @@ void __PADLoadMapping(aurora::input::GameController* controller) /*  NOLINT(*-re
 
   controller->m_mappingLoaded = true;
 
-  const auto path = fmt::format("{}/{}_{:04X}_{:04X}.controller", basePath, PADGetName(playerIndex), controller->m_vid,
-                                controller->m_pid);
+  const auto path = fs_path_to_string(
+      basePath / fmt::format("{}_{:04X}_{:04X}.controller", PADGetName(playerIndex), controller->m_vid,
+                             controller->m_pid));
   SDL_IOStream* file = SDL_IOFromFile(path.c_str(), "rb");
   if (file == nullptr) {
     return;
@@ -1249,8 +1251,8 @@ constexpr uint32_t k_keyboardMagic = SBIG('KBND');
 constexpr int32_t k_keyboardVersion = 3;
 
 static void load_keyboard_bindings() {
-  const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "rb");
+  const auto filePath = fs_path_from_string(aurora::g_config.userPath) / "keyboard_bindings.dat";
+  SDL_IOStream* file = SDL_IOFromFile(fs_path_to_string(filePath).c_str(), "rb");
   if (file == nullptr) {
     return;
   }
@@ -1319,10 +1321,11 @@ static void load_keyboard_bindings() {
 }
 
 static void save_keyboard_bindings() {
-  const auto filePath = std::filesystem::path{aurora::g_config.userPath} / "keyboard_bindings.dat";
-  SDL_IOStream* file = SDL_IOFromFile(filePath.string().c_str(), "wb");
+  const auto filePath = fs_path_from_string(aurora::g_config.userPath) / "keyboard_bindings.dat";
+  const auto filePathStr = fs_path_to_string(filePath);
+  SDL_IOStream* file = SDL_IOFromFile(filePathStr.c_str(), "wb");
   if (file == nullptr) {
-    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", filePath.string());
+    aurora::input::Log.warn("save_keyboard_bindings: failed to open {} for writing", filePathStr);
     return;
   }
 
@@ -1346,14 +1349,14 @@ void __PADWriteDeadZones(SDL_IOStream* file, // NOLINT(*-reserved-identifier)
 }
 
 void PADSerializeMappings() {
-  const std::filesystem::path basePath{aurora::g_config.userPath};
+  const std::filesystem::path basePath = fs_path_from_string(aurora::g_config.userPath);
 
   for (auto& controller : aurora::input::g_GameControllers | std::views::values) {
     EnsureMappingLoaded(&controller);
     const auto filePath =
         basePath / fmt::format("{}_{:04X}_{:04X}.controller", aurora::input::controller_name(controller.m_index),
                                controller.m_vid, controller.m_pid);
-    std::string filePathStr = filePath.string();
+    std::string filePathStr = fs_path_to_string(filePath);
 
     // don't truncate the file if it already exists
     const char* openMode = std::filesystem::exists(filePath) ? "r+b" : "wb";
@@ -1372,7 +1375,7 @@ void PADSerializeMappings() {
     // start writing data at next 32-byte aligned offset
     const int64_t dataStart = SDL_TellIO(file) + 31 & ~31;
     if (dataStart == -1) {
-      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePath.string());
+      aurora::input::Log.warn("Unable to seek in controller bindings! Path: \"{}\"", filePathStr);
       return;
     }
     SDL_SeekIO(file, dataStart, SDL_IO_SEEK_SET);

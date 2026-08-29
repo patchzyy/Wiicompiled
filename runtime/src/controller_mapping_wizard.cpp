@@ -186,7 +186,8 @@ void FinishWizard() {
         return;
     }
     if (!PersistMapping(guid, mapping)) {
-        g_wizard.status = "Failed to save mapping to " + MappingDbPath().string();
+        g_wizard.status =
+            "Failed to save mapping to " + RuntimeConfigFile::PathToUtf8(MappingDbPath());
         RT_LOG(RT_TAG_CONFIG) << "controller wizard: " << g_wizard.status << std::endl;
         return;
     }

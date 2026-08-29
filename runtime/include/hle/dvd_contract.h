@@ -20,14 +20,14 @@
 namespace DvdFstContract {
 
 struct RegisteredFile {
-    std::string hostPath;
+    std::filesystem::path hostPath;
     std::string dvdPath;
     uint32_t size = 0;
     uint32_t discOffsetWords = 0;
 };
 
 struct IndexedEntry {
-    std::string hostPath;
+    std::filesystem::path hostPath;
     std::string dvdPath;
     uint32_t size = 0;
     uint32_t discOffsetWords = 0;

@@ -29,15 +29,10 @@
 #include <vector>
 #include <filesystem>
 #include <string>
-#include <sys/stat.h>
 
 #ifdef _WIN32
-#include <direct.h>
 #include <io.h>
 #include <windows.h>
-#define mkdir(path, mode) _mkdir(path)
-#define access _access
-#define F_OK 0
 #else
 #include <fcntl.h>
 #include <sys/types.h>
@@ -67,19 +62,19 @@ void LogNandWarning(const char* func, const char* fmt, ...);
 
 struct FileHandle {
     FILE* file = nullptr;
-    std::string path;
+    std::filesystem::path path;
     int32_t mode = 0; // 1=read, 2=write, 3=read/write
     uint32_t position = 0;
     // Non-empty only for write-mode NANDSafeOpen handles. `path` then points at the
     // sibling scratch file the guest is writing into, and this is the original file it
     // atomically replaces on NANDSafeClose.
-    std::string safeCommitPath;
+    std::filesystem::path safeCommitPath;
 };
 
 extern std::map<int32_t, FileHandle> g_fileHandles;
 extern std::mutex g_fdMutex;
 
-int32_t AllocateFd(const std::string& path, FILE* file, int32_t mode);
+int32_t AllocateFd(const std::filesystem::path& path, FILE* file, int32_t mode);
 FileHandle* GetHandle(int32_t fd);
 void CloseFd(int32_t fd);
 
@@ -89,18 +84,27 @@ void CloseFd(int32_t fd);
 
 uint32_t CurrentMkwTitleIdLo();
 std::string CurrentNandDataDir();
-const std::string& GetNandBasePath();
-std::string TranslateNandPath(const char* wiiPath);
+const std::filesystem::path& GetNandBasePath();
+std::filesystem::path TranslateNandPath(const char* wiiPath);
 
-bool CreateDirectoryPath(const std::string& path);
-bool PathExists(const std::string& path);
-bool IsDirectory(const std::string& path);
+bool CreateDirectoryPath(const std::filesystem::path& path);
+bool PathExists(const std::filesystem::path& path);
+bool IsDirectory(const std::filesystem::path& path);
 
 // Create the directory that contains `path`. False when `path` has no directory
 // component, i.e. there was nothing to create.
-bool CreateParentDirectories(const std::string& path);
+bool CreateParentDirectories(const std::filesystem::path& path);
 
-bool SeedFaceLibResource(const std::string& hostPath);
+// Host paths keep their native encoding end to end; these are the only places a NAND
+// path is narrowed, and they narrow to UTF-8 for display.
+std::string HostPathText(const std::filesystem::path& path);
+
+// fopen takes an ANSI-codepage name on Windows, which cannot express every path.
+FILE* NandFopen(const std::filesystem::path& path, const char* mode);
+bool NandRemove(const std::filesystem::path& path);
+bool NandRename(const std::filesystem::path& from, const std::filesystem::path& to);
+
+bool SeedFaceLibResource(const std::filesystem::path& hostPath);
 bool IsFaceLibResourcePath(const char* path);
 
 // ============================================================================
@@ -178,9 +182,9 @@ enum ISFSResult {
 int32_t ISFS_OpenLib_Initialize(CpuContext* ctx);
 
 // Shadow-write machinery, defined with the NANDSafeOpen/NANDSafeClose section below.
-std::string SafeTempPathFor(const std::string& hostPath);
-bool DiscardStaleSafeTemp(const std::string& tempPath);
-bool IsHostPathOpen(const std::string& hostPath);
+std::filesystem::path SafeTempPathFor(const std::filesystem::path& hostPath);
+bool DiscardStaleSafeTemp(const std::filesystem::path& tempPath);
+bool IsHostPathOpen(const std::filesystem::path& hostPath);
 int32_t CommitAndCloseFd(const char* who, int32_t fd, bool missingFdIsError);
 
 // Synchronous NAND library entry points (defined in nand_api.cpp); the async

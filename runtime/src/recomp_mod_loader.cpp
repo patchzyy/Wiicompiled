@@ -33,8 +33,8 @@ std::vector<RecompMod::InitializerFn>& PostRelInitializers() {
     return initializers;
 }
 
-std::vector<std::string>& OverlayRoots() {
-    static std::vector<std::string> roots;
+std::vector<std::filesystem::path>& OverlayRoots() {
+    static std::vector<std::filesystem::path> roots;
     return roots;
 }
 
@@ -279,17 +279,17 @@ void RegisterDvdOverlayRoot(std::string root) {
     // against the executable directory instead.
     const std::filesystem::path base =
         RuntimeConfigFile::ExecutableDirectory().value_or(std::filesystem::current_path());
-    root = RuntimeConfigFile::ResolveRelativeTo(base, root).string();
+    std::filesystem::path resolved = RuntimeConfigFile::ResolveRelativeTo(base, root);
 
     std::lock_guard<std::mutex> lock(ModMutex());
     auto& roots = OverlayRoots();
-    const auto it = std::find(roots.begin(), roots.end(), root);
+    const auto it = std::find(roots.begin(), roots.end(), resolved);
     if (it == roots.end()) {
-        roots.push_back(std::move(root));
+        roots.push_back(std::move(resolved));
     }
 }
 
-const std::vector<std::string>& DvdOverlayRoots() {
+const std::vector<std::filesystem::path>& DvdOverlayRoots() {
     return OverlayRoots();
 }
 

@@ -81,7 +81,8 @@ inline bool WriteSerial(const std::filesystem::path& path, const std::string& se
         return false;
     }
 
-    const std::filesystem::path temporary = path.string() + ".tmp";
+    std::filesystem::path temporary = path;
+    temporary += ".tmp";
     {
         std::ofstream output(temporary, std::ios::trunc);
         if (!output) {

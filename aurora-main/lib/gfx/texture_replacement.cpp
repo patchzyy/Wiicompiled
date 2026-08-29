@@ -506,8 +506,8 @@ void build_index() noexcept {
     return;
   }
 
-  auto userPath = std::filesystem::path{reinterpret_cast<const char8_t*>(g_config.userPath)};
-  auto cachePath = std::filesystem::path{reinterpret_cast<const char8_t*>(g_config.cachePath)};
+  auto userPath = fs_path_from_string(g_config.userPath);
+  auto cachePath = fs_path_from_string(g_config.cachePath);
 
   s_replacementRoot = userPath / "texture_replacements";
   s_dumpRoot = cachePath / "texture_dumps";

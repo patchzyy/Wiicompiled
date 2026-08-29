@@ -329,7 +329,7 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     }
     
     // It's a NAND file path
-    std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
     
     // Seed FaceLib resources before the existence check so every open mode can
     // still find them on a fresh managed NAND.
@@ -346,16 +346,16 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     if (mode == 2 || mode == 3) {
         if (!PathExists(hostPath)) {
             LogNandWarning("IOS_Open", "'%s' does not exist; open mode %u never creates it",
-                    hostPath.c_str(), mode);
+                    HostPathText(hostPath).c_str(), mode);
             return ISFS_ENOENT;
         }
         fopenMode = "r+b";      // Write-only opens still need read for seeks
     }
 
-    FILE* file = std::fopen(hostPath.c_str(), fopenMode);
+    FILE* file = NandFopen(hostPath, fopenMode);
 
     if (!file) {
-        LogNandError("IOS_Open", "FAILED to open '%s'", hostPath.c_str());
+        LogNandError("IOS_Open", "FAILED to open '%s'", HostPathText(hostPath).c_str());
         return ISFS_ENOENT;
     }
     
@@ -516,14 +516,9 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                     return ISFS_EINVAL;
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr + 6);
-                std::string hostPath = TranslateNandPath(path);
+                const std::filesystem::path hostPath = TranslateNandPath(path);
                 
                 if (CreateDirectoryPath(hostPath)) {
-#ifdef _WIN32
-                    _mkdir(hostPath.c_str());
-#else
-                    mkdir(hostPath.c_str(), 0755);
-#endif
                     return ISFS_OK;
                 }
                 return ISFS_EIO;
@@ -534,16 +529,11 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                     return ISFS_EINVAL;
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr);
-                std::string hostPath = TranslateNandPath(path);
+                const std::filesystem::path hostPath = TranslateNandPath(path);
                 
-                if (IsDirectory(hostPath)) {
-#ifdef _WIN32
-                    if (RemoveDirectoryA(hostPath.c_str())) return ISFS_OK;
-#else
-                    if (rmdir(hostPath.c_str()) == 0) return ISFS_OK;
-#endif
-                } else {
-                    if (std::remove(hostPath.c_str()) == 0) return ISFS_OK;
+                // fs::remove refuses a non-empty directory, matching rmdir.
+                if (NandRemove(hostPath)) {
+                    return ISFS_OK;
                 }
                 return ISFS_ENOENT;
             }
@@ -553,7 +543,7 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                     return ISFS_EINVAL;
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr);
-                std::string hostPath = TranslateNandPath(path);
+                const std::filesystem::path hostPath = TranslateNandPath(path);
                 
                 if (!PathExists(hostPath)) {
                     return ISFS_ENOENT;
@@ -582,11 +572,11 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                     return ISFS_EINVAL;
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr + 6);
-                std::string hostPath = TranslateNandPath(path);
+                const std::filesystem::path hostPath = TranslateNandPath(path);
                 CreateParentDirectories(hostPath);
 
                 // Create empty file
-                FILE* f = std::fopen(hostPath.c_str(), "wb");
+                FILE* f = NandFopen(hostPath, "wb");
                 if (f) {
                     std::fclose(f);
                     return ISFS_OK;
@@ -606,10 +596,10 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                 }
                 const char* srcPath = (const char*)Memory::GetPointer(inBufPtr);
                 const char* dstPath = (const char*)Memory::GetPointer(inBufPtr + 0x40);
-                std::string srcHost = TranslateNandPath(srcPath);
-                std::string dstHost = TranslateNandPath(dstPath);
+                const std::filesystem::path srcHost = TranslateNandPath(srcPath);
+                const std::filesystem::path dstHost = TranslateNandPath(dstPath);
                 
-                if (std::rename(srcHost.c_str(), dstHost.c_str()) == 0) {
+                if (NandRename(srcHost, dstHost)) {
                     return ISFS_OK;
                 }
                 return ISFS_EIO;
@@ -805,11 +795,11 @@ int32_t ISFS_OpenLib_Initialize(CpuContext* ctx) {
     g_isfsInitialized = true;
     
     // Create the title data directory if it doesn't exist
-    char titlePath[256];
-    const std::string& base = GetNandBasePath();
-    std::snprintf(titlePath, sizeof(titlePath), "%s\\title\\%08x\\%08x\\data",
-                  base.c_str(), kNandTitleIdHi, CurrentMkwTitleIdLo());
-    CreateDirectoryPath(titlePath);
+    char titleId[32];
+    std::snprintf(titleId, sizeof(titleId), "%08x", kNandTitleIdHi);
+    char gameId[32];
+    std::snprintf(gameId, sizeof(gameId), "%08x", CurrentMkwTitleIdLo());
+    CreateDirectoryPath(GetNandBasePath() / "title" / titleId / gameId / "data");
 
     if (!ctx) {
         return ISFS_OK;
@@ -912,7 +902,7 @@ static int32_t HandleIsfsReadDir(uint32_t numIn, uint32_t numOut, uint32_t vecto
     if (wiiPath.empty()) {
         return ISFS_EINVAL;
     }
-    const std::string hostPath = TranslateNandPath(wiiPath.c_str());
+    const std::filesystem::path hostPath = TranslateNandPath(wiiPath.c_str());
     if (!IsDirectory(hostPath)) {
         return ISFS_ENOENT;
     }
@@ -923,7 +913,7 @@ static int32_t HandleIsfsReadDir(uint32_t numIn, uint32_t numOut, uint32_t vecto
     std::vector<std::string> names;
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(hostPath, ec)) {
-        std::string name = entry.path().filename().string();
+        std::string name = HostPathText(entry.path().filename());
         if (name.empty() || name.size() > kMaxNandNameLength) {
             continue;
         }

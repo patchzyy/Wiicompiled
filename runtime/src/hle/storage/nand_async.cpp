@@ -234,8 +234,10 @@ PPC_NATIVE_OVERRIDE(8019E7B4, NANDPrivateGetTypeAsync_HLE, int32_t,
 
 static const char kNandSafeTempSuffix[] = ".nandsafe.tmp";
 
-std::string SafeTempPathFor(const std::string& hostPath) {
-    return hostPath + kNandSafeTempSuffix;
+std::filesystem::path SafeTempPathFor(const std::filesystem::path& hostPath) {
+    std::filesystem::path tempPath = hostPath;
+    tempPath += kNandSafeTempSuffix;
+    return tempPath;
 }
 
 // Push the CRT buffer out and then force the OS to put it on the platter, so the data is
@@ -264,24 +266,25 @@ static bool FlushFileToDisk(FILE* file) {
 
 // Replace `targetPath` with `tempPath` in one step. Either the old or the new contents
 // survive a crash; there is no window where the target is truncated or partial.
-static bool AtomicReplaceHostFile(const char* who, const std::string& tempPath,
-                                  const std::string& targetPath) {
+static bool AtomicReplaceHostFile(const char* who, const std::filesystem::path& tempPath,
+                                  const std::filesystem::path& targetPath) {
 #ifdef _WIN32
-    if (MoveFileExA(tempPath.c_str(), targetPath.c_str(),
+    if (MoveFileExW(tempPath.c_str(), targetPath.c_str(),
                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         return true;
     }
     LogNandError(who, "ERROR: MoveFileEx('%s' -> '%s') failed (err=%lu)",
-            tempPath.c_str(), targetPath.c_str(), static_cast<unsigned long>(GetLastError()));
+            HostPathText(tempPath).c_str(), HostPathText(targetPath).c_str(),
+            static_cast<unsigned long>(GetLastError()));
     return false;
 #else
-    if (std::rename(tempPath.c_str(), targetPath.c_str()) != 0) {
+    if (!NandRename(tempPath, targetPath)) {
         LogNandError(who, "ERROR: rename('%s' -> '%s') failed",
-                tempPath.c_str(), targetPath.c_str());
+                HostPathText(tempPath).c_str(), HostPathText(targetPath).c_str());
         return false;
     }
     // Durably record the directory entry so the rename itself survives a crash.
-    const std::string directory = std::filesystem::path(targetPath).parent_path().string();
+    const std::string directory = targetPath.parent_path().string();
     const int dirFd = open(directory.c_str(), O_RDONLY);
     if (dirFd >= 0) {
         fsync(dirFd);
@@ -293,23 +296,24 @@ static bool AtomicReplaceHostFile(const char* who, const std::string& tempPath,
 
 // Remove a scratch file left behind by a previous run that died between safe open and
 // safe close. Its contents are worthless: the original was never replaced.
-bool DiscardStaleSafeTemp(const std::string& tempPath) {
+bool DiscardStaleSafeTemp(const std::filesystem::path& tempPath) {
     if (!PathExists(tempPath)) {
         return true;
     }
     LogNandWarning("nand-shadow", "WARNING: discarding stale scratch file '%s' from a previous run",
-            tempPath.c_str());
-    if (std::remove(tempPath.c_str()) == 0) {
+            HostPathText(tempPath).c_str());
+    if (NandRemove(tempPath)) {
         return true;
     }
-    LogNandError("nand-shadow", "FAILED to remove stale scratch file '%s'", tempPath.c_str());
+    LogNandError("nand-shadow", "FAILED to remove stale scratch file '%s'",
+            HostPathText(tempPath).c_str());
     return false;
 }
 
 // True when any live handle already refers to `hostPath`, either directly or as the
 // commit target of a shadow. Used to keep shadow writes from hiding data behind a second
 // handle on the same file.
-bool IsHostPathOpen(const std::string& hostPath) {
+bool IsHostPathOpen(const std::filesystem::path& hostPath) {
     std::lock_guard<std::mutex> lock(g_fdMutex);
     for (const auto& entry : g_fileHandles) {
         if (entry.second.path == hostPath || entry.second.safeCommitPath == hostPath) {
@@ -324,8 +328,8 @@ bool IsHostPathOpen(const std::string& hostPath) {
 // dropped and the original is left exactly as it was, and the error is returned so the
 // guest's close call fails instead of silently reporting success.
 int32_t CommitAndCloseFd(const char* who, int32_t fd, bool missingFdIsError) {
-    std::string tempPath;
-    std::string commitPath;
+    std::filesystem::path tempPath;
+    std::filesystem::path commitPath;
     FILE* file = nullptr;
     int32_t mode = 0;
 
@@ -358,7 +362,7 @@ int32_t CommitAndCloseFd(const char* who, int32_t fd, bool missingFdIsError) {
 
     if (!needsCommit) {
         if (!flushed) {
-            LogNandError(who, "ERROR: flush of '%s' failed", tempPath.c_str());
+            LogNandError(who, "ERROR: flush of '%s' failed", HostPathText(tempPath).c_str());
             return NAND_RESULT_UNKNOWN;
         }
         return NAND_RESULT_OK;
@@ -366,13 +370,13 @@ int32_t CommitAndCloseFd(const char* who, int32_t fd, bool missingFdIsError) {
 
     if (!flushed) {
         LogNandError(who, "ERROR: flush of '%s' failed, discarding it and leaving '%s' untouched",
-                tempPath.c_str(), commitPath.c_str());
-        std::remove(tempPath.c_str());
+                HostPathText(tempPath).c_str(), HostPathText(commitPath).c_str());
+        NandRemove(tempPath);
         return NAND_RESULT_UNKNOWN;
     }
 
     if (!AtomicReplaceHostFile(who, tempPath, commitPath)) {
-        std::remove(tempPath.c_str());
+        NandRemove(tempPath);
         return NAND_RESULT_UNKNOWN;
     }
 
@@ -394,7 +398,7 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
         return NAND_RESULT_INVALID;
     }
 
-    const std::string hostPath = TranslateNandPath(path);
+    const std::filesystem::path hostPath = TranslateNandPath(path);
     if (hostPath.empty()) {
         LogNandError("NANDSafeOpen", "FAILED to translate path '%s'", path);
         return NAND_RESULT_INVALID;
@@ -407,12 +411,13 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     if (mode == 1) {
         // Read-only safe open reads the original in place; the library builds no scratch
         // copy for this case.
-        FILE* file = std::fopen(hostPath.c_str(), "rb");
+        FILE* file = NandFopen(hostPath, "rb");
         if (!file && IsFaceLibResourcePath(path) && SeedFaceLibResource(hostPath)) {
-            file = std::fopen(hostPath.c_str(), "rb");
+            file = NandFopen(hostPath, "rb");
         }
         if (!file) {
-            LogNandError("NANDSafeOpen", "FAILED to open '%s' for reading", hostPath.c_str());
+            LogNandError("NANDSafeOpen", "FAILED to open '%s' for reading",
+                    HostPathText(hostPath).c_str());
             return NAND_RESULT_NOEXISTS;
         }
 
@@ -425,15 +430,16 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     // Write modes. The library queries the attributes of the original first, so a safe
     // open of a file that does not exist fails instead of creating one.
     if (!PathExists(hostPath)) {
-        LogNandError("NANDSafeOpen", "FAILED: '%s' does not exist, safe open never creates it", hostPath.c_str());
+        LogNandError("NANDSafeOpen", "FAILED: '%s' does not exist, safe open never creates it",
+                HostPathText(hostPath).c_str());
         return NAND_RESULT_NOEXISTS;
     }
     if (IsDirectory(hostPath)) {
-        LogNandError("NANDSafeOpen", "FAILED: '%s' is a directory", hostPath.c_str());
+        LogNandError("NANDSafeOpen", "FAILED: '%s' is a directory", HostPathText(hostPath).c_str());
         return NAND_RESULT_INVALID;
     }
 
-    const std::string tempPath = SafeTempPathFor(hostPath);
+    const std::filesystem::path tempPath = SafeTempPathFor(hostPath);
     if (!DiscardStaleSafeTemp(tempPath)) {
         return NAND_RESULT_ACCESS;
     }
@@ -445,15 +451,17 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
                                std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         LogNandError("NANDSafeOpen", "FAILED to seed scratch file '%s' from '%s': %s",
-                tempPath.c_str(), hostPath.c_str(), ec.message().c_str());
-        std::remove(tempPath.c_str());
+                HostPathText(tempPath).c_str(), HostPathText(hostPath).c_str(),
+                ec.message().c_str());
+        NandRemove(tempPath);
         return NAND_RESULT_UNKNOWN;
     }
 
-    FILE* file = std::fopen(tempPath.c_str(), "r+b");
+    FILE* file = NandFopen(tempPath, "r+b");
     if (!file) {
-        LogNandError("NANDSafeOpen", "FAILED to open scratch file '%s'", tempPath.c_str());
-        std::remove(tempPath.c_str());
+        LogNandError("NANDSafeOpen", "FAILED to open scratch file '%s'",
+                HostPathText(tempPath).c_str());
+        NandRemove(tempPath);
         return NAND_RESULT_UNKNOWN;
     }
 

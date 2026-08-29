@@ -151,9 +151,10 @@ if ($Profile -ne 'both' -and -not [string]::IsNullOrWhiteSpace($BaseOutputDirect
     throw '-BaseOutputDirectory is valid only with -Profile both.'
 }
 $translator = Join-Path $Toolkit 'Translator\Translator.Cli.exe'
-$cmake = Join-Path $Toolkit 'CMake\bin\cmake.exe'
-$ninja = Join-Path $Toolkit 'Ninja\ninja.exe'
-$toolchainBin = Join-Path $Toolkit 'llvm-mingw\bin'
+$toolchain = Get-MkwShellSafeToolchainRoot $Toolkit
+$cmake = Join-Path $toolchain 'CMake\bin\cmake.exe'
+$ninja = Join-Path $toolchain 'Ninja\ninja.exe'
+$toolchainBin = Join-Path $toolchain 'llvm-mingw\bin'
 $cc = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang.exe'
 $cxx = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang++.exe'
 $windres = Join-Path $toolchainBin 'x86_64-w64-mingw32-windres.exe'
@@ -203,7 +204,7 @@ if ($Parallel -gt 0) {
 $oldPath = $env:PATH
 $oldDotnet = $env:DOTNET_ROOT
 try {
-    $env:PATH = Get-MkwToolchainPath $Toolkit
+    $env:PATH = Get-MkwToolchainPath $toolchain
     Remove-Item Env:DOTNET_ROOT -ErrorAction SilentlyContinue
     Push-Location $Workspace
     try {

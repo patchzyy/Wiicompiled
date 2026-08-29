@@ -10,6 +10,7 @@
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_render.h>
 
+#include "fs_helper.hpp"
 #include "internal.hpp"
 #include "webgpu/gpu.hpp"
 #include "window.hpp"
@@ -37,7 +38,7 @@ void remove_legacy_ini_file(const char* basePath) noexcept {
   }
 
   std::error_code ec;
-  std::filesystem::remove(std::filesystem::path{basePath} / "imgui.ini", ec);
+  std::filesystem::remove(fs_path_from_string(basePath) / "imgui.ini", ec);
 }
 
 void create_context() noexcept {

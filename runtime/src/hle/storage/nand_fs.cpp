@@ -12,7 +12,7 @@
 // ============================================================================
 
 // Base path for the host Wii NAND directory (resolved at runtime).
-static std::string g_dolphinWiiBase;
+static std::filesystem::path g_dolphinWiiBase;
 static std::once_flag g_dolphinWiiBaseOnce;
 
 // ============================================================================
@@ -47,7 +47,7 @@ std::map<int32_t, FileHandle> g_fileHandles;
 static int32_t g_nextFd = 100; // Start at 100 to avoid confusion with stdio fds
 std::mutex g_fdMutex;
 
-int32_t AllocateFd(const std::string& path, FILE* file, int32_t mode) {
+int32_t AllocateFd(const std::filesystem::path& path, FILE* file, int32_t mode) {
     std::lock_guard<std::mutex> lock(g_fdMutex);
     int32_t fd = g_nextFd++;
     g_fileHandles[fd] = {file, path, mode, 0};
@@ -88,29 +88,50 @@ std::string CurrentNandDataDir() {
     return path;
 }
 
-const std::string& GetNandBasePath() {
+const std::filesystem::path& GetNandBasePath() {
     std::call_once(g_dolphinWiiBaseOnce, []() {
-        g_dolphinWiiBase = RuntimeNandPath::DiscoverNandRootString();
+        g_dolphinWiiBase = RuntimeNandPath::DiscoverNandRootPath();
     });
 
     return g_dolphinWiiBase;
 }
 
-static std::string BuildHostNandPath(std::string wiiPathStr) {
-    std::string hostPath = GetNandBasePath();
-    for (char& c : wiiPathStr) {
-        if (c == '/') {
-#ifdef _WIN32
-            c = '\\';
-#endif
-        }
-    }
+std::string HostPathText(const std::filesystem::path& path) {
+    return RuntimeConfigFile::PathToUtf8(path);
+}
 
-    if (!wiiPathStr.empty() && (wiiPathStr[0] == '\\' || wiiPathStr[0] == '/')) {
-        hostPath += wiiPathStr;
-    } else {
-        hostPath += "\\";
-        hostPath += wiiPathStr;
+FILE* NandFopen(const std::filesystem::path& path, const char* mode) {
+#ifdef _WIN32
+    const std::wstring wideMode(mode, mode + std::strlen(mode));
+    return _wfopen(path.c_str(), wideMode.c_str());
+#else
+    return std::fopen(path.c_str(), mode);
+#endif
+}
+
+bool NandRemove(const std::filesystem::path& path) {
+    std::error_code ec;
+    return std::filesystem::remove(path, ec) && !ec;
+}
+
+bool NandRename(const std::filesystem::path& from, const std::filesystem::path& to) {
+    std::error_code ec;
+    std::filesystem::rename(from, to, ec);
+    return !ec;
+}
+
+// Guest paths are absolute and already lexically resolved against the NAND root, so
+// they are appended as relative components instead of replacing the root.
+static std::filesystem::path BuildHostNandPath(const std::string& wiiPathStr) {
+    std::filesystem::path hostPath = GetNandBasePath();
+    size_t cursor = 0;
+    while (cursor < wiiPathStr.size()) {
+        const size_t slash = wiiPathStr.find('/', cursor);
+        const size_t end = slash == std::string::npos ? wiiPathStr.size() : slash;
+        if (end != cursor) {
+            hostPath /= wiiPathStr.substr(cursor, end - cursor);
+        }
+        cursor = end + 1;
     }
     return hostPath;
 }
@@ -169,7 +190,7 @@ static std::string NormalizeAbsoluteWiiPath(const char* wiiPath) {
 struct RiivolutionSaveRedirect {
     bool enabled = false;
     bool clone = false;
-    std::string hostDirectory;
+    std::filesystem::path hostDirectory;
 };
 
 static std::once_flag g_riivolutionSaveRedirectOnce;
@@ -187,7 +208,7 @@ static const RiivolutionSaveRedirect& GetRiivolutionSaveRedirect() {
         }
         g_riivolutionSaveRedirect.enabled = true;
         g_riivolutionSaveRedirect.clone = redirect->clone;
-        g_riivolutionSaveRedirect.hostDirectory = redirect->hostDirectory.string();
+        g_riivolutionSaveRedirect.hostDirectory = redirect->hostDirectory;
         // Riivolution creates the redirect folder if it does not exist.
         CreateDirectoryPath(g_riivolutionSaveRedirect.hostDirectory);
     });
@@ -195,8 +216,8 @@ static const RiivolutionSaveRedirect& GetRiivolutionSaveRedirect() {
     return g_riivolutionSaveRedirect;
 }
 
-static void CloneRiivolutionSaveIfNeeded(const std::string& sourceHostPath,
-                                         const std::string& redirectedHostPath,
+static void CloneRiivolutionSaveIfNeeded(const std::filesystem::path& sourceHostPath,
+                                         const std::filesystem::path& redirectedHostPath,
                                          const RiivolutionSaveRedirect& redirect) {
     if (!redirect.clone || PathExists(redirectedHostPath) || !PathExists(sourceHostPath)) {
         return;
@@ -209,11 +230,13 @@ static void CloneRiivolutionSaveIfNeeded(const std::string& sourceHostPath,
                                std::filesystem::copy_options::skip_existing, ec);
     if (ec) {
         LogNandWarning("RiivolutionSave", "WARNING: failed to clone '%s' -> '%s': %s",
-                       sourceHostPath.c_str(), redirectedHostPath.c_str(), ec.message().c_str());
+                       HostPathText(sourceHostPath).c_str(),
+                       HostPathText(redirectedHostPath).c_str(), ec.message().c_str());
     }
 }
 
-static bool ResolveRiivolutionSaveHostPath(const std::string& absoluteWiiPath, std::string& outHostPath) {
+static bool ResolveRiivolutionSaveHostPath(const std::string& absoluteWiiPath,
+                                           std::filesystem::path& outHostPath) {
     const RiivolutionSaveRedirect& redirect = GetRiivolutionSaveRedirect();
     if (!redirect.enabled) {
         return false;
@@ -232,23 +255,23 @@ static bool ResolveRiivolutionSaveHostPath(const std::string& absoluteWiiPath, s
         relative = absoluteWiiPath.substr(dataDir.size() + 1);
     }
 
-    std::filesystem::path redirected(redirect.hostDirectory);
+    std::filesystem::path redirected = redirect.hostDirectory;
     if (!relative.empty()) {
         redirected /= std::filesystem::path(relative);
     }
 
-    outHostPath = redirected.string();
+    outHostPath = redirected;
     CloneRiivolutionSaveIfNeeded(BuildHostNandPath(absoluteWiiPath), outHostPath, redirect);
     return true;
 }
 
-std::string TranslateNandPath(const char* wiiPath) {
+std::filesystem::path TranslateNandPath(const char* wiiPath) {
     std::string wiiPathStr = NormalizeAbsoluteWiiPath(wiiPath);
     if (wiiPathStr.empty()) {
-        return "";
+        return {};
     }
 
-    std::string redirectedHostPath;
+    std::filesystem::path redirectedHostPath;
     if (ResolveRiivolutionSaveHostPath(wiiPathStr, redirectedHostPath)) {
         return redirectedHostPath;
     }
@@ -266,7 +289,8 @@ struct U8Node {
     uint32_t size;
 };
 
-static bool ExtractFromU8(const std::string& archivePath, const char* targetName, std::vector<uint8_t>& outData) {
+static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* targetName,
+                          std::vector<uint8_t>& outData) {
     std::ifstream file(archivePath, std::ios::binary);
     if (!file) {
         return false;
@@ -352,13 +376,13 @@ static bool ExtractFromU8(const std::string& archivePath, const char* targetName
 // as an argument and the path predicate below hard-codes the same name.
 static constexpr char kFaceLibResourceName[] = "RFL_Res.dat";
 
-bool SeedFaceLibResource(const std::string& hostPath) {
+bool SeedFaceLibResource(const std::filesystem::path& hostPath) {
     std::vector<uint8_t> payload;
     if (const auto dvdRoot = RuntimeConfigFile::ResolvedDvdRoot(); !dvdRoot.empty()) {
         const auto arcPath = dvdRoot / "files" / "contents" / "RFLRes01.arc";
         std::error_code ec;
         if (std::filesystem::exists(arcPath, ec)) {
-            ExtractFromU8(arcPath.string(), kFaceLibResourceName, payload);
+            ExtractFromU8(arcPath, kFaceLibResourceName, payload);
         }
     }
 
@@ -371,12 +395,12 @@ bool SeedFaceLibResource(const std::string& hostPath) {
 
     std::ofstream out(hostPath, std::ios::binary);
     if (!out) {
-        LogNandError("FaceLibSeed", "Failed to create %s", hostPath.c_str());
+        LogNandError("FaceLibSeed", "Failed to create %s", HostPathText(hostPath).c_str());
         return false;
     }
     out.write(reinterpret_cast<const char*>(payload.data()), static_cast<std::streamsize>(payload.size()));
     if (!out) {
-        LogNandError("FaceLibSeed", "Failed to write %s", hostPath.c_str());
+        LogNandError("FaceLibSeed", "Failed to write %s", HostPathText(hostPath).c_str());
         return false;
     }
 
@@ -388,45 +412,33 @@ bool IsFaceLibResourcePath(const char* path) {
 }
 
 // Create directories recursively
-bool CreateDirectoryPath(const std::string& path) {
+bool CreateDirectoryPath(const std::filesystem::path& path) {
     if (path.empty()) {
         return true;
     }
 
     std::error_code ec;
     std::filesystem::create_directories(path, ec);
-    return !ec || std::filesystem::is_directory(path);
+    return !ec || std::filesystem::is_directory(path, ec);
 }
 
 // Check if a path exists
-bool PathExists(const std::string& path) {
-#ifdef _WIN32
-    return GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-#else
-    return access(path.c_str(), F_OK) == 0;
-#endif
+bool PathExists(const std::filesystem::path& path) {
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && !ec;
 }
 
 // Check if path is a directory
-bool IsDirectory(const std::string& path) {
-#ifdef _WIN32
-    DWORD attrs = GetFileAttributesA(path.c_str());
-    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-#else
-    struct stat st;
-    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
-#endif
+bool IsDirectory(const std::filesystem::path& path) {
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec) && !ec;
 }
 
-bool CreateParentDirectories(const std::string& path) {
-    size_t lastSlash = path.rfind('\\');
-    if (lastSlash == std::string::npos) {
-        lastSlash = path.rfind('/');
-    }
-    if (lastSlash == std::string::npos) {
+bool CreateParentDirectories(const std::filesystem::path& path) {
+    if (!path.has_parent_path()) {
         return false;
     }
-    CreateDirectoryPath(path.substr(0, lastSlash));
+    CreateDirectoryPath(path.parent_path());
     return true;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -72,5 +73,5 @@ public:
     // `mem1Path` and MEM2 to `mem1Path + ".mem2"`, logging outcomes to `os`.
     static void DumpCrashHeuristics(std::ostream& os, const struct CpuContext* cpu,
                                     const uint32_t* missingGuestTarget);
-    static void WriteGuestMemorySnapshot(std::ostream& os, const char* mem1Path);
+    static void WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path);
 };

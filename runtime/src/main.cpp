@@ -395,7 +395,7 @@ void InitializeProcessTranscript(int argc, char** argv) {
     }
 
     const std::filesystem::path path = GetRunLogDirectory() / "console.log";
-    state.file.open(path.string(), std::ios::out | std::ios::trunc | std::ios::binary);
+    state.file.open(path, std::ios::out | std::ios::trunc | std::ios::binary);
     if (!state.file) {
         return;
     }
@@ -571,14 +571,31 @@ std::string FormatHostStackTrace(unsigned framesToSkip) {
     for (USHORT i = 0; i < captured; ++i) {
         const DWORD64 addr = reinterpret_cast<DWORD64>(frames[i]);
         HMODULE module = nullptr;
-        char modulePath[MAX_PATH] = "?";
+        std::string modulePath = "?";
         DWORD64 moduleBase = 0;
-        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               reinterpret_cast<LPCSTR>(frames[i]),
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCWSTR>(frames[i]),
                                &module) != 0 &&
             module != nullptr) {
             moduleBase = reinterpret_cast<DWORD64>(module);
-            (void)GetModuleFileNameA(module, modulePath, MAX_PATH);
+            std::wstring modulePathBuffer(MAX_PATH, L'\0');
+            for (;;) {
+                const DWORD length =
+                    GetModuleFileNameW(module, modulePathBuffer.data(), static_cast<DWORD>(modulePathBuffer.size()));
+                if (length == 0) {
+                    break;
+                }
+                if (length < modulePathBuffer.size()) {
+                    modulePathBuffer.resize(length);
+                    modulePath = RuntimeConfigFile::PathToUtf8(std::filesystem::path(modulePathBuffer));
+                    break;
+                }
+                // Truncated; retry with a larger buffer up to the extended path limit.
+                if (modulePathBuffer.size() >= 32768) {
+                    break;
+                }
+                modulePathBuffer.resize(modulePathBuffer.size() * 2);
+            }
         }
 
         const char* symbolName = "?";
@@ -642,7 +659,7 @@ void WriteFatalLogImpl(std::string_view reason, std::string_view extraDetails = 
     std::string fileName = "crash_";
     fileName.append(reason);
     fileName.append(".txt");
-    std::ofstream out((runDirectory / fileName).string(), std::ios::out | std::ios::trunc);
+    std::ofstream out(runDirectory / fileName, std::ios::out | std::ios::trunc);
     if (!out) {
         return;
     }
@@ -681,11 +698,12 @@ void WriteFatalLogImpl(std::string_view reason, std::string_view extraDetails = 
     // are large.
     static std::atomic_bool s_memorySnapshotWritten{false};
     if (!s_memorySnapshotWritten.exchange(true, std::memory_order_acq_rel)) {
-        SystemBridge::WriteGuestMemorySnapshot(out, (runDirectory / "mem1.bin").string().c_str());
+        SystemBridge::WriteGuestMemorySnapshot(out, runDirectory / "mem1.bin");
     }
 
     out.flush();
-    RT_LOG(RT_TAG_RUNTIME) << "crash artifacts written to " << runDirectory.string() << std::endl;
+    RT_LOG(RT_TAG_RUNTIME) << "crash artifacts written to "
+                           << RuntimeConfigFile::PathToUtf8(runDirectory) << std::endl;
 }
 
 void SetRuntimeExitCodeImpl(int code) {
@@ -1184,10 +1202,11 @@ int RuntimeMain(int argc, char** argv) {
         std::filesystem::create_directories(rendererCacheDirectory, rendererPathError);
         if (rendererPathError) {
             RT_LOG(RT_TAG_RUNTIME) << "Unable to create renderer cache directory "
-                      << rendererCacheDirectory << ": " << rendererPathError.message() << std::endl;
+                      << RuntimeConfigFile::PathToUtf8(rendererCacheDirectory) << ": "
+                      << rendererPathError.message() << std::endl;
         }
-        const std::string auroraUserPath = applicationDataDirectory.string();
-        const std::string auroraCachePath = rendererCacheDirectory.string();
+        const std::string auroraUserPath = RuntimeConfigFile::PathToUtf8(applicationDataDirectory);
+        const std::string auroraCachePath = RuntimeConfigFile::PathToUtf8(rendererCacheDirectory);
         auroraConfig.userPath = auroraUserPath.c_str();
         auroraConfig.cachePath = auroraCachePath.c_str();
         auroraConfig.logCallback = &RuntimeAuroraLogCallback;

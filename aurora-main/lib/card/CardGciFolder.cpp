@@ -111,7 +111,9 @@ ECardResult CardGciFolder::createFile(const char* filename, size_t size, FileHan
   }
 
   gciFileHeader->swapEndian();
-  m_files.push_back({*gciFileHeader, fileSize, reinterpret_cast<const char8_t*>(gciFilename.c_str()), false}); // push non-endian swapped header first
+  // push non-endian swapped header first
+  m_files.push_back({*gciFileHeader, fileSize,
+                     std::u8string(gciFilename.begin(), gciFilename.end()), false});
   handleOut = FileHandle(m_files.size() - 1, 0);
 
   return ECardResult::READY;

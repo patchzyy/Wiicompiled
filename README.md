@@ -63,7 +63,7 @@ inputs like paddles, touchpads and share buttons show up when the hardware repor
 - Windows 10 or 11, 64-bit
 - GPU: GTX 1650 / RX 6400 / Arc A310 or higher
 - CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
-- About 20 GB of free disk space during installation
+- About 20 GB of free disk space during installation (Final game size ~5 GB)
 - A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
