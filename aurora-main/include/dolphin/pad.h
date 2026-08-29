@@ -229,7 +229,6 @@ s32 PADGetNativeButtonPressed(u32 port);
 PADSignedNativeAxis PADGetNativeAxisPulled(u32 port);
 void PADRestoreDefaultMapping(u32 port);
 void PADBlockInput(bool block);
-bool PADIsInputBlocked(void);
 
 /**
  * Set the default controller mapping used.
