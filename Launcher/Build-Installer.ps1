@@ -88,8 +88,9 @@ Assert-File $setupProject '.NET setup project'
 Assert-File $translatorProject 'Translator CLI project'
 
 if (-not (Test-Path -LiteralPath (Join-Path $portableTools 'llvm-mingw\bin\x86_64-w64-mingw32-clang++.exe'))) {
+    # A PowerShell script, not a native executable - it never touches $LASTEXITCODE, and its own
+    # $ErrorActionPreference = 'Stop' + throw already aborts this run on failure.
     & (Join-Path $PSScriptRoot 'Prepare-PortableTools.ps1') -Destination $portableTools
-    if ($LASTEXITCODE -ne 0) { throw 'Portable tool preparation failed.' }
 }
 Assert-File (Join-Path $portableTools 'CMake\bin\cmake.exe') 'Portable CMake'
 Assert-File (Join-Path $portableTools 'Ninja\ninja.exe') 'Portable Ninja'
@@ -292,11 +293,12 @@ $manifest = [ordered]@{
 $manifest | ConvertTo-Json | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
 
 Write-Host '[4/6] Enforcing the copyright and generated-code boundary...'
+# Both audits are PowerShell scripts that throw directly on failure (Test-PayloadBoundary.ps1
+# never invokes a native command at all, so it never touches $LASTEXITCODE); there is no exit
+# code to check here, and doing so risks reading a stale value from an unrelated earlier command.
 & (Join-Path $PSScriptRoot 'Test-PayloadBoundary.ps1') -PayloadRoot $payloadRoot
-if ($LASTEXITCODE -ne 0) { throw 'Payload boundary audit failed.' }
 & (Join-Path $PSScriptRoot 'Test-NativeDependencies.ps1') -PayloadRoot $payloadRoot -SetupHost $setupHost `
     -LlvmReadobjPath (Join-Path $portableTools 'llvm-mingw\bin\llvm-readobj.exe')
-if ($LASTEXITCODE -ne 0) { throw 'Native dependency audit failed.' }
 
 Write-Host '[5/6] Creating the canonical installer payload...'
 $payloadZip = Join-Path $workRoot 'payload.zip'
