@@ -15,13 +15,23 @@
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     lib' = nixpkgs.lib;
 
-    # Retro Rewind is opt-in: pin the pack's recursive sha256 in nix/rr-hash.nix
-    # (see the instructions in that file) to enable the Retro Rewind product.
-    rrHash = import ./nix/rr-hash.nix;
+    # Retro Rewind is opt-in: pin the pack's recursive sha256 in
+    # nix/retro-rewind.nix (see the instructions in that file) to enable the
+    # Retro Rewind product.
+    rr = import ./nix/retro-rewind.nix;
 
     mkOutputs = pkgs: let
       lib = pkgs.lib;
-      repoSrc = lib.cleanSource self;
+      # The build consumes projects/, runtime/ and aurora-main/ only; keeping
+      # the flake's own nix/ files out means flake-only edits do not
+      # re-trigger the translation and native build derivations.
+      repoSrc = lib.cleanSourceWith {
+        src = lib.cleanSource self;
+        filter = path: type:
+          !(type == "directory" && baseNameOf path == "nix")
+          && baseNameOf path != "flake.nix"
+          && baseNameOf path != "flake.lock";
+      };
 
       # The disc image and the extracted tree derive from the user's own
       # game dump, which the project may not redistribute, so they eval in
@@ -42,26 +52,35 @@
             nix-store --add-fixed sha256 --recursive /path/to/RMCP01.rvz
         '';
       };
-      dataTree = (unfreePkgs.callPackage ./nix/extract.nix {
-        nodtool = pkgs.nodtool;
-      }) {inherit discImage;};
+
+      # The datatree carries the extracted game data (unfree), so the whole
+      # pipeline is built in an allow-unfree scope; the tools it consumes are
+      # the same nixpkgs ones either way.
+      build = unfreePkgs.callPackage ./nix/build.nix {
+        inherit repoSrc;
+        translator = pkgs.callPackage ./nix/translator {};
+        deps = pkgs.callPackage ./nix/deps.nix {};
+        llvmPackages = pkgs.llvmPackages;
+      };
+
+      dataTree = build.extractDisc {} {inherit discImage;};
 
       retroRewindPack =
-        if rrHash.hash == ""
+        if rr.hash == ""
         then null
         else
-          (pkgs.callPackage ./nix/rr-pack.nix {}) {
-            retroRewindPack = pkgs.requireFile {
+          (unfreePkgs.callPackage rr.normalize {}) {
+            retroRewindPack = unfreePkgs.requireFile {
               name = "RetroRewind6.zip";
               hashMode = "recursive";
-              inherit (rrHash) hash;
+              inherit (rr) hash;
               message = ''
                 The Retro Rewind product needs the Retro Rewind distribution
                 zip. Add it to the Nix store with:
 
                   nix-store --add-fixed sha256 --recursive /path/to/RetroRewind6.zip
 
-                then pin the printed hash in nix/rr-hash.nix.
+                then pin the printed hash in nix/retro-rewind.nix.
               '';
             };
           };
@@ -73,33 +92,22 @@
         hash = "sha256-/Y8m1q8m8aDPrs0eRy/nRKJddfUTaRBTO3x14+yi8dI=";
       };
 
-      translator = pkgs.callPackage ./nix/translator.nix {};
+      translation = build.translate {
+        inherit dataTree retroRewindPack retroWfcPayload;
+      };
 
-      translation =
-        (pkgs.callPackage ./nix/translate.nix {
-          inherit repoSrc translator;
-        }) {
-          inherit dataTree retroRewindPack retroWfcPayload;
-        };
-
-      deps = pkgs.callPackage ./nix/deps.nix {};
-      game = (pkgs.callPackage ./nix/game.nix {
-        inherit repoSrc deps;
-        llvmPackages = pkgs.llvmPackages;
-      }) {inherit translation;};
-
-      wrapper = pkgs.callPackage ./nix/wrapper.nix {};
+      game = build.buildNative {inherit translation;};
     in rec {
       nodtool = pkgs.nodtool;
       datatree = dataTree;
       inherit translation game;
 
-      wiicompiled = wrapper {
+      wiicompiled = build.launcher {
         inherit game dataTree;
       };
 
       retro-rewind = lib.mapNullable (pack:
-        wrapper {
+        build.launcher {
           inherit game dataTree;
           retroRewindRoot = "${pack}/RetroRewind6";
         })
