@@ -1,0 +1,76 @@
+name: Package installers
+
+# Builds the per-platform installer/setup tool (WiiCompiled-Setup.exe /
+# WiiCompiled-Setup-x86_64.AppImage) via Launcher/Build-Installer.ps1 and
+# Launcher/build-appimage.sh respectively - the same scripts a maintainer runs by hand today to
+# produce a GitHub Release asset. This does NOT build the actual translated game executable:
+# that step requires the end user's own Mario Kart Wii dump (Assets/main.dol, Assets/StaticR.rel),
+# which is proprietary and not present in this repository or in CI.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-appimage:
+    name: Linux (AppImage, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # appimagetool ships as an AppImage itself and needs to self-mount via FUSE to run directly;
+      # GitHub's ubuntu-latest runners don't have libfuse2 preinstalled.
+      - name: Install libfuse2 (required by appimagetool)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2
+
+      - name: Build AppImage
+        run: bash Launcher/build-appimage.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WiiCompiled-Setup-linux-${{ matrix.arch }}
+          path: Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.AppImage
+          if-no-files-found: error
+
+  windows-installer:
+    name: Windows (installer exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build installer
+        shell: pwsh
+        run: ./Launcher/Build-Installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WiiCompiled-Setup-windows-x64
+          path: Launcher/dist/WiiCompiled-Setup.exe
+          if-no-files-found: error
