@@ -25,6 +25,22 @@
 #include <shlobj.h>
 #endif
 
+// How many macro slots Config.toml carries. Kept in step with
+// InputMacros::kSlotCount, which is the value the input path uses.
+inline constexpr size_t kMacroSlotCount = 4;
+
+// One [controller] macro_N_* group, stored as written rather than resolved: the
+// button names stay strings here so this header does not need SDL, and
+// input_macros.cpp turns them into real buttons when it loads them.
+struct MacroSetting {
+    bool enabled = false;
+    uint32_t port = 0;        // zero-based game port
+    std::string trigger;      // physical button name, e.g. "left_shoulder"
+    std::string output;       // GameCube button keys, e.g. "up" or "up,a"
+    uint32_t holdFrames = 1;  // frames the output is held per cycle
+    uint32_t releaseFrames = 1;
+};
+
 struct RuntimeUserConfig {
     std::optional<bool> widescreen;
     std::optional<int32_t> windowPosX;
@@ -63,6 +79,11 @@ struct RuntimeUserConfig {
     // One-based physical WUP-028 adapter port assigned to each game port.
     // Zero or a missing value means the adapter does not own that game port.
     std::array<uint32_t, 4> gameCubeAdapterPorts{};
+    // Force feedback for every port at once. The game still drives the motors
+    // normally; this decides whether those requests reach the hardware.
+    std::optional<bool> rumbleEnabled;
+    // Frame-synced macro slots; see MacroSetting above and input_macros.h.
+    std::array<MacroSetting, kMacroSlotCount> macros{};
 };
 
 namespace RuntimeConfigFile {
@@ -248,6 +269,25 @@ inline void EnsureConfigFile() {
               "# guest can observe it. Set to false to mix inline on the guest\n"
               "# thread exactly as the runtime did before.\n"
               "mix_worker = true\n\n"
+              "[controller]\n"
+              "# Force feedback for every port. The game still asks for rumble;\n"
+              "# this decides whether those requests reach the hardware.\n"
+              "rumble = true\n"
+              "# Frame-synced macros. While the trigger button is held, the\n"
+              "# output buttons are pressed for hold_frames game frames, then\n"
+              "# released for release_frames, repeating. The game only registers\n"
+              "# a new press after a release, so 1/1 is the fastest useful\n"
+              "# repeat: 30 presses per second at 60 fps.\n"
+              "# Trigger names are physical buttons (left_shoulder, touchpad,\n"
+              "# right_paddle1, ...); output names are GameCube buttons\n"
+              "# (a, b, x, y, start, z, l, r, up, down, left, right) and may be\n"
+              "# comma-separated to press several at once.\n"
+              "# macro_1_enabled = true\n"
+              "# macro_1_port = 1\n"
+              "# macro_1_trigger = \"left_shoulder\"\n"
+              "# macro_1_output = \"up\"\n"
+              "# macro_1_hold_frames = 1\n"
+              "# macro_1_release_frames = 1\n\n"
               "[network]\n"
               "enabled = true\n\n"
               "[paths]\n"
@@ -330,6 +370,27 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         const std::string key = "adapter_port_" + std::to_string(index + 1);
         if (auto value = FindConfigUint(document, "controller", key); value && *value <= 4) {
             config.gameCubeAdapterPorts[index] = *value;
+        }
+    }
+
+    config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
+
+    for (size_t index = 0; index < config.macros.size(); ++index) {
+        const std::string prefix = "macro_" + std::to_string(index + 1) + "_";
+        MacroSetting& macro = config.macros[index];
+        macro.enabled = FindConfigValue<bool>(document, "controller", prefix + "enabled").value_or(false);
+        if (auto value = FindConfigUint(document, "controller", prefix + "port"); value && *value >= 1 && *value <= 4) {
+            macro.port = *value - 1;
+        }
+        macro.trigger =
+            FindConfigValue<std::string>(document, "controller", prefix + "trigger").value_or(std::string());
+        macro.output =
+            FindConfigValue<std::string>(document, "controller", prefix + "output").value_or(std::string());
+        if (auto value = FindConfigUint(document, "controller", prefix + "hold_frames"); value && *value != 0) {
+            macro.holdFrames = *value;
+        }
+        if (auto value = FindConfigUint(document, "controller", prefix + "release_frames"); value && *value != 0) {
+            macro.releaseFrames = *value;
         }
     }
 
@@ -606,6 +667,38 @@ inline bool SetGameCubeAdapterPort(size_t gamePort, int physicalPort) {
     const uint32_t storedPort = physicalPort < 0 ? 0u : static_cast<uint32_t>(physicalPort + 1);
     Mutable().gameCubeAdapterPorts[gamePort] = storedPort;
     return WriteSetting("controller", "adapter_port_" + std::to_string(gamePort + 1), std::to_string(storedPort));
+}
+
+inline bool RumbleEnabled(bool fallback = true) {
+    return Get().rumbleEnabled.value_or(fallback);
+}
+
+inline bool SetRumbleEnabled(bool value) {
+    Mutable().rumbleEnabled = value;
+    return WriteSetting("controller", "rumble", value ? "true" : "false");
+}
+
+inline const MacroSetting& Macro(size_t index) {
+    static const MacroSetting empty;
+    return index < Get().macros.size() ? Get().macros[index] : empty;
+}
+
+// Writes the whole slot in one pass. The keys are flat rather than an array of
+// tables because WriteSetting only understands "[section] key = value", and that
+// keeps hand-edited files and overlay-edited files identical.
+inline bool SetMacro(size_t index, const MacroSetting& macro) {
+    if (index >= Mutable().macros.size()) {
+        return false;
+    }
+    Mutable().macros[index] = macro;
+    const std::string prefix = "macro_" + std::to_string(index + 1) + "_";
+    bool ok = WriteSetting("controller", prefix + "enabled", macro.enabled ? "true" : "false");
+    ok = WriteSetting("controller", prefix + "port", std::to_string(macro.port + 1)) && ok;
+    ok = WriteSetting("controller", prefix + "trigger", FormatString(macro.trigger)) && ok;
+    ok = WriteSetting("controller", prefix + "output", FormatString(macro.output)) && ok;
+    ok = WriteSetting("controller", prefix + "hold_frames", std::to_string(macro.holdFrames)) && ok;
+    ok = WriteSetting("controller", prefix + "release_frames", std::to_string(macro.releaseFrames)) && ok;
+    return ok;
 }
 
 inline bool SetAudioVolume(float value) {

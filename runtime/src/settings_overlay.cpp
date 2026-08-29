@@ -1,7 +1,9 @@
 #include "settings_overlay.h"
 #include "wup028_adapter.h"
 #include "audio_backend.h"
+#include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
+#include "input_macros.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -34,6 +36,10 @@
 #endif
 
 #include <dolphin/pad.h>
+
+// Defined in runtime/src/hle/input/pad.cpp. That directory's headers are not on
+// this target's include path, so declare the one entry point we need.
+extern "C" void PAD_HLE_SetRumbleEnabled(bool enabled);
 #include <dolphin/vi.h>
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
@@ -76,6 +82,7 @@ int g_voicesVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::Voic
 bool g_audioMuted = RuntimeConfigFile::AudioMuted(false);
 bool g_audioMixWorker = RuntimeConfigFile::AudioMixWorkerEnabled(true);
 bool g_attenuateMusicWhenMediaPlays = RuntimeConfigFile::AttenuateMusicWhenMediaPlays(false);
+bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_frameInterpolationMode = [] {
     switch (RuntimeConfigFile::FrameInterpolationFps(0)) {
     case 120:
@@ -106,62 +113,11 @@ std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     return indices;
 }();
 
-struct ControllerButtonItem {
-    const char* configKey;
-    const char* label;
-    PADButton padButton;
-};
-
-constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons = {{
-    {"a", "A", PAD_BUTTON_A},
-    {"b", "B", PAD_BUTTON_B},
-    {"x", "X", PAD_BUTTON_X},
-    {"y", "Y", PAD_BUTTON_Y},
-    {"start", "Start", PAD_BUTTON_START},
-    {"z", "Z", PAD_TRIGGER_Z},
-    {"l", "L", PAD_TRIGGER_L},
-    {"r", "R", PAD_TRIGGER_R},
-    {"up", "D-pad Up", PAD_BUTTON_UP},
-    {"down", "D-pad Down", PAD_BUTTON_DOWN},
-    {"left", "D-pad Left", PAD_BUTTON_LEFT},
-    {"right", "D-pad Right", PAD_BUTTON_RIGHT},
-}};
-
-struct NativeButtonItem {
-    const char* configName;
-    const char* label;
-    uint32_t nativeButton;
-};
-
-constexpr std::array<NativeButtonItem, SDL_GAMEPAD_BUTTON_COUNT + 1> kNativeButtons = {{
-    {"unmapped", "Unmapped / analog trigger", PAD_NATIVE_BUTTON_INVALID},
-    {"south", "South (A / Cross)", SDL_GAMEPAD_BUTTON_SOUTH},
-    {"east", "East (B / Circle)", SDL_GAMEPAD_BUTTON_EAST},
-    {"west", "West (X / Square)", SDL_GAMEPAD_BUTTON_WEST},
-    {"north", "North (Y / Triangle)", SDL_GAMEPAD_BUTTON_NORTH},
-    {"back", "Back / Select", SDL_GAMEPAD_BUTTON_BACK},
-    {"guide", "Guide / Home", SDL_GAMEPAD_BUTTON_GUIDE},
-    {"start", "Start / Options", SDL_GAMEPAD_BUTTON_START},
-    {"left_stick", "Left stick click", SDL_GAMEPAD_BUTTON_LEFT_STICK},
-    {"right_stick", "Right stick click", SDL_GAMEPAD_BUTTON_RIGHT_STICK},
-    {"left_shoulder", "Left shoulder", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
-    {"right_shoulder", "Right shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
-    {"dpad_up", "D-pad Up", SDL_GAMEPAD_BUTTON_DPAD_UP},
-    {"dpad_down", "D-pad Down", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
-    {"dpad_left", "D-pad Left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
-    {"dpad_right", "D-pad Right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
-    {"misc1", "Misc 1 / Share", SDL_GAMEPAD_BUTTON_MISC1},
-    {"right_paddle1", "Right paddle 1", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
-    {"left_paddle1", "Left paddle 1", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},
-    {"right_paddle2", "Right paddle 2", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
-    {"left_paddle2", "Left paddle 2", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2},
-    {"touchpad", "Touchpad", SDL_GAMEPAD_BUTTON_TOUCHPAD},
-    {"misc2", "Misc 2", SDL_GAMEPAD_BUTTON_MISC2},
-    {"misc3", "Misc 3 / GC L click", SDL_GAMEPAD_BUTTON_MISC3},
-    {"misc4", "Misc 4 / GC R click", SDL_GAMEPAD_BUTTON_MISC4},
-    {"misc5", "Misc 5", SDL_GAMEPAD_BUTTON_MISC5},
-    {"misc6", "Misc 6", SDL_GAMEPAD_BUTTON_MISC6},
-}};
+using ControllerNames::kNativeButtons;
+using ControllerNames::NativeButtonItem;
+// The GameCube button table is indexed positionally by the config writer and by
+// every preset below, so keep the short name the rest of this file already uses.
+constexpr const auto& kControllerButtons = ControllerNames::kGameCubeButtons;
 
 // Classic Controller Pro layout, indexed like kControllerButtons: the SNES-style
 // diamond (A right, B bottom, X top, Y left) with digital bumpers driving the GC
@@ -175,6 +131,24 @@ constexpr std::array<const char*, PAD_BUTTON_COUNT> kClassicProPreset = {
     "back",           // Z
     "left_shoulder",  // L
     "right_shoulder", // R
+    "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+};
+
+// PlayStation layout. The stock defaults leave L1 unbound and park Z on R1,
+// which wastes both bumpers on a pad whose analog triggers already cover L and
+// R. This puts the bumpers on the GC triggers, where they are the fastest
+// digital press available, and moves Z to Create/Share alongside the other
+// presets. L2/R2 keep working as analog pulls; they just no longer produce the
+// digital click, because the bumpers own it.
+constexpr std::array<const char*, PAD_BUTTON_COUNT> kPlayStationPreset = {
+    "south",          // A  (Cross)
+    "east",           // B  (Circle)
+    "west",           // X  (Square)
+    "north",          // Y  (Triangle)
+    "start",          // Start (Options)
+    "back",           // Z  (Create / Share)
+    "left_shoulder",  // L  (L1)
+    "right_shoulder", // R  (R1)
     "dpad_up", "dpad_down", "dpad_left", "dpad_right",
 };
 
@@ -225,43 +199,25 @@ void LimitResolutionForFrameRate() {
     }
 }
 
-const NativeButtonItem* FindNativeButton(std::string value) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return value == item.configName;
-    });
-    return it == kNativeButtons.end() ? nullptr : &*it;
-}
+using ControllerNames::FindNativeButton;
 
 struct ControllerBindingPair {
     std::string primary;
     std::string secondary;
 };
 
-std::string TrimBindingToken(const std::string& token) {
-    const size_t begin = token.find_first_not_of(" \t");
-    if (begin == std::string::npos) {
-        return {};
-    }
-    const size_t end = token.find_last_not_of(" \t");
-    return token.substr(begin, end - begin + 1);
-}
 
 // Config values hold up to two comma-separated button names ("dpad_up" or
 // "dpad_up,left_shoulder"); pressing either one counts as the GC button.
 ControllerBindingPair SplitControllerBinding(const std::string& value) {
     const size_t comma = value.find(',');
     if (comma == std::string::npos) {
-        return {TrimBindingToken(value), {}};
+        return {ControllerNames::TrimToken(value), {}};
     }
-    return {TrimBindingToken(value.substr(0, comma)), TrimBindingToken(value.substr(comma + 1))};
+    return {ControllerNames::TrimToken(value.substr(0, comma)), ControllerNames::TrimToken(value.substr(comma + 1))};
 }
 
-const NativeButtonItem& NativeButtonForValue(uint32_t nativeButton) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return nativeButton == item.nativeButton;
-    });
-    return it == kNativeButtons.end() ? kNativeButtons.front() : *it;
-}
+using ControllerNames::NativeButtonForValue;
 
 void SetTopBarVisible(bool visible) {
     if (g_topBarVisible == visible) {
@@ -340,6 +296,154 @@ void DrawGameCubeAdapterInfo() {
     ImGui::EndMenu();
 }
 
+// Frames-per-cycle limits mirror InputMacros so the slider cannot produce a
+// value the engine would silently clamp.
+void DrawMacroSettings() {
+    ImGui::SeparatorText("Macros");
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 420.0f);
+    ImGui::TextDisabled(
+        "Hold a button to repeat a GameCube input on a frame pattern. Frames are "
+        "game frames, counted independently of frame interpolation. The game only "
+        "sees a new press after a release, so 1 held / 1 released is the fastest "
+        "useful repeat.");
+    ImGui::PopTextWrapPos();
+
+    for (size_t slotIndex = 0; slotIndex < InputMacros::kSlotCount; ++slotIndex) {
+        InputMacros::Slot slot = InputMacros::GetSlot(slotIndex);
+        // Offset past the button-mapping rows above, which push IDs 0..11 at
+        // this same level of the widget stack.
+        ImGui::PushID(static_cast<int>(slotIndex) + 1000);
+
+        bool enabled = slot.enabled;
+        const std::string label = "Macro " + std::to_string(slotIndex + 1);
+        if (ImGui::Checkbox(label.c_str(), &enabled)) {
+            slot.enabled = enabled;
+            InputMacros::SetSlot(slotIndex, slot);
+        }
+
+        // Live feedback: the only way to tell a working macro from a mis-bound
+        // one without leaving the menu.
+        if (slot.IsRunnable()) {
+            const bool firing = InputMacros::SlotIsFiring(slotIndex);
+            ImGui::SameLine();
+            ImGui::TextColored(firing ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%s",
+                               firing ? "firing" : "idle");
+        }
+
+        if (!enabled) {
+            ImGui::PopID();
+            continue;
+        }
+
+        ImGui::Indent();
+
+        int port = static_cast<int>(slot.port);
+        ImGui::SetNextItemWidth(120.0f);
+        if (ImGui::Combo("Port", &port, "Port 1\0Port 2\0Port 3\0Port 4\0")) {
+            slot.port = static_cast<uint32_t>(port);
+            InputMacros::SetSlot(slotIndex, slot);
+        }
+
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::BeginCombo("Hold", NativeButtonForValue(slot.trigger).label)) {
+            for (const auto& candidate : kNativeButtons) {
+                const bool selected = candidate.nativeButton == slot.trigger;
+                const bool isNone = candidate.nativeButton == PAD_NATIVE_BUTTON_INVALID;
+                if (ImGui::Selectable(isNone ? "None" : candidate.label, selected)) {
+                    slot.trigger = candidate.nativeButton;
+                    InputMacros::SetSlot(slotIndex, slot);
+                }
+                if (selected) {
+                    ImGui::SetItemDefaultFocus();
+                }
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "The physical button that runs the macro. If it is also bound to a\n"
+                "GameCube button above, both still happen; set that binding to\n"
+                "\"Unmapped\" to make this button macro-only.");
+        }
+
+        // Outputs are a bitmask, so this is a multi-select rather than a combo.
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::BeginCombo("Send", ControllerNames::GameCubeLabelsFromMask(slot.output).c_str())) {
+            for (const auto& candidate : kControllerButtons) {
+                const auto bit = static_cast<uint16_t>(candidate.padButton);
+                const bool selected = (slot.output & bit) != 0;
+                if (ImGui::Selectable(candidate.label, selected, ImGuiSelectableFlags_NoAutoClosePopups)) {
+                    slot.output = static_cast<uint16_t>(selected ? (slot.output & ~bit) : (slot.output | bit));
+                    InputMacros::SetSlot(slotIndex, slot);
+                }
+            }
+            ImGui::EndCombo();
+        }
+
+        // Sliders change every frame while dragged. Applying is cheap; writing
+        // is not, since each persist rewrites the whole Config.toml. So apply
+        // live and save once, when the drag ends.
+        int holdFrames = static_cast<int>(slot.holdFrames);
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Frames held", &holdFrames, static_cast<int>(InputMacros::kMinFrames),
+                             static_cast<int>(InputMacros::kMaxFrames))) {
+            slot.holdFrames = static_cast<uint32_t>(holdFrames);
+            InputMacros::ApplySlot(slotIndex, slot);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            InputMacros::PersistSlot(slotIndex);
+        }
+
+        int releaseFrames = static_cast<int>(slot.releaseFrames);
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Frames released", &releaseFrames, static_cast<int>(InputMacros::kMinFrames),
+                             static_cast<int>(InputMacros::kMaxFrames))) {
+            slot.releaseFrames = static_cast<uint32_t>(releaseFrames);
+            InputMacros::ApplySlot(slotIndex, slot);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            InputMacros::PersistSlot(slotIndex);
+        }
+
+        // Lead with the frame count, which is exact. The per-second figure
+        // assumes a 60 Hz video mode and would be wrong on a 50 Hz PAL boot.
+        const uint32_t cycleFrames = slot.holdFrames + slot.releaseFrames;
+        ImGui::TextDisabled("One press every %u frames (%.1f per second at 60 fps)", cycleFrames,
+                            60.0f / static_cast<float>(cycleFrames));
+
+        if (slot.output == 0) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.3f, 1.0f), "Pick at least one button to send.");
+        } else if (slot.trigger == PAD_NATIVE_BUTTON_INVALID) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.3f, 1.0f), "Pick a button to hold.");
+        }
+
+        ImGui::Unindent();
+        ImGui::PopID();
+    }
+}
+
+void DrawRumbleSettings() {
+    ImGui::SeparatorText("Vibration");
+    if (ImGui::Checkbox("Controller vibration", &g_rumbleEnabled)) {
+        PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+        RuntimeConfigFile::SetRumbleEnabled(g_rumbleEnabled);
+        if (!g_rumbleEnabled) {
+            // Stop whatever is already running: the game will not send another
+            // motor command until its own state machine decides to.
+            constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
+                PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD,
+            };
+            PADControlAllMotors(stopAll.data());
+            for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+                Wup028Adapter::SetRumble(port, false);
+            }
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Applies to every port, including controllers on a GameCube adapter.");
+    }
+}
+
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -406,6 +510,8 @@ void DrawControllerSettings() {
                 PADSetPortForIndex(index, selectedGamePort);
                 g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
                 ApplyConfiguredMappings();
+    InputMacros::Reload();
+    PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
             }
             ImGui::PopID();
         }
@@ -461,20 +567,34 @@ void DrawControllerSettings() {
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Classic Controller Pro")) {
+    // Presets that are just a list of physical button names all apply the same
+    // way: overwrite every primary binding, clear the secondaries, persist.
+    const auto applyPreset = [&](const std::array<const char*, PAD_BUTTON_COUNT>& preset) {
         const uint32_t port = static_cast<uint32_t>(g_controllerPort);
         for (size_t i = 0; i < kControllerButtons.size(); ++i) {
-            if (const NativeButtonItem* native = FindNativeButton(kClassicProPreset[i])) {
+            if (const NativeButtonItem* native = FindNativeButton(preset[i])) {
                 PADSetButtonMapping(port, PADButtonMapping{native->nativeButton, kControllerButtons[i].padButton});
                 PADSetAltButtonMapping(port,
                                        PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
-                RuntimeConfigFile::SetControllerButton(i, kClassicProPreset[i]);
+                RuntimeConfigFile::SetControllerButton(i, preset[i]);
             }
         }
         altRowExpanded.fill(false);
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
+    };
+
+    ImGui::SameLine();
+    if (ImGui::Button("Classic Controller Pro")) {
+        applyPreset(kClassicProPreset);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("PlayStation")) {
+        applyPreset(kPlayStationPreset);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Puts L and R on the bumpers (L1/R1) and Z on Create/Share.\n"
+                          "L2/R2 still pull the analog triggers.");
     }
 
     ImGui::SeparatorText("Button mapping");
@@ -556,6 +676,8 @@ void DrawControllerSettings() {
         ImGui::TextUnformatted(kControllerButtons[i].label);
         ImGui::PopID();
     }
+    DrawMacroSettings();
+    DrawRumbleSettings();
     DrawGameCubeAdapterInfo();
 }
 

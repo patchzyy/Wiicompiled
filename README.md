@@ -46,7 +46,9 @@ Press **F10** while the game window has focus:
 - Internal resolution
 - FPS counter
 - Controller assignment for all four ports
-- Full per-controller button mapping
+- Full per-controller button mapping, including the bumpers
+- Frame-synced input macros
+- Controller vibration on/off
 - Volume, instant mute, and the music ducking toggle
 
 Everything you change is saved to `Config.toml` on the spot and restored next launch.
@@ -57,6 +59,17 @@ The port does NOT pretend to be a Wii Remote or Classic Controller.
 Mappings are positional (`south`, `east`, `west`, `north`) rather than Xbox-labelled, so the
 same config makes sense on Xbox, PlayStation, Nintendo and generic SDL pads alike, and extra
 inputs like paddles, touchpads and share buttons show up when the hardware reports them.
+
+**Input macros.** 
+Hold one button to repeat a GameCube input on a frame pattern, for example holding LB to spam
+D-pad Up. The pattern is counted in the game's own input polls rather than in milliseconds, so it
+does not change when frame interpolation is on. The game only registers a new press after a
+release, so one frame held / one frame released is the fastest repeat that does anything: 30
+presses per second, not 60.
+
+**Vibration toggle.** 
+Force feedback can be turned off for every port at once, including controllers on a GameCube
+adapter.
 
 ## Requirements
 
