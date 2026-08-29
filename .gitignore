@@ -27,6 +27,10 @@ Code.pul
 /build-*/
 /dist/
 /out/
+
+# Nix build results
+/result
+/result-*
 [Bb]in/
 [Oo]bj/
 *.o
