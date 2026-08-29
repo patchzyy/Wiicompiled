@@ -1,15 +1,18 @@
-# WiiCompiled build pipeline, top to bottom. flake.nix supplies the
-# user-owned inputs (disc dump, optional Retro Rewind pack) and wires the
-# stages together:
+# WiiCompiled base-game pipeline, top to bottom. flake.nix supplies the
+# user-owned disc dump and wires the stages together:
 #
 #   extractDisc   user-supplied RMCP01 image -> validated nodtool extraction
 #                 (the extracted tree is both the translator's input and the
 #                 runtime's dvd_root)
-#   translate     Translator.Cli over main.dol/StaticR.rel (and the opt-in
-#                 Retro Rewind Code.pul) -> emitted C++ shard build graph
+#   translate     Translator.Cli over main.dol/StaticR.rel -> emitted C++
+#                 shard build graph
 #   buildNative   cmake/ninja/clang over runtime/ + the shard graph -> the
-#                 WiiCompiled and RetroRewind executables
+#                 WiiCompiled executable
 #   launcher      wrapper binaries: user state seeding, RADV workaround
+#
+# Retro Rewind is deliberately not a store product: the pack updates too
+# often to pin, so nix/retro-rewind-app.nix builds it in the user's
+# workspace (upstream parity) with the tools and sources from this flake.
 #
 # Supporting files: nix/deps.nix (pinned FetchContent tarballs feeding
 # buildNative) and nix/translator (dotnet build of Translator.Cli feeding
@@ -82,26 +85,23 @@
     };
 
   # Translation: runs the Translator.Cli over the extracted main.dol /
-  # StaticR.rel (base) and the Retro Rewind Code.pul (retro-rewind profile),
-  # then emits the data initializer and the shard manifest the native build
-  # consumes.
+  # StaticR.rel, then emits the data initializer and the shard manifest the
+  # native build consumes.
   #
-  # The command sequence mirrors Launcher/local-build.sh exactly:
-  #   1. stage the RR Code.pul at the profile's mod_root (workspace-relative)
-  #   2. translate-recursive      -> generated/functions + base metadata
-  #   3. emit-base-manifest       -> build/base/mkwii_base_manifest.json
-  #   4. translate-mod            -> build/mods/retro_rewind_full_cpp
-  #   5. generate-data-init       -> generated/{RuntimeConfig.h,data_sections_init*}
-  #   6. emit-build-shards        -> generated/build_shards/shards.cmake
+  # The command sequence mirrors Launcher/local-build.sh's base profile:
+  #   1. translate-recursive      -> generated/functions + base metadata
+  #   2. emit-base-manifest       -> build/base/mkwii_base_manifest.json
+  #   3. generate-data-init       -> generated/{RuntimeConfig.h,data_sections_init*}
+  #   4. emit-build-shards        -> generated/build_shards/shards.cmake
+  #
+  # Retro Rewind is not built here: it is translated and compiled in the
+  # user's workspace by the impure retro-rewind launcher (upstream parity),
+  # because the pack updates far too often for store pinning.
   #
   # shards.cmake embeds absolute paths (Translator.Cli GetFullPath's its
   # inputs), so the native build (buildNative) must place the repo and these
   # outputs at the same /build/workspace paths this derivation used.
-  translate = {
-    dataTree,
-    retroRewindPack,
-    retroWfcPayload ? null,
-  }:
+  translate = {dataTree}:
     stdenvNoCC.mkDerivation {
       name = "wiicompiled-translation";
 
@@ -132,41 +132,12 @@
           --out build/base --functions-dir generated/functions \
           --translation-output-metadata generated/base_translation_output.json --region P
 
-        ${lib.optionalString (retroRewindPack != null) ''
-          # Stage the profile's Code.pul at the mod_root recomp.yml pins so the
-          # base translation becomes retro-aware (leaf inlining blocks at patch
-          # addresses) before the mod leg runs.
-          mkdir -p PulsarPacks/completed/RetroRewind
-          cp -r ${retroRewindPack}/RetroRewind6 PulsarPacks/completed/RetroRewind/RetroRewind6
-          chmod -R u+w PulsarPacks
-
-          ${lib.optionalString (retroWfcPayload != null) ''
-            WFC_ARGS="--retro-wfc-payload ${retroWfcPayload}"
-          ''}
-          ${lib.optionalString (retroWfcPayload == null) ''
-            WFC_ARGS="--skip-retro-wfc"
-          ''}
-
-          Translator.Cli translate-mod --project projects/mkwii/recomp.yml --profile retro-rewind \
-            --base-manifest build/base/mkwii_base_manifest.json \
-            --base-translation-output-metadata generated/base_translation_output.json \
-            --code-pul PulsarPacks/completed/RetroRewind/RetroRewind6/Binaries/Code.pul \
-            --mod-root PulsarPacks/completed/RetroRewind/RetroRewind6 \
-            --mod-name "Retro Rewind" --region P --out build/mods/retro_rewind_full_cpp \
-            --prefer-cached-inputs --emit-cpp --threads "$THREADS" $WFC_ARGS
-        ''}
-
         Translator.Cli generate-data-init --project projects/mkwii/recomp.yml
-
-        SHARD_ARGS=""
-        ${lib.optionalString (retroRewindPack != null) ''
-          SHARD_ARGS="--resolved-profile build/mods/retro_rewind_full_cpp/resolved_dispatch_profile.json --retro-cpp-dir build/mods/retro_rewind_full_cpp/cpp"
-        ''}
 
         Translator.Cli emit-build-shards --project projects/mkwii/recomp.yml \
           --base-metadata generated/base_translation_output.json \
           --base-functions-dir generated/functions --native-source-dir runtime/src \
-          --out generated/build_shards $SHARD_ARGS
+          --out generated/build_shards
         runHook postBuild
       '';
 
@@ -187,9 +158,7 @@
     };
 
   # Native build: configures runtime/ CMake against the translated shard
-  # graph and builds both products (WiiCompiled, RetroRewind) in one build so
-  # every profile-neutral shard object is shared between them (the same
-  # decision LocalBuild.ps1 makes with -Profile both).
+  # graph and builds the base product.
   #
   # shards.cmake embeds absolute paths pointing at the translation workspace,
   # so this derivation recreates that exact layout at /build/workspace: the
@@ -299,8 +268,7 @@
 
       buildPhase = ''
         runHook preBuild
-        # mkw_release covers both products when the shard graph includes Retro
-        # Rewind, and just WiiCompiled for a base-only translation.
+        # Base-only shard graph: mkw_release builds just WiiCompiled.
         cmake --build native-build --target mkw_release
         runHook postBuild
       '';
@@ -359,14 +327,14 @@
       '';
 
       meta = {
-        description = "WiiCompiled native runtime (Mario Kart Wii static recompilation), base and Retro Rewind products";
+        description = "WiiCompiled native runtime (Mario Kart Wii static recompilation), base product";
         license = lib.licenses.gpl3Only;
         platforms = ["x86_64-linux"];
         mainProgram = "WiiCompiled";
       };
     };
 
-  # Launcher wrappers: seed the user's Config.toml on first run and keep
+  # Launcher wrapper: seed the user's Config.toml on first run and keep
   # [paths] dvd_root pointing at this build's extracted disc tree (the game
   # owns every other setting afterwards). dvd_root is deterministic per
   # flake, but the runtime's own default Config.toml template ships the line
@@ -380,26 +348,13 @@
   # driver reports API 1.4 and then validates it under 1.0 semantics, so
   # pipeline creation dies with "Produced invalid SPIRV" on RDNA4-era RADV.
   # Other drivers ignore the radv device match. Remove once upstream Dawn
-  # validates against a matching environment.
+  # validates against a matching environment. The impure retro-rewind
+  # launcher reuses the same drirc file for the workspace-built binary.
   launcher = {
     game,
     dataTree,
-    retroRewindRoot ? null,
-  }: let
-    product =
-      if retroRewindRoot == null
-      then {
-        binary = "WiiCompiled";
-        command = "wiicompiled";
-        extraPaths = "";
-      }
-      else {
-        binary = "RetroRewind";
-        command = "retro-rewind";
-        extraPaths = "retro_rewind_root = \"${retroRewindRoot}\"";
-      };
-  in
-    runCommand "wiicompiled-launcher-${product.command}" {
+  }:
+    runCommand "wiicompiled-launcher-wiicompiled" {
       nativeBuildInputs = [makeWrapper];
       passthru = {inherit game dataTree;};
     } ''
@@ -416,7 +371,7 @@
         </device>
       </driconf>
       DRIRC
-      makeWrapper ${game}/bin/${product.binary} $out/bin/${product.command} \
+      makeWrapper ${game}/bin/WiiCompiled $out/bin/wiicompiled \
         --prefix LD_LIBRARY_PATH : ${vulkan-loader}/lib \
         --run '
           data_dir="''${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled"

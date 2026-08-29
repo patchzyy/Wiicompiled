@@ -1,5 +1,5 @@
 {
-  description = "WiiCompiled: native Mario Kart Wii port (Linux, Nix-first)";
+  description = "Wiicompiled: native Mario Kart Wii recompilation";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,12 +13,6 @@
       "x86_64-linux"
     ];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-    lib' = nixpkgs.lib;
-
-    # Retro Rewind is opt-in: pin the pack's recursive sha256 in
-    # nix/retro-rewind.nix (see the instructions in that file) to enable the
-    # Retro Rewind product.
-    rr = import ./nix/retro-rewind.nix;
 
     mkOutputs = pkgs: let
       lib = pkgs.lib;
@@ -65,38 +59,29 @@
 
       dataTree = build.extractDisc {} {inherit discImage;};
 
-      retroRewindPack =
-        if rr.hash == ""
-        then null
-        else
-          (unfreePkgs.callPackage rr.normalize {}) {
-            retroRewindPack = unfreePkgs.requireFile {
-              name = "RetroRewind6.zip";
-              hashMode = "recursive";
-              inherit (rr) hash;
-              message = ''
-                The Retro Rewind product needs the Retro Rewind distribution
-                zip. Add it to the Nix store with:
-
-                  nix-store --add-fixed sha256 --recursive /path/to/RetroRewind6.zip
-
-                then pin the printed hash in nix/retro-rewind.nix.
-              '';
-            };
-          };
-
-      # The Retro-WFC shared payload the mod translation bakes in; fetched
-      # from the same endpoint the Windows build uses.
+      # The Retro-WFC shared payload the workspace Retro Rewind build bakes
+      # in; fetched from the same endpoint the Windows build uses. Wrapped in
+      # the binary/ layout local-build.sh's --retro-wfc-offline-dir expects.
       retroWfcPayload = pkgs.fetchurl {
         url = "http://nas.play.rwfc.net/payload?g=RMCPD00";
         hash = "sha256-/Y8m1q8m8aDPrs0eRy/nRKJddfUTaRBTO3x14+yi8dI=";
       };
+      retroWfcOffline = pkgs.runCommand "retro-wfc-payload-offline" {} ''
+        mkdir -p $out/binary
+        cp ${retroWfcPayload} $out/binary/payload.RMCPD00.bin
+      '';
 
-      translation = build.translate {
-        inherit dataTree retroRewindPack retroWfcPayload;
-      };
+      translation = build.translate {inherit dataTree;};
 
       game = build.buildNative {inherit translation;};
+
+      retroRewindApp = pkgs.callPackage ./nix/retro-rewind-app.nix {
+        inherit repoSrc;
+        datatree = dataTree;
+        translator = pkgs.callPackage ./nix/translator {};
+        wfcOffline = retroWfcOffline;
+        launcher = build.launcher {inherit game dataTree;};
+      };
     in rec {
       nodtool = pkgs.nodtool;
       datatree = dataTree;
@@ -106,12 +91,7 @@
         inherit game dataTree;
       };
 
-      retro-rewind = lib.mapNullable (pack:
-        build.launcher {
-          inherit game dataTree;
-          retroRewindRoot = "${pack}/RetroRewind6";
-        })
-      retroRewindPack;
+      retro-rewind = retroRewindApp;
 
       default = wiicompiled;
     };
@@ -136,12 +116,65 @@
           libxkbcommon
         ];
       };
+
+      # Environment for the impure workspace Retro Rewind build the
+      # retro-rewind launcher drives via `nix develop .#retro-rewind-build`.
+      # The cc wrapper puts every package's lib dir on the binary's rpath, so
+      # the resulting executable runs on NixOS without further fixups; the
+      # dlopen-via-rpath details match nix/build.nix's findings.
+      retro-rewind-build = let
+        buildDeps = with pkgs; [
+          vulkan-headers
+          vulkan-loader
+          wayland
+          wayland-protocols
+          libxkbcommon
+          libffi
+          libGL
+          mesa
+          alsa-lib
+          libpulseaudio
+          pipewire
+          libx11
+          libxcb
+          libxext
+          libxrender
+          libxcursor
+          libxi
+          libxrandr
+          libxscrnsaver
+          libxfixes
+          libxtst
+          libxv
+        ];
+      in
+        pkgs.mkShell {
+          packages =
+            [
+              pkgs.llvmPackages.clang
+              pkgs.cmake
+              pkgs.ninja
+              pkgs.pkg-config
+              # SDL's CheckWayland drops the Wayland video driver when the
+              # scanner is missing (see nix/build.nix).
+              pkgs."wayland-scanner"
+            ]
+            ++ buildDeps;
+          # The cmake setup hook only populates CMAKE_PREFIX_PATH during
+          # real builds, not in interactive shells; feed the dependencies to
+          # find_package manually (dev output for headers, lib for libs).
+          # NIX_LDFLAGS rpath entries likewise: the workspace build has no
+          # fixupPhase to repair rpaths, and SDL dlopens X11/Wayland/audio
+          # by default, so the linked binary must carry the store lib dirs
+          # itself.
+          shellHook = ''
+            export CMAKE_PREFIX_PATH="${pkgs.lib.concatMapStringsSep ":" (p: "${pkgs.lib.getDev p}:${pkgs.lib.getLib p}") buildDeps}"
+            export NIX_LDFLAGS="$NIX_LDFLAGS ${pkgs.lib.concatMapStringsSep " " (p: "-rpath ${pkgs.lib.getLib p}/lib") buildDeps}"
+          '';
+        };
     });
 
-    packages = forAllSystems (
-      pkgs:
-        lib'.filterAttrs (_: value: value != null) (mkOutputs pkgs)
-    );
+    packages = forAllSystems mkOutputs;
 
     # The pinned FetchContent sources are a nested set, so they live outside
     # the packages output (whose values must be derivations). Handy for
@@ -153,21 +186,18 @@
     apps = forAllSystems (
       pkgs: let
         outputs = mkOutputs pkgs;
-      in
-        {
-          wiicompiled = {
-            type = "app";
-            program = "${outputs.wiicompiled}/bin/wiicompiled";
-            meta.description = "Mario Kart Wii (WiiCompiled base product)";
-          };
-        }
-        // (pkgs.lib.optionalAttrs (outputs.retro-rewind != null) {
-          retro-rewind = {
-            type = "app";
-            program = "${outputs.retro-rewind}/bin/retro-rewind";
-            meta.description = "Mario Kart Wii Retro Rewind (WiiCompiled)";
-          };
-        })
+      in {
+        wiicompiled = {
+          type = "app";
+          program = "${outputs.wiicompiled}/bin/wiicompiled";
+          meta.description = "Mario Kart Wii (WiiCompiled base product)";
+        };
+        retro-rewind = {
+          type = "app";
+          program = "${outputs.retro-rewind}/bin/retro-rewind";
+          meta.description = "Mario Kart Wii Retro Rewind (WiiCompiled), impure install/update/launch";
+        };
+      }
     );
   };
 }
