@@ -1,0 +1,241 @@
+# NTSC-U (RMCE01) addresses for the PAL (RMCP01) data globals named by the WiiCompiled runtime.
+# Format: <PAL hex> <NTSC hex> <evidence: PALfuncname@ntscaddr instr ...>
+# Every cited instruction was disassembled from the RMCE01 main.dol (or StaticR.rel) at the
+# stated NTSC-U address; the function names are the PAL MAP.txt names of the function that the
+# validated PAL->NTSC-U port table (CHUNKS_E) maps onto that NTSC-U code.
+# Small-data bases: NTSC-U r13=0x80388880 r2=0x8038AC20; PAL r13=0x8038CC00 r2=0x8038EFA0.
+# Deltas observed: all .data/.bss objects, .sdata2 and every .sbss global up to (at least) PAL 0x80386F27
+# are PAL-0x4380; .sbss from PAL 0x80386F60 onward is PAL-0x4388 (r13 offset 8 less). See notes at end.
+
+# ---------------------------------------------------------------- GX
+# Display-list fifo object (GXBeginDisplayList/GXEndDisplayList): NTSC base 0x8033FD10 = PAL 0x80344090 - 0x4380
+80344090 8033FD10 GX::BeginDisplayList@80172d78 lis r31,0x8034; @80172d7c addi r31,r31,-0x2f0 (=0x8033FD10 dlFifo); @80172d8c addi r29,r31,0; @80172dc4 stw r27,0x0(r29) (dlFifo.base=list); @80172df0 addi r3,r31,0 -> GXSetCPUFifo(&dlFifo); GX::EndDisplayList@80172e2c addi r30,r30,-0x2f0; @80172e34 addi r3,r30,0 -> GXGetCPUFifo(&dlFifo)
+80344094 8033FD14 GX::BeginDisplayList@80172dcc stw r4,0x4(r29) (dlFifo.end = list+size-4, r29=0x8033FD10; r4 from @80172db8 add r4,r27,r28 / @80172dc0 addi r4,r4,-4)
+80344098 8033FD18 GX::BeginDisplayList@80172dd0 stw r28,0x8(r29) (dlFifo.size = size)
+803440A4 8033FD24 GX::BeginDisplayList@80172dd8 stw r27,0x14(r29) (dlFifo.rdPtr = list)
+803440A8 8033FD28 GX::BeginDisplayList@80172ddc stw r27,0x18(r29) (dlFifo.wrPtr = list)
+803440AC 8033FD2C GX::BeginDisplayList@80172dd4 stw r3,0x1c(r29) (dlFifo.count = 0, li r3,0 @80172dbc)
+80344110 8033FD90 GX::BeginDisplayList@80172dac addi r3,r31,0x80 -> memcpy(0x8033FD90, gx, 0x600) (li r5,0x600 @80172db0, saved GXData copy); GX::EndDisplayList@80172e6c addi r4,r30,0x80 (memcpy src)
+80344710 80340390 GX::BeginDisplayList@80172de8 addi r3,r31,0x680 -> GXGetCPUFifo(0x80340390) (saved CPU fifo); GX::EndDisplayList@80172e48 addi r3,r30,0x680 -> GXSetCPUFifo(0x80340390)
+803867D8 80382458 GX::DrawDone@8016ea84 stb r31,-0x6428(r13); GX::DrawDone@8016eaa4 lbz r0,-0x6428(r13); GX::FinishInterruptHandler@8016ed20 stb r3,-0x6428(r13)   # r13-0x6428 in both regions (PAL 0x8038CC00-0x6428=0x803867D8)
+803886C8 80384348 GX::Init@8016b7d4 lwz r31,-0x68d8(r2); GX::SetCPUFifo@8016c978 lwz r5,-0x68d8(r2); GX::DrawDone@8016ea3c lwz r4,-0x68d8(r2); GX::BeginDisplayList@80172d74 lwz r30,-0x68d8(r2)   # .sdata2 `gx` (__GXData ptr), r2-0x68d8 in both regions (PAL 0x8038EFA0-0x68D8=0x803886C8)
+
+# ---------------------------------------------------------------- DVD
+80343230 8033EEB0 __DVDClearWaitingQueue@80163520 lis r6,0x8034; @80163524 addi r6,r6,-0x1150 (=0x8033EEB0); @8016352c stw r6,0x0(r6); @80163538 stw r6,0x4(r6) (4 self-linked queues of 8 bytes: +0..+0x1c); __DVDPushWaitingQueue@80163580 addi r4,r4,-0x1150; __DVDPopWaitingQueue@801635e0 addi r4,r4,-0x1150
+803434E0 8033F160 DVD::LowInit@801648e0 lis r4,0x8034; @801648e4 stwu r5,-0xea0(r4) (r4=0x8033F160=ctx[0], ctx[0]+0=0); @801648e8 lis r3,0xfeec; @801648f8 addi r3,r3,-0x2513 (=0xFEEBDAED); @80164900 stw r3,0xc(r4) (ctx[0]+0xC=magic); @80164904 stw r5,0x10(r4) (ctx[0]+0x10=0); @80164918 stw r0,0x30(r4) (ctx[1]+0x10=1); @8016492c stw r6,0x50(r4) (ctx[2]+0x10=2); @80164944 stw r6,0x70(r4) (ctx[3]+0x10=3)
+80386664 803822E4 DVD::Pause@80162b74 stw r4,-0x659c(r13); DVD::Resume@80162bb4 stw r4,-0x659c(r13); DVD::CancelAll@80163070 stw r4,-0x659c(r13); DVD::InquiryAsync@801629b4 lwz r0,-0x659c(r13)   # r13-0x659c both regions
+80386668 803822E8 DVD::Resume@80162bb8 lwz r0,-0x6598(r13); DVD::Resume@80162bc4 stw r4,-0x6598(r13); DVD::Pause@80162b80 stw r4,-0x6598(r13); DVD::GetDriveStatus@80162ae0 lwz r0,-0x6598(r13)
+80386670 803822F0 __DVDPrepareReset@801633f0 lwz r0,-0x6590(r13); __DVDPrepareResetAsync@801632c0 lwz r0,-0x6590(r13)
+8038667C 803822FC DVD::CancelAll@80163058 stw r0,-0x6584(r13); DVD::CancelAll@801630d4 stw r0,-0x6584(r13); DVD::CancelAll@80163128 lwz r0,-0x6584(r13)
+803866A8 80382328 __DVDPrepareReset@801633e0 stw r31,-0x6558(r13); __DVDPrepareReset@80163488 stw r0,-0x6558(r13); __DVDPrepareReset@801634cc lwz r0,-0x6558(r13)
+803866F0 80382370 DVD::Pause@80162b6c lwz r0,-0x6510(r13); DVD::CancelAll@80163068 lwz r0,-0x6510(r13); __DVDPrepareReset@8016340c lwz r3,-0x6510(r13); DVD::ReadAbsAsyncPrio@801628c8 lwz r0,-0x6510(r13)   # `executing` command block
+80386720 803823A0 DVD::LowInit@80164948 stw r5,-0x64e0(r13) (r5=0, current context index, right after the 4-context init); DVD::LowReadDiskID@80164a3c lwz r9,-0x64e0(r13)
+80386724 803823A4 DVD::LowInit@801648d0 lbz r0,-0x64dc(r13) (skip context init if already set); DVD::LowInit@8016494c stb r0,-0x64dc(r13) (=1)
+80386725 803823A5 DVD::LowInit@801647c4 lbz r0,-0x64db(r13); DVD::LowInit@801647d4 stb r0,-0x64db(r13) (=1); DVD::LowFinalize@80164794 stb r0,-0x64db(r13) (=0)
+803866A0 80382320 DVD::Init@8015e990 lwz r0,-0x6560(r13) (return if already initialized); DVD::Init@8015e9a8 stw r0,-0x6560(r13) (=1)
+
+# ---------------------------------------------------------------- NAND
+80346D20 803429A0 nandGetHomeDir@8019e7d4 lis r3,0x8034; @8019e7d8 addi r3,r3,0x29a0 (returns &NANDHomeDir=0x803429A0); NAND::Init@8019e178 lis r5,0x8034; @8019e184 addi r5,r5,0x29a0 (ESP_GetDataDir out buffer); NAND::Init@8019e198 lis r4,0x8034; @8019e1a0 addi r4,r4,0x29a0
+80386848 803824C8 NAND::Init@8019e10c lwz r0,-0x63b8(r13) (cmpwi 1 / cmpwi 2 = init state); NAND::Init@8019e13c stw r0,-0x63b8(r13) (=1); NAND::Init@8019e1d0 stw r0,-0x63b8(r13) (=2 on success); NAND::GetCurrentDir@8019e308 lwz r0,-0x63b8(r13)
+
+# ---------------------------------------------------------------- VI
+# VI HorVer struct (.bss): NTSC 0x8034C4E0 = PAL 0x80350860 - 0x4380; fields +4 DispSizeX, +6 DispSizeY, +0x12 FBSizeX, +0x1C PanSizeY, +0x30 bufAddr
+80350864 8034C4E4 VIInit@801b962c lis r30,0x8035; @801b9630 addi r31,r30,-0x3b20 (=0x8034C4E0 HorVer); @801b965c li r7,640; @801b969c sth r7,0x4(r31) (HorVer.DispSizeX=640)
+80350866 8034C4E6 VIInit@801b96b0 sth r0,0x6(r31) (HorVer.DispSizeY = timing->acv*2; r31=0x8034C4E0)
+80350872 8034C4F2 VIInit@801b970c lis r4,0x8035; @801b9714 addi r4,r4,-0x3b20 (=0x8034C4E0); @801b9718 li r9,640; @801b97b4 sth r9,0x12(r4) (HorVer.FBSizeX=640)
+8035087C 8034C4FC VIInit@801b9804 sth r5,0x1c(r4) (HorVer.PanSizeY; r4=0x8034C4E0)
+80350890 8034C510 VISetNextFrameBuffer@801baa34 lis r7,0x8035; @801baa3c addi r7,r7,-0x3b20 (=0x8034C4E0); @801baa44 stw r30,0x30(r7) (HorVer.bufAddr=fb); @801baa4c addi r4,r7,0x34; @801baa50 addi r5,r7,0x38 (setFbbRegs(&HorVer,&tfbb,&bfbb,...))
+80386B38 803827B8 VIInit@801b9418 lwz r0,-0x60c8(r13) (already-initialised check); VIInit@801b9434 stw r0,-0x60c8(r13)   # r13-0x60c8 both regions
+80386BA8 80382828 VIGetTvFormat@801bac4c lwz r31,-0x6058(r13); VIInit@801b9690 stw r8,-0x6058(r13) (CurrTvMode=HorVer.tv); __VIRetraceHandler@801b8b10 stw r3,-0x6058(r13)
+80386BE4 80382864 VIWaitForRetrace@801b9968 lwz r30,-0x601c(r13); VIWaitForRetrace@801b9974 lwz r0,-0x601c(r13); VIGetRetraceCount@801bab04 lwz r3,-0x601c(r13); __VIRetraceHandler@801b8974 stw r0,-0x601c(r13) (retraceCount++)
+80386B44 803827C4 VIInit@801b9904 stw r0,-0x60bc(r13) (=1, VIInit tail); __VIRetraceHandler@801b8da4 lwz r0,-0x60bc(r13); __VIRetraceHandler@801b8dcc stw r0,-0x60bc(r13)
+80386BB8 80382838 VISetPreRetraceCallback@801b906c lwz r31,-0x6048(r13); VISetPreRetraceCallback@801b9074 stw r30,-0x6048(r13); __VIRetraceHandler@801b8984 lwz r12,-0x6048(r13); VIInit@801b984c stw r29,-0x6048(r13)
+80386BB4 80382834 VISetPostRetraceCallback@801b90b0 lwz r31,-0x604c(r13); VISetPostRetraceCallback@801b90b8 stw r30,-0x604c(r13); __VIRetraceHandler@801b8d7c lwz r12,-0x604c(r13); VIInit@801b9850 stw r29,-0x604c(r13)
+80386BA0 80382820 VIGetNextFrameBuffer@801baa84 lwz r3,-0x6060(r13); __VIRetraceHandler@801b8b14 stw r0,-0x6060(r13)
+80386BC0 80382840 VIWaitForRetrace@801b996c addi r3,r13,-0x6040 -> OSSleepThread(&retraceQueue); VIInit@801b97f8 addi r3,r13,-0x6040 -> OSInitThreadQueue; __VIRetraceHandler@801b8d8c addi r3,r13,-0x6040 -> OSWakeupThread
+
+# ---------------------------------------------------------------- EGG
+# NOTE: past the .sbss gap: PAL r13-0x5ca0, NTSC r13-0x5ca8 (delta 0x4388)
+80386F60 80382BD8 RKSystem::Main@80008ec0 lis r31,0x802a; @80008ec4 addi r31,r31,-0x300 (=0x8029FD00 system instance, .bss start); @80008ed8 stw r31,-0x5ca8(r13) (BaseSystem::sSystem = instance, then virtual call via vtable+0x38); EGG::AsyncDisplay::beginFrame@8020fe74 lwz r3,-0x5ca8(r13) (sSystem->vtable[2] call); EGG::Display::beginFrame@80219e50 lwz r3,-0x5ca8(r13); EGG::SceneManager::createScene@8023ad94 lwz r4,-0x5ca8(r13); EGG::DrawDoneCallback@8020fc48 lwz r3,-0x5ca8(r13); EGG::StateGX::InitFrame@80240054 lwz r3,-0x5ca8(r13)
+
+# ---------------------------------------------------------------- Range constants (section tables)
+# NTSC-U DOL header: section 9 = .ctors  file off 0x240E40 addr 0x80244D40 size 0xC0 (end 0x80244E00)
+#                    section 10 = .dtors file off 0x240F00 addr 0x80244E00 size 0x20 (end 0x80244E20)
+# .ctors contents: 80244D40 __init_cpp_exceptions(0x80020684), 80244D44 __sinit_\RKSystem_cpp(0x8000998C), ... 80244DE8 __sinit__eggVector_cpp(0x80242D2C), 80244DEC..80244DFC zero
+# .dtors contents: 80244E00 __destroy__global_chain(0x800207F0), 80244E04 __fini_cpp_exceptions(0x800206C0), rest zero
+80244DE0 80244D40 DOL section table: .ctors start (sec9 addr), delta 0xA0 like the surrounding text
+80244EA0 80244E00 DOL section table: .ctors end = .dtors start (sec9 addr+size = sec10 addr)
+# NTSC-U StaticR.rel section table (load base 0x8050BF60): section 2 = .ctors file off 0x37F070 size 0x304 -> 0x8088AFD0..0x8088B2D4 (193 words: 192 R_PPC_ADDR32 self-relocations + null terminator);
+#   section 3 = .dtors file off 0x37F374 size 0xC -> 0x8088B2D4..0x8088B2E0 (2 ADDR32 relocations); section 4 (.rodata) starts 0x8088B2E0
+8088F400 8088AFD0 REL section table: .ctors start (sec2 off 0x37F070 + base 0x8050BF60)
+8088F704 8088B2D4 REL section table: .ctors end (0x8088AFD0 + 0x304) = .dtors (sec3) start
+
+# ================================================================ Batch 2
+# ---------------------------------------------------------------- GX (DOL .bss/.sbss) - GXInit / __GXFifoInit / __GXPEInit objects
+80343740 8033F3C0 GX::Init@8016b824 lis r28,0x8034; @8016b830 addi r3,r28,-0xc40 (=0x8033F3C0 FifoObj -> GXInitFifoBase); @8016b838 addi r3,r28,-0xc40 (GXSetCPUFifo); @8016b840 addi r3,r28,-0xc40 (GXSetGPFifo); @8016bc9c addi r3,r3,-0xc40 (return &FifoObj)
+803437C0 8033F440 .sdata2 cell: the `gx` pointer at NTSC 0x80384348 (r2-0x68d8, see 803886C8 above) contains 0x8033F440 in the DOL image (sec14 file data) = &gxData; PAL cell 0x803886C8 holds 0x803437C0. GX::Init@8016b7d4 (ctx) lwz r31,-0x68d8(r2) loads that cell.
+80343DC0 8033FA40 __GX::FifoInit@8016d12c lis r3,0x8034; @8016d134 addi r3,r3,-0x5c0 (=0x8033FA40); @8016d138 li r5,0x24 -> memset(&GPFifo,0,0x24)
+80343DE4 8033FA64 __GX::FifoInit@8016d114 lis r3,0x8034; @8016d120 addi r3,r3,-0x59c (=0x8033FA64); @8016d124 li r5,0x24 -> memset(&CPUFifo,0,0x24); GX::SetCPUFifo@8016c8d4 lis r4,0x8034; @8016c8dc addi r4,r4,-0x59c; @8016c8e8 stb r0,0x22(r4)
+803867B0 80382430 __GX::FifoInit@8016d140 stb r31,-0x6450(r13) (=0); GX::SetCPUFifo@8016c8e0 stb r0,-0x6450(r13); GX::GetCPUFifo@8016ce84 lbz r0,-0x6450(r13)
+803867B1 80382431 __GX::FifoInit@8016d144 stb r31,-0x644f(r13) (=0)
+803867C0 80382440 __GX::FifoInit@8016d11c stw r31,-0x6440(r13) (r31=0: thread queue head cleared)
+803867C4 80382444 __GX::FifoInit@8016d110 stw r3,-0x643c(r13) (r3 = OSGetCurrentThread()); GX::GetCurrentGXThread@8016d2fc lwz r3,-0x643c(r13)
+803867D0 80382450 __GX::PEInit@8016eda0 addi r3,r13,-0x6430 -> OSInitThreadQueue; GX::DrawDone@8016ea9c addi r3,r13,-0x6430 -> OSSleepThread; GX::FinishInterruptHandler@8016ed58 addi r3,r13,-0x6430 -> OSWakeupThread
+
+# ---------------------------------------------------------------- OS scheduler (DOL .bss/.sbss)
+803477B0 80343430 SetEffectivePriority@801a99b0 lis r3,0x8034; @801a99b8 addi r3,r3,0x3430 (=0x80343430 RunQueue[32], indexed by prio*8: @801a99b4 slwi r0,r31,3); SelectThread@801a9bec lis r3,0x8034; @801a9bf4 addi r3,r3,0x3430; OS::ResumeThread@801aa580 lis r3,0x8034; @801aa588 addi r3,r3,0x3430
+80386918 80382598 OS::__ThreadInit@801a97e0 stw r29,-0x62e8(r13) (=0); OS::DisableScheduler@801a985c lwz r31,-0x62e8(r13); @801a9864 stw r0,-0x62e8(r13) (count+1); SelectThread@801a9b80 lwz r0,-0x62e8(r13) (early exit while >0)
+8038691C 8038259C OS::__ThreadInit@801a9718 stw r3,-0x62e4(r13)
+80386920 803825A0 OS::__ThreadInit@801a9710 stw r3,-0x62e0(r13); UnsetRun@801a9908 lwz r5,-0x62e0(r13); @801a9918 stw r0,-0x62e0(r13)
+
+# ---------------------------------------------------------------- SC / game system (DOL .sbss)
+803869E0 80382660 SCGetProductCode@801b2390 addi r4,r13,-0x6220 (6-byte CODE output buffer: @801b2398 li r5,6); @801b23ac addi r3,r13,-0x6220 (returned pointer)
+80386000 80381C80 SystemManager::create@8000a5a4 lwz r0,-0x6c00(r13) (s_instance null check); @8000a5c8 stw r3,-0x6c00(r13) (s_instance = new SystemManager); @8000a5d4 lwz r3,-0x6c00(r13); also REL GameScreen::__ct@80561520 lis r3 + @80561524 lwz r3,0(r3) carry module-0 relocations to 0x80381C80
+
+# ---------------------------------------------------------------- EGG::Screen statics (DOL .sbss) - delta 0x4380 still holds here
+80386F14 80382B94 EGG::Screen::SetTVModeDefault@8023e1cc lwz r6,-0x5cec(r13) (active screen, cmpwi 0 -> skip); EGG::Screen::SetTVMode@8023e114 lwz r6,-0x5cec(r13); EGG::Screen::CreateDummy@8023cf08 stw r3,-0x5cec(r13)
+80386F20 80382BA0 EGG_Screen_cpp_sinit_@8023e37c (ctx) lfs f1,-0x5f84(r2) (=1.0f constant at 0x80384C9C); @8023e380 addi r4,r13,-0x5ce0; @8023e38c stfs f1,-0x5ce0(r13) (gScreenScale.x = 1.0); EGG::Screen::GetPosSizeInEFB@8023d62c lfs f0,-0x5ce0(r13); EGG::Screen::LoadDirectly@8023d1c4 lfs f0,-0x5ce0(r13)
+80386F24 80382BA4 EGG_Screen_cpp_sinit_@8023e390 stfs f1,0x4(r4) with r4 = r13-0x5ce0 (=0x80382BA0) from @8023e380 (ctx) addi r4,r13,-0x5ce0 (gScreenScale.y = 1.0; second float of the Vector2f at 0x80382BA0)
+
+# ---------------------------------------------------------------- EGG::DrawGX::SetVtxState vertex arrays (DOL .sdata2 / .rodata)
+# .sdata2 arrays keep their r2 offsets (delta 0x4380); the .rodata arrays sit at PAL-0x320 (PAL .rodata carries 0x280 more bytes before them than NTSC; .rodata starts at PAL-0xA0).
+80388B80 80384800 EGG::DrawGX::SetVtxState@8021b484 li r3,10(GX_VA_NRM); @8021b488 addi r4,r2,-0x6420; @8021b48c li r5,6 -> GXSetArray (states 7/8)
+80388BA0 80384820 EGG::DrawGX::SetVtxState@8021b514 li r3,10; @8021b518 addi r4,r2,-0x6400; @8021b51c li r5,6 -> GXSetArray (state 9)
+80388BC0 80384840 EGG::DrawGX::SetVtxState@8021b588 addi r4,r2,-0x63e0 (POS array, states 10/12); @8021b58c li r3,9; @8021b590 li r5,2
+80388BE0 80384860 EGG::DrawGX::SetVtxState@8021b580 addi r4,r2,-0x63c0 (POS array, states 11/13); @8021b5a0 li r3,13(GX_VA_TEX0); @8021b5a4 addi r4,r2,-0x63c0; @8021b5a8 li r5,2
+802574A0 80257180 EGG::DrawGX::SetVtxState@8021b270 lis r31,0x8025; @8021b274 addi r31,r31,0x7160 (=0x80257160); @8021b2d8 addi r4,r31,0x20 (=0x80257180); @8021b2dc li r3,9(GX_VA_POS); @8021b2e0 li r5,6 (state 0)
+802574E0 802571C0 EGG::DrawGX::SetVtxState@8021b2e8 addi r4,r31,0x60 (=0x802571C0); @8021b2ec li r3,10(GX_VA_NRM); @8021b2f0 li r5,6 (state 0)
+80257520 80257200 EGG::DrawGX::SetVtxState@8021b474 addi r4,r31,0xa0 (=0x80257200); @8021b478 li r3,9; @8021b47c li r5,4 (states 7/8)
+80257540 80257220 EGG::DrawGX::SetVtxState@8021b504 addi r4,r31,0xc0 (=0x80257220); @8021b508 li r3,9; @8021b50c li r5,6 (state 9)
+
+# ---------------------------------------------------------------- EGG::Screen canvas records + vtable (DOL .data) - these sit at PAL-0x4368 (not 0x4380)
+# NTSC record table 0x8029FB80: {608,480,1.0526,1.0} then {832,480,0.7692,1.0} (12-byte records, matching the runtime's 608/832 widths); vtable 0x8029FBA4 = {EGG::Screen::__dt, EGG::Screen::LoadDirectly, EGG::Screen::CopyToG3D, ...}
+802A3EE8 8029FB80 EGG::Screen::SetTVModeDefault@8023e1c4 bl SCGetAspectRatio; @8023e1e8 mulli r4,r0,12; @8023e1f0 lis r5,0x802a; @8023e1fc addi r5,r5,-0x480 (=0x8029FB80 record[0]); @8023e200 lhzx r4,r5,r4 (record[aspect].width); EGG::Screen::__ct@8023cf38 lis r5,0x802a; @8023cf48 addi r5,r5,-0x480; REL GameScreen::__ct@80561558 lis r4 / @80561568 addi r4,r4,0 carry module-0 relocations to 0x8029FB80
+802A3EF4 8029FB8C record[1] = 0x8029FB80 + 12 (SetTVModeDefault index*12 above; 16:9 record {832,480,...} at 0x8029FB8C in the DOL image)
+802A3F0C 8029FBA4 EGG::Screen::__ct@8023cfac lis r3,0x802a; @8023cfb0 addi r3,r3,-0x45c (=0x8029FBA4); @8023cfb8 stw r3,0x38(r31) (vtable at this+0x38); EGG::Screen::__ct(args)@8023d058 addi r3,r3,-0x45c
+
+# ---------------------------------------------------------------- StaticR.rel (.data / .bss) - resolved through the NTSC-U REL relocation table
+# Method: the REL text carries pre-relocation immediates (lis/addi = 0), so each cited instruction's R_PPC_ADDR16_HA/LO entry (module 1) was
+# looked up at instruction+2 in the import table; target = section address + addend. NTSC-U section addresses: .data (sec5) = 0x808AE520,
+# .bss (sec6) = 0x809B8F20 = 0x8050BF60 + alignUp(filesize 0x4ACF94 + 0x20 heap header, 0x20), which is exactly where the translator
+# (RelFile.CalculateBssOffset) and the NTSC base manifest (build/base/mkwii_base_manifest.json: StaticR.rel:6 = 0x809b8f20..0x809c07d0) place it.
+# PAL cross-check: the runtime's PAL bss identities imply PAL bss base 0x809BD6E0 (0x809C1830 - 0x4150; THP flag 0x809BECF0 = +0x1610 is
+# referenced by NTSC THP::PlayerQuit/PlayerDrawDone at sec6+0x1610; Race::JugemManager 0x809C28B8 = +0x51D8 referenced by NTSC RaceScene::OnEnterEnd).
+# The PAL bss layout is NOT identical everywhere: the audio singleton cluster sits 0x480 higher in PAL (mkw-sp PAL RaceSoundManager 0x809C27F8 =
+# +0x5118 vs NTSC Audio::RaceMgr::CreateInstance -> +0x4C98; ItemMusicManager 0x809C27F0 = +0x5110 vs Audio::ItemAlterationMgr -> +0x4C90), so
+# REL bss identities were matched by function, never by delta.
+808B4C20 808B0570 GameScreen::__ct@805614cc bl -> EGG::Screen::__ct (module-0 REL24 reloc to 0x8023cf30; GameScreen is the only REL caller of an EGG::Screen ctor); @805614d0 lis r3 (ADDR16_HA -> sec5+0x2050); @805614d8 addi r3,r3 (ADDR16_LO -> sec5+0x2050 = 0x808B0570); @805614dc stw r3,0x38(r30) (vtable at this+0x38, same slot as the EGG::Screen vtable). Vtable contents via ADDR32 relocs: +8 GameScreen::__dt, +0xC EGG::Screen::LoadDirectly, +0x10 EGG::Screen::CopyToG3D (same layout as the EGG::Screen vtable at 0x8029FBA4).
+809C1830 809BD070 Renderer::Register(listIdx)@80560d9c lis r5 (ADDR16_HA -> sec6+0x4150); @80560da8 addi r5,r5 (ADDR16_LO -> sec6+0x4150 = 0x809BD070 = Render::DrawList instance); @80560da4 mulli r0,r4,12; @80560dc0 add r3,r5,r0 (&lists[listIdx], 12-byte nw4r::ut::List); 38 sites reference sec6+0x4150 (Renderer::Register2ndList, RemoveFrom1stList/2ndList, ...)
+809C183C 809BD07C Renderer::Register2ndList(NoAppend)@80560ef0 lis r5 (-> sec6+0x4150); @80560ef8 addi r5,r5 (-> 0x809BD070); @80560f08 addi r3,r5,0xc (second list = DrawList+0xC = 0x809BD07C); Renderer::RemoveFrom2ndList@80560f54 lis r5; @80560f5c addi r5,r5 (-> 0x809BD070); @80560f60 addi r3,r5,0xc
+809C2898 809BDC58 Audio::Manager::CreateInstance@8070f390 lis r3 (ADDR16_HA -> sec6+0x4d38); @8070f3ac lwz r0,0(r3) (ADDR16_LO -> sec6+0x4d38 = 0x809BDC58, null check); @8070f440 lis r3; @8070f444 stw r30,0(r3) (-> sec6+0x4d38: spInstance = new Audio::Manager); the object is EGG::ExpAudioMgr-derived: Audio::Manager::StartSound@8070fcc0 lwz r3,0x5bc(r3) (archive player pointer) and DOL EGG::ExpAudioMgr::Initialize@802114e4 lwz r3,0x5bc(r27), matching the runtime's kArchivePlayerOffset 0x5BC. PAL offset 0x51B8 = NTSC 0x4D38 + 0x480, the same shift as the mkw-sp audio singletons.
+
+# ---------------------------------------------------------------- .ctors/.dtors confirmation (batch 2 request) - unchanged from above
+# DOL: PAL .ctors 80244DE0..80244EA0 -> NTSC 80244D40..80244E00 (sec9); .dtors NTSC 80244E00..80244E20 (sec10). REL: PAL .ctors 8088F400..8088F704 -> NTSC 8088AFD0..8088B2D4 (sec2); .dtors 8088B2D4..8088B2E0 (sec3).
+# The NTSC base manifest agrees: .ctors 0x80244d40-0x80244e00, .dtors 0x80244e00-0x80244e20, StaticR.rel:2 0x8088afd0-0x8088b2d4, StaticR.rel:3 0x8088b2d4-0x8088b2e0.
+
+# ================================================================ Batch 3
+# ---------------------------------------------------------------- AX / DSP (DOL .data/.bss/.sbss/.sdata2)
+# __AXOutInitDSP fills the DSPTaskInfo __AXDSPTask (NTSC 0x802F3E20): +0xC iram_mmem_addr, +0x10 iram_length, +0x18 dram_mmem_addr, +0x1C dram_length(64), +0x20 dram_addr(3282), +0x28.. callbacks 0x801268a8/0x801268b4/0x80126908/0x80126918 (= PAL 80126948/54/9A8/9B8 - 0xA0)
+8027F820 8027B4E0 __AXOutInitDSP@80126960 lis r29,0x8028; @80126964 addi r29,r29,-0x4b20 (=0x8027B4E0, DSP ucode image: vector table 029f 0f3c 029f 0f48 ... at that address); @80126990 stw r29,0xc(r30) (task.iram_mmem_addr; r30 = __AXDSPTask)   # .data delta 0x4340 for this object (not 0x4380)
+802F81A0 802F3E20 __AXOutInitDSP@80126950 lis r30,0x802f; @80126954 addi r30,r30,0x3e20 (=0x802F3E20 __AXDSPTask); @801269d8 lis r3,0x802f; @801269dc addi r3,r3,0x3e20 -> DSPAddTask(&__AXDSPTask); __AXOutAiCallback@80126830 lis r3,0x802f; @80126838 addi r3,r3,0x3e20
+802F8200 802F3E80 __AXOutInitDSP@80126924 lis r11,0x802f; @80126944 addi r11,r11,0x3e80 (=0x802F3E80 DRAM image); @8012699c stw r11,0x18(r30) (task.dram_mmem_addr); @80126978 li r10,64; @801269a0 stw r10,0x1c(r30) (dram_length = 64); @80126980 li r9,3282; @801269a4 stw r9,0x20(r30) (dram_addr)
+80386608 80382288 DSPInit@8015d3d0 lwz r0,-0x65f8(r13) (already-initialised check); DSPInit@8015d448 stw r0,-0x65f8(r13) (=1); DSPCheckInit@8015d464 lwz r3,-0x65f8(r13)
+80386610 80382290 DSPAssertTask@8015d510 stw r0,-0x65f0(r13) (=1); DSPAssertTask@8015d538 stw r0,-0x65f0(r13); __DSPHandler@8015d6d8 lwz r0,-0x65f0(r13)
+80386614 80382294 DSPAssertTask@8015d50c stw r30,-0x65ec(r13) (= task being asserted); DSPAssertTask@8015d534 stw r30,-0x65ec(r13)
+80386618 80382298 DSPInit@8015d438 stw r4,-0x65e8(r13) (=0, cleared with the task pointers below)
+8038661C 8038229C DSPInit@8015d440 stw r4,-0x65e4(r13) (=0); __DSPHandler@8015d96c lwz r3,-0x65e4(r13); __DSP_insert_task@8015dd60 stw r3,-0x65e4(r13)
+80386620 803822A0 DSPInit@8015d444 stw r4,-0x65e0(r13) (=0); DSPAddTask@8015d4ac lwz r0,-0x65e0(r13); __DSPHandler@8015d968 lwz r0,-0x65e0(r13)
+80386624 803822A4 DSPInit@8015d43c stw r4,-0x65dc(r13) (=0); DSPAssertTask@8015d4f8 lwz r5,-0x65dc(r13); __DSPHandler@8015d634 lwz r5,-0x65dc(r13)
+80388588 80384208 AXFXReverbStdExpCallback@8012b81c lfs f2,-0x6a18(r2) (cell 0x80384208 = 1.0f in the DOL image); AXFXReverbStdExp__InitParams@8012becc lfs f1,-0x6a18(r2)   # r2-0x6a18 in both regions (PAL 0x8038EFA0-0x6A18=0x80388588)
+8038858C 8038420C AXFXReverbStdExpCallback@8012b82c lfs f3,-0x6a14(r2) (cell 0x8038420C = 0.6f in the DOL image)
+
+# ---------------------------------------------------------------- AI (DOL .sbss)
+80386448 803820C8 AIInit@8012402c lwz r0,-0x67b8(r13) (already-initialised check); AIInit@80124170 stw r0,-0x67b8(r13) (=1); AICheckInit@80123ff4 lwz r3,-0x67b8(r13)
+8038644C 803820CC __AIDHandler@801241d8 lwz r0,-0x67b4(r13) (callback-busy check); __AIDHandler@801241ec stw r4,-0x67b4(r13) (=1)
+8038647C 803820FC AIInit@8012415c stw r31,-0x6784(r13); __AIDHandler@801241e4 lwz r0,-0x6784(r13); __AICallbackStackSwitch@8012425c lis r5,0x8038; @80124260 addi r5,r5,0x20fc (=0x803820FC)
+80386480 80382100 AIRegisterDMACallback@80123f00 lwz r31,-0x6780(r13) (old callback); AIRegisterDMACallback@80123f08 stw r30,-0x6780(r13) (new callback); AIInit@80124150 stw r0,-0x6780(r13) (=0); __AIDHandler@801241cc lwz r3,-0x6780(r13)
+
+# ---------------------------------------------------------------- OS thread/interrupt globals (DOL .bss/.sdata/.sbss)
+80347130 80342DB0 OS::CreateThread@801a9ea8 lis r4,0x8034; @801a9eac addi r4,r4,0x2d70; @801a9eb0 lwz r0,0x40(r4) (=0x80342DB0); @801a9eb4 cmpwi r0,0 -> skip the FP/PS context init; when set: @801a9ecc ori r5,r5,0x900 (srr1), @801a9ed4 ori r4,r4,1 (mode), fpscr from the .sdata word below (exactly the sequence os_thread.cpp mirrors)
+80347498 80343118 OS::__ThreadInit@801a95a0 lis r31,0x8034; @801a95a4 addi r31,r31,0x3118 (=0x80343118 DefaultThread; RunQueue[32] at 0x80343430 = +0x318 follows it)
+803478B0 80343530 SelectThread@801a9ca0 lis r3,0x8034; @801a9ca8 addi r3,r3,0x3530 (=0x80343530 IdleContext -> OSLoadContext); SelectThread@801a9cd0 lis r3,0x8034; @801a9cd4 addi r3,r3,0x3530
+80385AA8 80381728 OS::CreateThread@801a9ee0 lwz r4,-0x7158(r13) (__OSFpscrEnableBits); @801a9ee4 rlwinm r4,r4,0,24,28 (&0xF8); @801a9ee8 ori r4,r4,4; @801a9eec stw r4,0x194(r31) (thread->context.fpscr); OS::SetErrorHandler@801a28ac lwz r4,-0x7158(r13)   # .sdata, r13-0x7158 both regions
+80385AE0 80381760 OS::SetSwitchThreadCallback@801a952c lwz r31,-0x7120(r13) (old callback); @801a9540 stw r30,-0x7120(r13) (new); SelectThread@801a9c84 lwz r12,-0x7120(r13) (called on switch); OS::__ThreadInit@801a9620 lwz r12,-0x7120(r13)   # .sdata, r13-0x7120 both regions
+803868F8 80382578 OS::__SetInterruptHandler@801a6558 lwz r5,-0x6308(r13) (InterruptHandlerTable ptr, then stwx handler); OS::__GetInterruptHandler@801a656c lwz r4,-0x6308(r13); OS::__InterruptInit@801a65a4 stw r3,-0x6308(r13); OS::__DispatchInterrupt@801a6bc0 lwz r3,-0x6308(r13)
+80386298 80381F18 RFL::iGetManager@800bc3d0 lwz r3,-0x6968(r13) (returns the RFL manager pointer); RFL::Init@800bbb34 lwz r0,-0x6968(r13)
+80336278 80331EF8 BTM_IsDeviceUp@8013a260 lis r3,0x8033; @8013a264 addi r3,r3,0x1ef8 (=0x80331EF8 btm_cb); @8013a268 lbz r3,0x64e(r3) (device state; compared with 5, matching os_init.cpp's +0x64E/5); btm_acl_init@80137bc4 addi r3,r3,0x1ef8
+
+# ---------------------------------------------------------------- StaticR.rel THP player state and movie mode table (relocation method, bss base 0x809B8F20)
+# THP ActivePlayer struct = REL bss+0x1420 in both regions (PAL 0x809BEB00 = 0x809BD6E0+0x1420; NTSC 0x809BA340); the runtime's 809BEBA0..A7 are its +0xA0 (open) and +0xA4..+0xA7 byte fields.
+809BEBA0 809BA3E0 THP::PlayerOpen@8054ad7c lis r29 (ADDR16_HA -> sec6+0x1420); @8054ad84 addi r29,r29 (ADDR16_LO -> 0x809BA340 ActivePlayer); @8054ada0 addi r30,r29,0; @8054ada4 lwz r0,0xa0(r30) (already-open check); @8054afc8 stw r0,0xa0(r30) (open = 1); THP::PlayerClose@8054aff8 lis r3; @8054b000 addi r3,r3 (-> 0x809BA340); @8054b020 stw r0,0xa0(r3) (open = 0)   [reloc-base 0x809BA340 + 0xA0]
+809BEBA4 809BA3E4 THP::PlayerOpen@8054afbc stb r4,0xa4(r30) (r30 = ActivePlayer 0x809BA340 from @8054ad7c / @8054ad84 / @8054ada0 [3bdd0000])   [reloc-base 0x809BA340 + 0xA4]
+809BEBA5 809BA3E5 THP::PlayerOpen@8054afb4 stb r4,0xa5(r30) (same base: @8054ad7c / @8054ad84 / @8054ada0 [3bdd0000])   [reloc-base 0x809BA340 + 0xA5]
+809BEBA6 809BA3E6 THP::PlayerOpen@8054afc0 stb r4,0xa6(r30) (same base: @8054ad7c / @8054ad84 / @8054ada0 [3bdd0000])   [reloc-base 0x809BA340 + 0xA6]
+809BEBA7 809BA3E7 THP::PlayerOpen@8054aec4 stb r0,0xa7(r30) (same base: @8054ad7c / @8054ad84 / @8054ada0 [3bdd0000])   [reloc-base 0x809BA340 + 0xA7]
+809BECF0 809BA530 THP::PlayerQuit@8054ad48 lis r3 (ADDR16_HA -> sec6+0x1610); @8054ad50 stw r0,0(r3) (ADDR16_LO -> sec6+0x1610 = 0x809BA530, Initialized = 0); THP::PlayerDrawDone@8054bee0 lis r3; @8054bee4 lwz r0,0(r3) (-> 0x809BA530)   # PAL +0x1610 under base 0x809BD6E0, same offset
+8088FDB8 8088B960 MovieManager::Prepare@805258b0 lwz r0,0xa8(r31) (mode); @805258b4 lis r4 (ADDR16_HA -> sec4+0x680); @805258b8 addi r4,r4 (ADDR16_LO -> sec4+0x680 = 0x8088B960); @805258c0 slwi r0,r0,2; @805258c8 lwzx r4,r4,r0 (audioSystem = table[mode]) -> THP::PlayerPrepare; MovieManager::PrepareAsync@8052594c lis r4; @80525950 addi r4,r4 (-> 0x8088B960); @80525960 lwzx r4,r4,r0   # REL .rodata: PAL 0x8088FDB8 is .rodata+0x698 from 0x8088F720 but the NTSC table is .rodata+0x680; matched by function, not by delta
+
+# ---------------------------------------------------------------- Notes
+# * No PAL binary is available on this machine (both MKW images found are RMCE01), so PAL-side offsets are
+#   PAL_addr - PAL_r13/r2 by definition; each NTSC-U instruction above was matched by function identity (port table +
+#   PAL MAP name), by the instruction's role in the SDK/EGG function, and by consistency with sibling globals.
+# * .sbss gap: delta 0x4380 is directly witnessed up to PAL 0x80386F27 (EGG::Screen gScreenScale Vector2f at
+#   PAL 0x80386F20/24 -> NTSC 0x80382BA0/A4: EGG_Screen_cpp_sinit_@8023e38c stfs f1,-0x5ce0(r13),
+#   @8023e390 stfs f1,4(r4) with @8023e380 addi r4,r13,-0x5ce0; EGG::Screen::SetTVModeDefault@8023e1cc lwz r6,-0x5cec(r13)
+#   = PAL 0x80386F14 active-screen ptr), and delta 0x4388 at PAL 0x80386F60 (sSystem). The extra 8 PAL bytes therefore
+#   lie in PAL 0x80386F28..0x80386F5F (NTSC 0x80382BA8..0x80382BD7: EGG::Screen/StateGX statics); which object was
+#   added/removed could not be identified without the PAL binary. None of the identities above fall inside that window.
+# * The runtime's comment labels for some DVD .sbss globals do not match the SDK roles visible in the code
+#   (0x80386664 is the flag DVDPause sets / DVDResume clears, 0x80386668 the one DVDResume tests-and-clears,
+#   0x80386670 the one __DVDPrepareReset tests); the address identities are unaffected.
+# STM (State Transition Manager) globals. __OSInitSTM stores the two /dev/stm handles and its
+# initialized flag into the small-data block; the runtime's stub writes the same three words so
+# OSResetSystem's zero-checks pass. Their SDA offsets are NOT the same in every region (RMCK01
+# puts them 0x20 lower, where PAL/NTSC-U/NTSC-J keep the OSDisableScheduler nesting count), so
+# they are named as identities here rather than as a hardcoded r13 offset.
+80386934 803825B4 __OSInitSTM@801AB810 stw r31,-0x62cc(r13) (STM initialized flag)
+80386938 803825B8 __OSInitSTM@801AB808 stw r3,-0x62c8(r13) (/dev/stm/immediate handle)
+8038693C 803825BC __OSInitSTM@801AB830 stw r3,-0x62c4(r13) (/dev/stm/eventhook handle)
+80386940 803825C0 OS::SetPowerCallback@801AB700 lwz r0,-0x62c0(r13); @801AB750 stw r0,-0x62c0(r13); @801AB75C stw r0,-0x62c0(r13) (STM event handler registered flag)
+80386948 803825C8 OS::SetPowerCallback@801AB6E0 lwz r29,-0x62b8(r13); @801AB6EC stw r31,-0x62b8(r13); @801AB6FC stw r3,-0x62b8(r13) (registered power callback pointer)
+
+# ISFS / IPC globals. The runtime's ISFS_OpenLib stub brings the filesystem client up itself:
+# it writes the "/dev/fs" path string and the device fd, then creates the ISFS heap out of the
+# IPC buffer window. Like the STM globals above, these do NOT sit at the same r13 offsets in
+# every region - RMCK01 keeps the .sbss cluster 0x20 lower and __ISFS_fd/__ISFS_path 0x8 lower -
+# so they are named as identities rather than as hardcoded r13 offsets. Addresses below are the
+# NTSC-U ones, each confirmed by the RMCE01 instructions cited; PAL is uniformly +0x4380 here,
+# matching the .sbss delta documented at the top of this file.
+80386770 803823F0 ISFS@80169B44 lwz r0,-0x6490(r13); ISFS@80169B64 lwz r0,-0x6490(r13); ISFS@80169BCC lwz r4,-0x6490(r13); ISFS@80169C18 stw r0,-0x6490(r13)    # isfsHeapInitialized, 4 sites in RMCE01
+80386774 803823F4 ISFS@80169B74 stw r3,-0x648C(r13); ISFS@80169BAC lwz r3,-0x648C(r13); ISFS@80169BD0 lwz r30,-0x648C(r13)    # isfsHeapBase, 3 sites in RMCE01
+8038677C 803823FC ISFS@80169B54 stw r3,-0x6484(r13); ISFS@80169B60 lwz r3,-0x6484(r13)    # __IPCArenaLo, 2 sites in RMCE01
+80386780 80382400 ISFS@80169B5C stw r3,-0x6480(r13); ISFS@80169B7C lwz r0,-0x6480(r13); ISFS@80169BDC lwz r0,-0x6480(r13)    # __IPCArenaHi, 3 sites in RMCE01
+80386784 80382404 ISFS@80169C2C stw r3,-0x647C(r13); ISFS@80169DAC lwz r3,-0x647C(r13); ISFS@80169E30 lwz r3,-0x647C(r13); ISFS@80169EA0 lwz r3,-0x647C(r13)    # isfsHeapHandle, 36 sites in RMCE01
+803867EC 8038246C ISFS@80192F10 stw r3,-0x6414(r13); ISFS@80192F58 stw r3,-0x6414(r13); ISFS@80192F98 lwz r3,-0x6414(r13); ISFS@80192FA0 stw r3,-0x6414(r13)    # ipcBufferLo, 4 sites in RMCE01
+803867F0 80382470 ISFS@80192F0C stw r4,-0x6410(r13); ISFS@80192F54 stw r4,-0x6410(r13); ISFS@80192F90 lwz r3,-0x6410(r13)    # ipcBufferHi, 3 sites in RMCE01
+80385920 803815A0 ISFS@80169BBC stw r3,-0x72E0(r13); ISFS@80169E08 lwz r0,-0x72E0(r13); ISFS@80169E88 lwz r3,-0x72E0(r13); ISFS@80169F00 lwz r0,-0x72E0(r13)    # __ISFS_fd, 33 sites in RMCE01
+80385928 803815A8 ISFS@80169BA4 addi r4,r13,-0x72D8    # __ISFS_path, 1 sites in RMCE01
+
+# OS alarm queue and the two AX state flags. Same story as the STM and ISFS globals above: the
+# runtime's alarm stubs walk OSAlarmQueue and the AX stub sets two flags, and RMCK01 keeps this
+# part of .sbss 0x20 lower than PAL/NTSC-U/NTSC-J (OSAlarmQueue is r13-0x6360 in PAL but
+# r13-0x6340 in RMCK01), so a hardcoded offset walks a string table there instead of the queue.
+803868A0 80382520 OSAlarmQueue@801A0540 addi r3,r13,-0x6360; OSAlarmQueue@801A054C stw r0,-0x6360(r13); OSAlarmQueue@801A064C lwz r7,-0x6360(r13); OSAlarmQueue@801A0698 stw r30,-0x6360(r13)   # OSAlarmQueue, 13 sites in RMCE01
+80386528 803821A8 AX@801268AC stw r0,-0x66D8(r13); AX@8012698C stw r12,-0x66D8(r13); AX@801269E4 lwz r0,-0x66D8(r13)   # AX flag 0x66d8, 3 sites in RMCE01
+80386524 803821A4 AX@80126804 lwz r0,-0x66DC(r13); AX@80126910 stw r0,-0x66DC(r13); AX@801269C0 stw r12,-0x66DC(r13)   # AX flag 0x66dc, 3 sites in RMCE01
+
+# The three .sdata halfwords __AXOutInitDSP copies into the AX DSPTaskInfo: the ucode length
+# (task+0x10) and the DSP init/resume vectors (task+0x24/+0x26). The runtime's AX stub reads
+# the same three when it builds the task.
+80385800 80381480 __AXOutInitDSP@80126974 lhz r8,-0x7400(r13) -> sth r8,0x24(task)   # dsp_init_vector
+80385802 80381482 __AXOutInitDSP@8012697C lhz r0,-0x73fe(r13) -> sth r0,0x26(task)   # dsp_resume_vector
+80385804 80381484 __AXOutInitDSP@8012696C lhz r31,-0x73fc(r13) -> stw r31,0x10(task)   # iram_length (ucode length)
+
+# EGG fog constants in .sdata2, read through r2 by the EGG::StateGX fog-quad code. Unlike the
+# .sbss globals above, the r2 offset of these three is 8 LARGER in NTSC-U than in PAL, while
+# NTSC-J and NTSC-K keep PAL's offset. The values settle it: at the addresses below all four
+# regions read 0.0 / 0.99 / 0.5, whereas NTSC-U at PAL's offset reads 176.0 / 176.0 / 1.0 -
+# so the runtime's old hardcoded PAL r2 offsets were reading the wrong constants on NTSC-U only.
+80388DD0 80384A48 EGG@8022D3F0 lfs r0,-0x61D8(r2); EGG@8022D71C lfs r2,-0x61D8(r2); EGG@8022D7A0 lfs r5,-0x61D8(r2); EGG@8022DB0C lfs r31,-0x61D8(r2)   # EGG fog origin (m!=2), 9 sites in RMCE01
+80388DE0 80384A58 EGG@8022DB24 lfs r0,-0x61C8(r2); EGG@8022DEBC lfs r0,-0x61C8(r2); EGG@8022E018 lfs r0,-0x61C8(r2)   # EGG fog span, 3 sites in RMCE01
+80388DF4 80384A6C EGG@8022DE7C lfs r31,-0x61B4(r2); EGG@8022DE90 lfs r30,-0x61B4(r2); EGG@8022DFD8 lfs r31,-0x61B4(r2); EGG@8022DFEC lfs r30,-0x61B4(r2)   # EGG fog origin (m==2), 4 sites in RMCE01
