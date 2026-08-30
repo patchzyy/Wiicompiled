@@ -91,7 +91,10 @@ SDL_HapticID FindHaptic(SDL_Joystick* joystick) {
     const char* joystickName = SDL_GetJoystickName(joystick);
     for (int i = 0; i < count; ++i) {
         const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (joystickName != nullptr && name != nullptr && std::strcmp(name, joystickName) == 0) {
+        if (joystickName == nullptr || name == nullptr || *joystickName == '\0' || *name == '\0') {
+            continue;
+        }
+        if (std::strstr(joystickName, name) != nullptr || std::strstr(name, joystickName) != nullptr) {
             chosen = ids[i];
             break;
         }
