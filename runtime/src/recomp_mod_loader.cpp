@@ -1,4 +1,5 @@
 #include "recomp_mod_loader.h"
+#include "region/guest_region.h"
 
 #include <algorithm>
 #include <cstdlib>

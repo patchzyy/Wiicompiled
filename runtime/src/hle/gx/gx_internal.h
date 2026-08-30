@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hle_stubs.h"
+#include "region/guest_region.h"
 #include "memory.h"
 #include "gx_guest_write.h"
 #include "ppc_runtime.h"

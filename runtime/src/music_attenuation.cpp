@@ -1,4 +1,5 @@
 #include "music_attenuation.h"
+#include "region/guest_region.h"
 
 #include "memory.h"
 

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "hle_stubs.h"
+#include "region/guest_region.h"
 #include "nand_check_contract.h"
 #include "hle/runtime_parse_helpers.h"
 #include "memory.h"

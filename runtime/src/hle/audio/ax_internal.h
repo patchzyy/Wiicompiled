@@ -4,6 +4,7 @@
 // Hot accessors stay header-inline because the shipped build links runtime shards without LTO.
 
 #include "isa/big_endian.h"
+#include "region/guest_region.h"
 #include "memory.h"
 
 #include <algorithm>

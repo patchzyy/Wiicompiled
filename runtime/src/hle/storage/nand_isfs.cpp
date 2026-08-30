@@ -772,7 +772,7 @@ namespace {
 // .sbss cluster 0x20 lower, and __ISFS_fd/__ISFS_path 0x8 lower, than PAL/NTSC-U/NTSC-J. Writing
 // them at a hardcoded PAL offset therefore lands on unrelated globals in Korea, the filesystem
 // client never comes up, and the save-data check fails with the "cannot read/write the Wii
-// system memory" dialog. See projects/mkwii-ntsc*/data_addresses.txt for each address's evidence.
+// system memory" dialog. See projects/mkwii-ntsc-*/data_addresses.txt for each address's evidence.
 constexpr uint32_t kIsfsFdGlobal = MKW_GADDR(80385920);            // __ISFS_fd
 constexpr uint32_t kIsfsPathGlobal = MKW_GADDR(80385928);          // __ISFS_path ("/dev/fs")
 constexpr uint32_t kIpcBufferLoGlobal = MKW_GADDR(803867EC);       // IPC buffer window, low

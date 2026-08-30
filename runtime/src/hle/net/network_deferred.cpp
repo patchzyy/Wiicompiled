@@ -1,4 +1,5 @@
 #include "network_internal.h"
+#include "region/guest_region.h"
 
 #include "fiber_manager.h"
 #include "hle/net/network.h"
