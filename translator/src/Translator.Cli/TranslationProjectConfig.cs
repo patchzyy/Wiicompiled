@@ -102,12 +102,27 @@ internal sealed class TranslationProjectConfig
         var abiDirectories = (dto.Runtime?.NativeAbiDirectories ?? [])
             .Select(pathValue => ResolvePath(workspaceRoot, pathValue))
             .ToArray();
+        string? guestAddressTablePath = null, guestAddressTableInclude = null;
+        if (dto.Runtime?.GuestAddressTable is { } guestAddressTable)
+        {
+            guestAddressTablePath = ResolvePath(workspaceRoot, guestAddressTable);
+            // RuntimeConfig.h includes the table relative to the workspace root (the one include
+            // path every runtime TU has), so it has to live inside the workspace.
+            guestAddressTableInclude = Path.GetRelativePath(workspaceRoot, guestAddressTablePath)
+                .Replace('\\', '/');
+            if (guestAddressTableInclude.StartsWith("..", StringComparison.Ordinal) ||
+                Path.IsPathRooted(guestAddressTableInclude))
+            {
+                throw new InvalidDataException(
+                    $"runtime.guest_address_table '{guestAddressTable}' lies outside the workspace root " +
+                    $"'{workspaceRoot}'; the runtime includes it relative to that root.");
+            }
+        }
         var runtime = new ProjectRuntime(
             abiDirectories,
             ResolvePath(workspaceRoot, dto.Runtime?.NativeRegistrationRoot ?? "runtime/src"),
-            dto.Runtime?.GuestAddressTable is { } guestAddressTable
-                ? ResolvePath(workspaceRoot, guestAddressTable)
-                : null);
+            guestAddressTablePath,
+            guestAddressTableInclude);
         var outputRoot = ResolvePath(workspaceRoot, dto.Output?.Root ?? "generated");
         var output = new ProjectOutput(
             outputRoot,
@@ -419,7 +434,9 @@ internal sealed class TranslationProjectConfig
     {
         public List<string>? NativeAbiDirectories { get; init; }
         public string? NativeRegistrationRoot { get; init; }
-        // runtime/include/region/<game>.h for a non-PAL executable; absent for PAL.
+        // runtime/include/region/<game>.h: the table the runtime's PAL-spelled guest addresses
+        // resolve through for this executable. Absent only for projects that do not use the
+        // Mario Kart Wii runtime.
         public string? GuestAddressTable { get; init; }
     }
 
@@ -481,7 +498,9 @@ internal sealed record ProjectTranslation(
 internal sealed record ProjectRuntime(
     IReadOnlyList<string> NativeAbiDirectories,
     string NativeRegistrationRoot,
-    string? GuestAddressTablePath);
+    string? GuestAddressTablePath,
+    // GuestAddressTablePath relative to the workspace root, as RuntimeConfig.h includes it.
+    string? GuestAddressTableInclude);
 internal sealed record ProjectOutput(
     string Root,
     string Functions,
