@@ -413,6 +413,45 @@ void DrawControllerSettings() {
         mappings = PADGetButtonMappings(port, &mappingCount);
     }
 
+    ImGui::SeparatorText("Analog");
+    if (PADDeadZones* zones = PADGetDeadZones(static_cast<uint32_t>(g_controllerPort))) {
+        int stickDeadzone = zones->stickDeadZone;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Stick dead zone", &stickDeadzone, 0, 16000, "%d",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            zones->stickDeadZone = static_cast<uint16_t>(stickDeadzone);
+            zones->substickDeadZone = static_cast<uint16_t>(stickDeadzone);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            PADSerializeMappings();
+        }
+        int triggerZone = zones->leftTriggerActivationZone;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("L/R press point", &triggerZone, 1000, 32000, "%d",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            zones->leftTriggerActivationZone = static_cast<uint16_t>(triggerZone);
+            zones->rightTriggerActivationZone = static_cast<uint16_t>(triggerZone);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            PADSerializeMappings();
+        }
+    }
+    if (PADSupportsRumbleIntensity(static_cast<uint32_t>(g_controllerPort))) {
+        uint16_t low = 0;
+        uint16_t high = 0;
+        PADGetRumbleIntensity(static_cast<uint32_t>(g_controllerPort), &low, &high);
+        int rumblePercent = (static_cast<int>(low) * 100 + INT16_MAX / 2) / INT16_MAX;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Rumble strength", &rumblePercent, 0, 100, "%d%%",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            const auto intensity = static_cast<uint16_t>((rumblePercent * INT16_MAX + 50) / 100);
+            PADSetRumbleIntensity(static_cast<uint32_t>(g_controllerPort), intensity, intensity);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            PADSerializeMappings();
+        }
+    }
+
     ImGui::SeparatorText("Button mapping");
     for (size_t i = 0; i < kControllerButtons.size(); ++i) {
         auto mappingIt = std::find_if(mappings, mappings + mappingCount, [&](const PADButtonMapping& mapping) {

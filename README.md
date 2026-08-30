@@ -60,6 +60,18 @@ inputs like paddles, touchpads and share buttons show up when the hardware repor
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
 
+**Racing wheels (Logitech G29 / Driving Force and similar).**
+Wheels are not gamepads, so SDL has no built-in layout for them. Install Logitech G HUB (or the
+older Logitech Gaming Software) and turn combined pedals off. Then press **F10**, open
+**Controller settings**, and pick **Set up** next to the wheel under *Unrecognized controllers*.
+The wizard asks for each control in turn: press the throttle pedal for A, the brake pedal for B, a
+paddle for L and R, and turn the wheel left for the Control Stick; skip anything the wheel does not
+have. The mapping is saved to `gamecontrollerdb.txt` next to `Config.toml` and reused on later
+launches. The same menu has sliders for the stick dead zone (lower it so the wheel responds around
+centre), the L/R press point, and rumble strength; the game's rumble reaches a force-feedback wheel
+as a vibration effect, so start low. Set the wheel's rotation range in G HUB, around 270° feels
+closest to a stick. Real force feedback is not driven.
+
 ## Requirements
 
 - Windows 10 or 11, 64-bit
