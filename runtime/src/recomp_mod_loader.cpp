@@ -198,8 +198,8 @@ bool IsKnownBaseRelLoaderWrite(const ExecutableRange& range) {
 
     // The game copies and relocates REL sections before executing them. Those
     // writes are normal loading/linking, not runtime code patches.
-    return (cpu->lr >= 0x8000A000u && cpu->lr < 0x8000A400u) ||
-           (cpu->lr >= 0x801A6000u && cpu->lr < 0x801A7000u);
+    return (cpu->lr >= MKW_GADDR(8000A000) && cpu->lr < MKW_GADDR(8000A400)) ||
+           (cpu->lr >= MKW_GADDR(801A6000) && cpu->lr < MKW_GADDR(801A7000));
 }
 
 } // namespace

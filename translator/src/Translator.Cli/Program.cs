@@ -58,6 +58,12 @@ if (functionMap is not null)
 {
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
 }
+// The runtime's native registrations are spelled as PAL identities; a non-PAL project supplies
+// the region table that turns them into this executable's addresses before any source scan.
+if (project?.Runtime.GuestAddressTablePath is { } guestAddressTablePath)
+{
+    GuestAddressTable.Current = GuestAddressTable.Load(guestAddressTablePath);
+}
 var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
 var preferCachedInputs = HasFlag(tail, "--prefer-cached-inputs");
 var dolFile = new Lazy<DolFile>(LoadDol);

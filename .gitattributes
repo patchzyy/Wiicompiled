@@ -3,3 +3,12 @@
 
 # Patch files must stay LF: git apply matches context bytes against LF upstream sources
 *.patch -text
+
+# Generated region tables and headers: reproduced byte-for-byte by the tools in
+# tools/region/ (see its README). The NTSC-U data_addresses.txt is hand-built and not marked.
+projects/mkwii-ntsc-*/MAP.txt linguist-generated=true
+projects/mkwii-ntsc-*/MAP_REPORT.md linguist-generated=true
+projects/mkwii-ntsc-*/region_port.json linguist-generated=true
+projects/mkwii-ntsc-j/data_addresses.txt linguist-generated=true
+projects/mkwii-ntsc-k/data_addresses.txt linguist-generated=true
+runtime/include/region/rmc*.h linguist-generated=true

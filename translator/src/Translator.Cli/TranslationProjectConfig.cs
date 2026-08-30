@@ -104,7 +104,10 @@ internal sealed class TranslationProjectConfig
             .ToArray();
         var runtime = new ProjectRuntime(
             abiDirectories,
-            ResolvePath(workspaceRoot, dto.Runtime?.NativeRegistrationRoot ?? "runtime/src"));
+            ResolvePath(workspaceRoot, dto.Runtime?.NativeRegistrationRoot ?? "runtime/src"),
+            dto.Runtime?.GuestAddressTable is { } guestAddressTable
+                ? ResolvePath(workspaceRoot, guestAddressTable)
+                : null);
         var outputRoot = ResolvePath(workspaceRoot, dto.Output?.Root ?? "generated");
         var output = new ProjectOutput(
             outputRoot,
@@ -416,6 +419,8 @@ internal sealed class TranslationProjectConfig
     {
         public List<string>? NativeAbiDirectories { get; init; }
         public string? NativeRegistrationRoot { get; init; }
+        // runtime/include/region/<game>.h for a non-PAL executable; absent for PAL.
+        public string? GuestAddressTable { get; init; }
     }
 
     private sealed class OutputDto
@@ -475,7 +480,8 @@ internal sealed record ProjectTranslation(
     bool AllowUnsupportedInstructions);
 internal sealed record ProjectRuntime(
     IReadOnlyList<string> NativeAbiDirectories,
-    string NativeRegistrationRoot);
+    string NativeRegistrationRoot,
+    string? GuestAddressTablePath);
 internal sealed record ProjectOutput(
     string Root,
     string Functions,

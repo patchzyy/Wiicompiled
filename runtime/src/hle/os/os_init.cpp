@@ -18,22 +18,22 @@
 #include "runtime_log.h"
 #include "system_bridge.h"
 
-extern "C" void func_801A961C(CpuContext* ctx);
-extern "C" void func_8055531C(CpuContext* ctx);
+extern "C" void MKW_GUEST_FUNC(801A961C)(CpuContext* ctx);
+extern "C" void MKW_GUEST_FUNC(8055531C)(CpuContext* ctx);
 
 extern "C" void OSInitAlarm_RecompModLateInit_801a961c(CpuContext* ctx) {
-    func_801A961C(ctx);
+    MKW_GUEST_FUNC(801A961C)(ctx);
 }
 
-REGISTER_NATIVE_FUNCTION_AS(0x801A961C, OSInitAlarm_RecompModLateInit_801a961c, "OSInitAlarm_RecompModLateInit_801a961c");
+REGISTER_NATIVE_FUNCTION_AS(MKW_GADDR(801A961C), OSInitAlarm_RecompModLateInit_801a961c, "OSInitAlarm_RecompModLateInit_801a961c");
 
 extern "C" void StaticRProlog_RecompModInit_8055531c(CpuContext* ctx) {
     RecompMod::RunMemoryInitializers();
-    func_8055531C(ctx);
+    MKW_GUEST_FUNC(8055531C)(ctx);
     RecompMod::RunPostRelInitializers();
 }
 
-REGISTER_NATIVE_FUNCTION_AS(0x8055531C, StaticRProlog_RecompModInit_8055531c, "StaticRProlog_RecompModInit_8055531c");
+REGISTER_NATIVE_FUNCTION_AS(MKW_GADDR(8055531C), StaticRProlog_RecompModInit_8055531c, "StaticRProlog_RecompModInit_8055531c");
 
 namespace {
 std::string ReadGuestCStringLimited(uint32_t address, size_t limit = 4096) {
@@ -78,7 +78,7 @@ extern "C" void OSFatal_HLE_801a4ec4(CpuContext* ctx) {
     std::exit(EXIT_FAILURE);
 }
 
-REGISTER_NATIVE_FUNCTION_AS(0x801A4EC4, OSFatal_HLE_801a4ec4, "OSFatal_HLE_801a4ec4");
+REGISTER_NATIVE_FUNCTION_AS(MKW_GADDR(801A4EC4), OSFatal_HLE_801a4ec4, "OSFatal_HLE_801a4ec4");
 
 extern "C" void GKI_delay_HLE_801301b4(CpuContext* ctx)
 {
@@ -91,7 +91,7 @@ extern "C" uint32_t BTM_IsDeviceUp_HLE_8013a300(CpuContext* ctx)
 {
     // Force Bluetooth stack to "up" to avoid endless polling loops while we lack
     // real hardware bring-up.
-    constexpr uint32_t kBtmCbBase = 0x80336278u;
+    constexpr uint32_t kBtmCbBase = MKW_GADDR(80336278);
     constexpr uint32_t kDevStateOffset = 0x64Eu;
     try {
         ::Memory::Write8(kBtmCbBase + kDevStateOffset, 5u);
@@ -124,16 +124,17 @@ extern "C" void HLE_SISetSamplingRate_801b3acc(uint32_t msec)
 
 // Video Interface (VI) - TV output.
 
-// VIGetTvFormat (0x801bacd8): CRITICAL, must return 1 (VI_PAL) not 0, or PAL builds
-// misbehave/panic.
+// VIGetTvFormat (0x801bacd8): CRITICAL, must report the executable's own TV format
+// (VI_PAL for RMCP01, VI_NTSC for RMCE01) or the game misbehaves/panics.
 extern "C" uint32_t HLE_VIGetTvFormat_801bacd8()
 {
     // VI_NTSC = 0, VI_PAL = 1, VI_MPAL = 2
-    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning VI_PAL (1)" << std::endl;
-    return 1;
+    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning " << MKW_REGION_VI_TV_FORMAT
+                      << std::endl;
+    return MKW_REGION_VI_TV_FORMAT;
 }
 
-REGISTER_NATIVE_FUNCTION(0x801B2DE0, SIInit_801b2de0);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(801B2DE0), SIInit_801b2de0);
 PPC_NATIVE_OVERRIDE_VOID(801B3ACC, HLE_SISetSamplingRate_801b3acc, (uint32_t msec), (msec));
 
 // OS____InitMemoryProtection (0x801A7DFC): real version touches MMU/MMIO we don't emulate;
@@ -188,27 +189,25 @@ PPC_NATIVE_OVERRIDE(801A8A50, OSGetResetCode_801a8a50, uint32_t, (), ());
 // fake handles and the success flag into the SDA (r13) block so OSResetSystem's checks pass.
 extern "C" uint32_t __OSInitSTM_HLE_801ab848(CpuContext* ctx)
 {
-    CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    if (!cpu) return 0;
-
+    (void)ctx;
     RT_LOG(RT_TAG_OS) << "__OSInitSTM_HLE_801ab848 called: initializing STM state" << std::endl;
 
-    // R13 (SDA2) holds the base for small data variables
-    const uint32_t r13 = cpu->gpr[13];
-    if (r13 == 0) {
-         RT_LOG(RT_TAG_OS) << "__OSInitSTM: Warning - R13 is 0, cannot write state." << std::endl;
-         return 0;
-    }
+    // These three globals are named by identity, not by an r13 offset. Their offsets inside the
+    // small-data block differ per region: RMCK01 keeps them 0x20 lower than PAL/NTSC-U/NTSC-J,
+    // and PAL's r13-0x62c8 is RMCK01's OSDisableScheduler nesting count - writing a fake handle
+    // there left the scheduler permanently "disabled", so every OSSleepThread refused to park
+    // and the Korean build hung during OS::Init.
+    constexpr uint32_t kStmInitializedAddr = MKW_GADDR(80386934);
+    constexpr uint32_t kStmImmediateHandleAddr = MKW_GADDR(80386938);
+    constexpr uint32_t kStmEventHookHandleAddr = MKW_GADDR(8038693C);
 
-    // Offsets from disassembly: r13-0x62cc=STM_Initialized, r13-0x62c8=/dev/stm/immediate,
-    // r13-0x62c4=/dev/stm/eventhook.
     try {
         // Mark STM as initialized
-        ::Memory::Write32(r13 - 0x62ccu, 1);
+        ::Memory::Write32(kStmInitializedAddr, 1);
 
         // Fake non-zero handles so callers' zero-checks pass.
-        ::Memory::Write32(r13 - 0x62c8u, 0x00535401); // "ST\x01"
-        ::Memory::Write32(r13 - 0x62c4u, 0x00535402); // "ST\x02"
+        ::Memory::Write32(kStmImmediateHandleAddr, 0x00535401); // "ST\x01"
+        ::Memory::Write32(kStmEventHookHandleAddr, 0x00535402); // "ST\x02"
 
         // Default Power/Reset callback pointers are left unset; safe since we never fire
         // the STM hardware interrupt that would invoke them.
@@ -311,7 +310,7 @@ extern "C" void PPCMfhid2_HLE_8012e630(CpuContext* ctx)
 {
     ctx->gpr[3] = PPCMfhid2_8012e630_impl();
 }
-REGISTER_TRANSLATED_FUNCTION(0x8012e630, PPCMfhid2_HLE_8012e630);
+REGISTER_TRANSLATED_FUNCTION(MKW_GADDR(8012e630), PPCMfhid2_HLE_8012e630);
 
 extern "C" void PPCMthid2_8012e638(CpuContext* ctx)
 {
