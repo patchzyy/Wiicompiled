@@ -5,6 +5,7 @@
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wheel_ffb.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -99,6 +100,9 @@ bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
 uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessingPaths(0);
+int g_ffbStrength = RuntimeConfigFile::FfbStrength();
+int g_ffbSpring = RuntimeConfigFile::FfbSpring();
+int g_ffbVibration = RuntimeConfigFile::FfbVibration();
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
     indices.fill(std::numeric_limits<int32_t>::min());
@@ -326,6 +330,7 @@ void DrawControllerSettings() {
     if (ImGui::MenuItem("Unassign controller")) {
         PADClearPort(selectedGamePort);
         g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+        wheel_ffb::NotifyControllersChanged();
     }
     ImGui::Separator();
     controller_mapping_wizard::DrawSetupList();
@@ -343,6 +348,7 @@ void DrawControllerSettings() {
                 PADSetPortForIndex(index, selectedGamePort);
                 g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
                 ApplyConfiguredMappings();
+                wheel_ffb::NotifyControllersChanged();
             }
             ImGui::PopID();
         }
@@ -449,6 +455,45 @@ void DrawControllerSettings() {
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             PADSerializeMappings();
+        }
+    }
+
+    if (wheel_ffb::IsWheelPort(selectedGamePort)) {
+        ImGui::SeparatorText("Force feedback");
+        bool ffbEnabled = RuntimeConfigFile::FfbEnabled();
+        if (ImGui::Checkbox("Enabled##ffb", &ffbEnabled)) {
+            RuntimeConfigFile::SetFfbEnabled(ffbEnabled);
+            wheel_ffb::NotifyControllersChanged();
+        }
+        ImGui::TextDisabled("%s", wheel_ffb::StatusText());
+        if (ffbEnabled) {
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Strength", &g_ffbStrength, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplyStrength(g_ffbStrength);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                RuntimeConfigFile::SetFfbStrength(g_ffbStrength);
+            }
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Centering spring", &g_ffbSpring, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplySpring(g_ffbSpring);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                RuntimeConfigFile::SetFfbSpring(g_ffbSpring);
+            }
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Vibration", &g_ffbVibration, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplyVibration(g_ffbVibration);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                RuntimeConfigFile::SetFfbVibration(g_ffbVibration);
+            }
+            ImGui::ProgressBar((wheel_ffb::SteeringPosition() + 1.0f) * 0.5f,
+                               ImVec2(190.0f, 0.0f), "Steering");
+            ImGui::TextDisabled("Set the wheel's rotation range in G HUB (270-360 works well)");
         }
     }
 
@@ -914,6 +959,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+            wheel_ffb::NotifyControllersChanged();
         }
         if (ev->type != AURORA_SDL_EVENT) {
             continue;

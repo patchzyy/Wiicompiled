@@ -63,6 +63,11 @@ struct RuntimeUserConfig {
     // comma-separated SDL-style physical button names ("south", or
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
+    std::optional<bool> ffbEnabled;
+    std::optional<int32_t> ffbStrength;
+    std::optional<int32_t> ffbSpring;
+    std::optional<int32_t> ffbVibration;
+    std::optional<bool> ffbForceWheel;
 };
 
 namespace RuntimeConfigFile {
@@ -363,6 +368,12 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
             FindConfigValue<std::string>(document, "controller", buttonKeys[index]);
     }
 
+    config.ffbEnabled = FindConfigValue<bool>(document, "ffb", "enabled");
+    config.ffbStrength = FindConfigInt(document, "ffb", "strength");
+    config.ffbSpring = FindConfigInt(document, "ffb", "spring");
+    config.ffbVibration = FindConfigInt(document, "ffb", "vibration");
+    config.ffbForceWheel = FindConfigValue<bool>(document, "ffb", "force_wheel");
+
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
     config.windowPosY = FindConfigInt(document, "video", "window_y");
@@ -468,6 +479,24 @@ inline constexpr std::array<std::string_view, 12> kControllerButtonKeys = {
 inline const std::optional<std::string>& ControllerButton(size_t index) {
     static const std::optional<std::string> empty;
     return index < Get().controllerButtons.size() ? Get().controllerButtons[index] : empty;
+}
+
+inline bool FfbEnabled(bool fallback = true) { return Get().ffbEnabled.value_or(fallback); }
+
+inline int32_t FfbStrength(int32_t fallback = 100) {
+    return std::clamp(Get().ffbStrength.value_or(fallback), 0, 100);
+}
+
+inline int32_t FfbSpring(int32_t fallback = 60) {
+    return std::clamp(Get().ffbSpring.value_or(fallback), 0, 100);
+}
+
+inline int32_t FfbVibration(int32_t fallback = 70) {
+    return std::clamp(Get().ffbVibration.value_or(fallback), 0, 100);
+}
+
+inline bool FfbForceWheel(bool fallback = false) {
+    return Get().ffbForceWheel.value_or(fallback);
 }
 
 // Update one TOML value without discarding comments, unrelated settings, or
@@ -623,6 +652,29 @@ inline bool SetControllerButton(size_t index, std::string value) {
     }
     Mutable().controllerButtons[index] = value;
     return WriteSetting("controller", kControllerButtonKeys[index], FormatString(value));
+}
+
+inline bool SetFfbEnabled(bool value) {
+    Mutable().ffbEnabled = value;
+    return WriteSetting("ffb", "enabled", value ? "true" : "false");
+}
+
+inline bool SetFfbStrength(int32_t value) {
+    value = std::clamp(value, 0, 100);
+    Mutable().ffbStrength = value;
+    return WriteSetting("ffb", "strength", std::to_string(value));
+}
+
+inline bool SetFfbSpring(int32_t value) {
+    value = std::clamp(value, 0, 100);
+    Mutable().ffbSpring = value;
+    return WriteSetting("ffb", "spring", std::to_string(value));
+}
+
+inline bool SetFfbVibration(int32_t value) {
+    value = std::clamp(value, 0, 100);
+    Mutable().ffbVibration = value;
+    return WriteSetting("ffb", "vibration", std::to_string(value));
 }
 
 inline bool SetAudioVolume(float value) {

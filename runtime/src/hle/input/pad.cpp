@@ -1,6 +1,7 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "hle/controller_status_contract.h"
+#include "wheel_ffb.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -73,6 +74,9 @@ PPC_NATIVE_OVERRIDE(801AF1E4, PAD__Recalibrate_HLE, uint32_t, (uint32_t mask), (
 
 extern "C" void PAD__ControlMotor_HLE(int32_t chan, uint32_t command)
 {
+    if (wheel_ffb::OnMotorCommand(chan, command)) {
+        return;
+    }
     PADControlMotor(chan, command);
 }
 PPC_NATIVE_OVERRIDE_VOID(801AF908, PAD__ControlMotor_HLE, (int32_t chan, uint32_t command), (chan, command));

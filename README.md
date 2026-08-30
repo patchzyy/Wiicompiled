@@ -68,9 +68,18 @@ The wizard asks for each control in turn: press the throttle pedal for A, the br
 paddle for L and R, and turn the wheel left for the Control Stick; skip anything the wheel does not
 have. The mapping is saved to `gamecontrollerdb.txt` next to `Config.toml` and reused on later
 launches. The same menu has sliders for the stick dead zone (lower it so the wheel responds around
-centre), the L/R press point, and rumble strength; the game's rumble reaches a force-feedback wheel
-as a vibration effect, so start low. Set the wheel's rotation range in G HUB, around 270° feels
-closest to a stick. Real force feedback is not driven.
+centre), the L/R press point, and rumble strength.
+
+**Force feedback.**
+Wheels from the Logitech Driving Force family (Driving Force, DFP, DFGT, G25, G27, G29, G920,
+G923, PRO, MOMO and the WingMan wheels) get a real force-feedback section under **F10 →
+Controller settings**: a centering spring so the wheel loads up as you steer, vibration driven by
+the game's own rumble (collisions, off-road, boosts), and an overall strength slider. Everything is
+saved to `Config.toml` and applied live. Forces keep working when the window loses focus. Set the
+wheel's rotation range in G HUB, around 270° feels closest to a stick. Other brands of FFB wheel
+can be tried with `force_wheel = true` under `[ffb]` in `Config.toml`; known-good IDs get added to
+the wheel table over time. The G29 family is the tested baseline; G920/G923 have known
+force-feedback issues in the underlying SDL library.
 
 ## Requirements
 
