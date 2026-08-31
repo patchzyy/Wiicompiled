@@ -501,8 +501,8 @@ inline bool FfbForceWheel(bool fallback = false) {
     return Get().ffbForceWheel.value_or(fallback);
 }
 
-inline int32_t SteeringSensitivity(int32_t fallback = 200) {
-    return std::clamp(Get().steeringSensitivity.value_or(fallback), 100, 400);
+inline int32_t SteeringSensitivity(int32_t fallback = 350) {
+    return std::clamp(Get().steeringSensitivity.value_or(fallback), 100, 900);
 }
 
 // Update one TOML value without discarding comments, unrelated settings, or
@@ -678,7 +678,7 @@ inline bool SetFfbSpring(int32_t value) {
 }
 
 inline bool SetSteeringSensitivity(int32_t value) {
-    value = std::clamp(value, 100, 400);
+    value = std::clamp(value, 100, 900);
     Mutable().steeringSensitivity = value;
     return WriteSetting("controller", "steering_sensitivity", std::to_string(value));
 }

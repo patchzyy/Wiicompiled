@@ -468,7 +468,7 @@ void DrawControllerSettings() {
         }
         ImGui::TextDisabled("%s", wheel_ffb::StatusText());
         ImGui::SetNextItemWidth(190.0f);
-        if (ImGui::SliderInt("Steering sensitivity", &g_steeringSensitivity, 100, 400, "%d%%",
+        if (ImGui::SliderInt("Steering sensitivity", &g_steeringSensitivity, 100, 900, "%d%%",
                              ImGuiSliderFlags_AlwaysClamp)) {
             wheel_ffb::ApplySteeringSensitivity(g_steeringSensitivity);
         }

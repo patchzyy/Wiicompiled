@@ -392,7 +392,7 @@ void ApplyVibration(int percent) {
 }
 
 void ApplySteeringSensitivity(int percent) {
-    g_steering = std::clamp(percent, 100, 400);
+    g_steering = std::clamp(percent, 100, 900);
 }
 
 int32_t ShapeSteering(uint32_t port, int32_t stickX) {
