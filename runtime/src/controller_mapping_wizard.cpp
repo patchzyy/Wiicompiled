@@ -78,6 +78,7 @@ struct WizardState {
 WizardState g_wizard;
 
 std::vector<std::string> g_userMappedGuids;
+std::vector<std::string> g_builtinMappedGuids;
 
 constexpr const char* kWheelMappingFields =
     "a:b0,b:b2,x:b1,y:b3,rightshoulder:b7,lefttrigger:b5,righttrigger:b4,start:b9,back:b8,"
@@ -229,6 +230,11 @@ std::vector<SetupCandidate> CollectCandidates() {
             candidates.push_back({id, name, false});
             continue;
         }
+        if (std::find(g_builtinMappedGuids.begin(), g_builtinMappedGuids.end(), GuidString(id)) !=
+            g_builtinMappedGuids.end()) {
+            candidates.push_back({id, name, false});
+            continue;
+        }
         SDL_Gamepad* gamepad = SDL_GetGamepadFromID(id);
         if (gamepad == nullptr) {
             continue;
@@ -362,8 +368,7 @@ void ApplyBuiltinWheelMappings() {
         return;
     }
     for (int i = 0; i < count; ++i) {
-        if (!wheel_ffb::IsWheelDevice(SDL_GetJoystickVendorForID(ids[i]),
-                                      SDL_GetJoystickProductForID(ids[i]))) {
+        if (!wheel_ffb::HasBuiltinLayout(ids[i])) {
             continue;
         }
         const std::string guid = GuidString(ids[i]);
@@ -380,6 +385,7 @@ void ApplyBuiltinWheelMappings() {
                                   << std::endl;
             continue;
         }
+        g_builtinMappedGuids.push_back(guid);
         RT_LOG(RT_TAG_CONFIG) << "wheel profile: applied built-in layout for " << name << std::endl;
     }
     SDL_free(ids);

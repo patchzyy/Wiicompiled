@@ -19,10 +19,10 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr uint16_t kLogitechVid = 0x046D;
-constexpr uint16_t kWheelPids[] = {
-    0xC202, 0xC20E, 0xC293, 0xC294, 0xC295, 0xC298, 0xC299, 0xC29A, 0xC29B, 0xC29C,
-    0xC24F, 0xC260, 0xC261, 0xC262, 0xC266, 0xC267, 0xC268, 0xC26D, 0xC26E, 0xC272,
-    0xCA03, 0xCA04,
+constexpr uint16_t kUnlistedWheelPids[] = {0xC202, 0xC20E, 0xC293, 0xC29C, 0xCA04};
+constexpr uint16_t kDrivingForcePids[] = {
+    0xC202, 0xC20E, 0xC24F, 0xC260, 0xC293, 0xC294, 0xC295,
+    0xC298, 0xC299, 0xC29A, 0xC29B, 0xC29C, 0xCA03, 0xCA04,
 };
 
 constexpr float kVibrationFloor = 2600.0f;
@@ -38,6 +38,8 @@ constexpr auto kOpenBackoff = std::chrono::seconds(30);
 constexpr uint16_t kAuroraStickDeadZone = 8000;
 constexpr uint16_t kWheelStickDeadZone = 600;
 constexpr int16_t kPedalThreshold = -8000;
+constexpr int16_t kPedalRestZone = 24000;
+constexpr int kMaxTrackedAxes = 8;
 constexpr auto kSpringRefresh = std::chrono::seconds(10);
 constexpr uint32_t kSpringLength = 30000;
 
@@ -70,9 +72,10 @@ int g_strength = RuntimeConfigFile::FfbStrength();
 int g_spring = RuntimeConfigFile::FfbSpring();
 int g_vibration = RuntimeConfigFile::FfbVibration();
 int g_steering = RuntimeConfigFile::SteeringSensitivity();
+bool g_restsHigh[kMaxTrackedAxes] = {};
 
 bool IsKnownWheel(SDL_Joystick* joystick) {
-    return IsWheelDevice(SDL_GetJoystickVendor(joystick), SDL_GetJoystickProduct(joystick));
+    return IsWheelInstance(SDL_GetJoystickID(joystick));
 }
 
 SDL_Joystick* JoystickForPort(uint32_t port) {
@@ -89,10 +92,7 @@ SDL_Joystick* WheelForPort(uint32_t port) {
     if (joystick == nullptr) {
         return nullptr;
     }
-    if (!IsKnownWheel(joystick) && !RuntimeConfigFile::FfbForceWheel()) {
-        return nullptr;
-    }
-    return joystick;
+    return IsKnownWheel(joystick) ? joystick : nullptr;
 }
 
 bool NamesRelated(const char* joystickName, const char* hapticName) {
@@ -281,9 +281,28 @@ void Reconcile() {
 
 } // namespace
 
-bool IsWheelDevice(uint16_t vendor, uint16_t product) {
-    return vendor == kLogitechVid &&
-           std::find(std::begin(kWheelPids), std::end(kWheelPids), product) != std::end(kWheelPids);
+bool IsWheelInstance(uint32_t instance) {
+    if (SDL_GetJoystickTypeForID(instance) == SDL_JOYSTICK_TYPE_WHEEL) {
+        return true;
+    }
+    if (RuntimeConfigFile::FfbForceWheel()) {
+        return true;
+    }
+    if (SDL_GetJoystickVendorForID(instance) != kLogitechVid) {
+        return false;
+    }
+    const uint16_t product = SDL_GetJoystickProductForID(instance);
+    return std::find(std::begin(kUnlistedWheelPids), std::end(kUnlistedWheelPids), product) !=
+           std::end(kUnlistedWheelPids);
+}
+
+bool HasBuiltinLayout(uint32_t instance) {
+    if (SDL_GetJoystickVendorForID(instance) != kLogitechVid) {
+        return false;
+    }
+    const uint16_t product = SDL_GetJoystickProductForID(instance);
+    return std::find(std::begin(kDrivingForcePids), std::end(kDrivingForcePids), product) !=
+           std::end(kDrivingForcePids);
 }
 
 void NotifyControllersChanged() { g_dirty = true; }
@@ -416,12 +435,45 @@ uint32_t PedalButtons(uint32_t port) {
     if (joystick == nullptr) {
         return 0;
     }
-    const int axes = SDL_GetNumJoystickAxes(joystick);
+    const int axes = std::min(SDL_GetNumJoystickAxes(joystick), kMaxTrackedAxes);
+    for (int axis = 1; axis < axes; ++axis) {
+        const int16_t value = SDL_GetJoystickAxis(joystick, axis);
+        if (value > kPedalRestZone) {
+            g_restsHigh[axis] = true;
+        }
+    }
+    if (axes == 2) {
+        const int16_t value = SDL_GetJoystickAxis(joystick, 1);
+        if (g_restsHigh[1]) {
+            return value < kPedalThreshold ? PAD_BUTTON_A : 0;
+        }
+        if (value < kPedalThreshold) {
+            return PAD_BUTTON_A;
+        }
+        return value > -kPedalThreshold ? PAD_BUTTON_B : 0;
+    }
+    int accel = RuntimeConfigFile::AcceleratorAxis();
+    int brake = RuntimeConfigFile::BrakeAxis();
+    if (accel < 0 || brake < 0) {
+        int found[2] = {-1, -1};
+        int count = 0;
+        for (int axis = 1; axis < axes && count < 2; ++axis) {
+            if (g_restsHigh[axis]) {
+                found[count++] = axis;
+            }
+        }
+        if (accel < 0) {
+            accel = count > 0 ? found[0] : 1;
+        }
+        if (brake < 0) {
+            brake = count > 1 ? found[1] : 2;
+        }
+    }
     uint32_t pressed = 0;
-    if (axes > 1 && SDL_GetJoystickAxis(joystick, 1) < kPedalThreshold) {
+    if (accel < axes && SDL_GetJoystickAxis(joystick, accel) < kPedalThreshold) {
         pressed |= PAD_BUTTON_A;
     }
-    if (axes > 2 && SDL_GetJoystickAxis(joystick, 2) < kPedalThreshold) {
+    if (brake < axes && SDL_GetJoystickAxis(joystick, brake) < kPedalThreshold) {
         pressed |= PAD_BUTTON_B;
     }
     return pressed;

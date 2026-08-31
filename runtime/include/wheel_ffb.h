@@ -4,7 +4,8 @@
 
 namespace wheel_ffb {
 
-bool IsWheelDevice(uint16_t vendor, uint16_t product);
+bool IsWheelInstance(uint32_t instance);
+bool HasBuiltinLayout(uint32_t instance);
 uint32_t PedalButtons(uint32_t port);
 void NotifyControllersChanged();
 void Tick();

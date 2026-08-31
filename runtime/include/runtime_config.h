@@ -69,6 +69,8 @@ struct RuntimeUserConfig {
     std::optional<int32_t> ffbVibration;
     std::optional<bool> ffbForceWheel;
     std::optional<int32_t> steeringSensitivity;
+    std::optional<int32_t> acceleratorAxis;
+    std::optional<int32_t> brakeAxis;
 };
 
 namespace RuntimeConfigFile {
@@ -375,6 +377,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.ffbVibration = FindConfigInt(document, "ffb", "vibration");
     config.ffbForceWheel = FindConfigValue<bool>(document, "ffb", "force_wheel");
     config.steeringSensitivity = FindConfigInt(document, "controller", "steering_sensitivity");
+    config.acceleratorAxis = FindConfigInt(document, "controller", "accelerator_axis");
+    config.brakeAxis = FindConfigInt(document, "controller", "brake_axis");
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
@@ -499,6 +503,14 @@ inline int32_t FfbVibration(int32_t fallback = 70) {
 
 inline bool FfbForceWheel(bool fallback = false) {
     return Get().ffbForceWheel.value_or(fallback);
+}
+
+inline int32_t AcceleratorAxis(int32_t fallback = -1) {
+    return std::clamp(Get().acceleratorAxis.value_or(fallback), -1, 7);
+}
+
+inline int32_t BrakeAxis(int32_t fallback = -1) {
+    return std::clamp(Get().brakeAxis.value_or(fallback), -1, 7);
 }
 
 inline int32_t SteeringSensitivity(int32_t fallback = 350) {
@@ -675,6 +687,18 @@ inline bool SetFfbSpring(int32_t value) {
     value = std::clamp(value, 0, 100);
     Mutable().ffbSpring = value;
     return WriteSetting("ffb", "spring", std::to_string(value));
+}
+
+inline bool SetAcceleratorAxis(int32_t value) {
+    value = std::clamp(value, -1, 7);
+    Mutable().acceleratorAxis = value;
+    return WriteSetting("controller", "accelerator_axis", std::to_string(value));
+}
+
+inline bool SetBrakeAxis(int32_t value) {
+    value = std::clamp(value, -1, 7);
+    Mutable().brakeAxis = value;
+    return WriteSetting("controller", "brake_axis", std::to_string(value));
 }
 
 inline bool SetSteeringSensitivity(int32_t value) {

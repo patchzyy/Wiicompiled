@@ -104,6 +104,8 @@ int g_ffbStrength = RuntimeConfigFile::FfbStrength();
 int g_ffbSpring = RuntimeConfigFile::FfbSpring();
 int g_ffbVibration = RuntimeConfigFile::FfbVibration();
 int g_steeringSensitivity = RuntimeConfigFile::SteeringSensitivity();
+int g_acceleratorAxis = RuntimeConfigFile::AcceleratorAxis();
+int g_brakeAxis = RuntimeConfigFile::BrakeAxis();
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
     indices.fill(std::numeric_limits<int32_t>::min());
@@ -502,6 +504,29 @@ void DrawControllerSettings() {
             }
             ImGui::ProgressBar((wheel_ffb::SteeringPosition() + 1.0f) * 0.5f,
                                ImVec2(190.0f, 0.0f), "Steering");
+            const auto pedalCombo = [](const char* label, int& axis, bool accelerator) {
+                ImGui::SetNextItemWidth(190.0f);
+                const std::string current =
+                    axis < 0 ? "Detected automatically" : "Axis " + std::to_string(axis);
+                if (!ImGui::BeginCombo(label, current.c_str())) {
+                    return;
+                }
+                for (int candidate = -1; candidate < 8; ++candidate) {
+                    const std::string name = candidate < 0 ? "Detected automatically"
+                                                           : "Axis " + std::to_string(candidate);
+                    if (ImGui::Selectable(name.c_str(), candidate == axis)) {
+                        axis = candidate;
+                        if (accelerator) {
+                            RuntimeConfigFile::SetAcceleratorAxis(candidate);
+                        } else {
+                            RuntimeConfigFile::SetBrakeAxis(candidate);
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            };
+            pedalCombo("Accelerator", g_acceleratorAxis, true);
+            pedalCombo("Brake", g_brakeAxis, false);
             ImGui::TextDisabled("Set the wheel's rotation range in G HUB (270-360 works well)");
         }
     }
