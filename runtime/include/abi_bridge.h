@@ -1,4 +1,5 @@
 #pragma once
+#include "region/guest_region.h"
 #include "memory.h"
 #include "ppc_runtime.h"
 #include "system_bridge.h"
@@ -26,7 +27,7 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx);
 // (used for the path mask filtering in ScnRenderer::createPath: depth of
 // field is always removed, bloom when the user disabled it)
 inline void ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
-    if (target == 0x8023BD38u) {
+    if (target == MKW_GADDR(8023BD38)) {
         // ScnRenderer::createPath receives the post-processing path mask in r4.
         ctx->gpr[4] = RuntimeGameGraphicsOptions::FilterScnRendererPathMask(ctx->gpr[4]);
     }
@@ -250,7 +251,7 @@ private:
 // Guest address of OSLoadContext, which models rfi-style context restoration
 // and intentionally replaces the full guest register file instead of returning
 // like a normal ABI call. It can never be guarded.
-inline constexpr uint32_t kOSLoadContextAddress = 0x801A1F58u;
+inline constexpr uint32_t kOSLoadContextAddress = MKW_GADDR(801A1F58);
 
 inline bool ShouldPreserveNonvolatileGprsForRawCpuCall(const TranslatedFunctionInfo* info) noexcept {
     return info->kind == FunctionKind::Native && info->address != kOSLoadContextAddress;

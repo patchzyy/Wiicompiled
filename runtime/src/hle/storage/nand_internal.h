@@ -5,6 +5,7 @@
 #pragma once
 
 #include "hle_stubs.h"
+#include "region/guest_region.h"
 #include "nand_check_contract.h"
 #include "hle/runtime_parse_helpers.h"
 #include "memory.h"
@@ -42,7 +43,7 @@
 // Mario Kart Wii Title ID
 namespace {
 constexpr uint32_t kNandTitleIdHi = 0x00010004;
-constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
+constexpr uint32_t kNandTitleIdLo = MKW_REGION_GAME_CODE; // game code fallback
 } // anonymous namespace
 
 // ============================================================================

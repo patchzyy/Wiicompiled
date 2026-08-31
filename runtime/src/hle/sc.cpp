@@ -10,11 +10,8 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 
-namespace {
-
-constexpr uint32_t kPalProductRegion = 2;
-
-} // namespace
+// The console identity the HLE exposes is that of a console from the executable's own region
+// (region/guest_region.h): AREA/GAME indices and the CODE prefix follow the game, not the host.
 
 // SCCheckStatus is polled in OSInit's busy loop (while(SCCheckStatus()==1) waits on async SYSCONF
 // load via NAND IPC); we have no async IPC callbacks, so return 0 (SUCCESS) immediately.
@@ -57,18 +54,18 @@ PPC_NATIVE_OVERRIDE(801B1CAC, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductArea_HLE()
 {
-    // The PAL setting.txt AREA value is "EUR". The SDK's lookup table at
-    // 0x8029CEB0 maps JPN=0, USA=1, EUR=2.
-    return kPalProductRegion;
+    // setting.txt AREA ("EUR" for PAL, "USA" for NTSC-U). The SDK's lookup table at
+    // PAL 0x8029CEB0 maps JPN=0, USA=1, EUR=2.
+    return MKW_REGION_SC_AREA;
 }
 
 PPC_NATIVE_OVERRIDE(801B23A0, SCGetProductArea_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductCode_HLE()
 {
-    // Original PAL SC storage for the six-byte CODE value.
-    constexpr uint32_t kProductCodeAddress = 0x803869E0u;
-    static constexpr char kProductCode[] = "LEH";
+    // Original SC storage for the six-byte CODE value (PAL identity 0x803869E0).
+    constexpr uint32_t kProductCodeAddress = MKW_GADDR(803869E0);
+    static constexpr char kProductCode[] = MKW_REGION_SC_PRODUCT_CODE;
     if (!Memory::Contains(kProductCodeAddress, sizeof(kProductCode))) {
         return 0;
     }
@@ -94,9 +91,9 @@ PPC_NATIVE_OVERRIDE(801B2460, SCGetProductSN_HLE, uint32_t, (uint32_t serialAddr
 
 extern "C" uint32_t SCGetProductGameRegion_HLE()
 {
-    // The PAL setting.txt GAME value is "EU". The SDK's own lookup table at
-    // 0x8029CEF8 maps JP=0, US=1, EU=2.
-    return kPalProductRegion;
+    // setting.txt GAME ("EU" for PAL, "US" for NTSC-U). The SDK's own lookup table at
+    // PAL 0x8029CEF8 maps JP=0, US=1, EU=2.
+    return MKW_REGION_SC_GAME_REGION;
 }
 
 PPC_NATIVE_OVERRIDE(801B24C8, SCGetProductGameRegion_HLE, uint32_t, (), ());

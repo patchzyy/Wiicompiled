@@ -135,22 +135,22 @@ ViState g_vi;
 
 
 // Guest-side state addresses used by the SDK's VI globals.
-constexpr uint32_t kViInitializedFlagAddr   = 0x80386b38;
-constexpr uint32_t kViTvFormatAddr          = 0x80386ba8;
-constexpr uint32_t kViRenderWidthAddr       = 0x80350864;
-constexpr uint32_t kViRenderHeightAddr      = 0x80350866;
-constexpr uint32_t kViXfbWidthAddr          = 0x80350872;
-constexpr uint32_t kViXfbHeightAddr         = 0x8035087c;
-constexpr uint32_t kViRetraceCountAddr      = 0x80386be4; // matches VIWaitForRetrace/handler
-constexpr uint32_t kViTimingGuardAddr       = 0x80386b44;
-constexpr uint32_t kViPreRetraceCallback    = 0x80386bb8;
-constexpr uint32_t kViPostRetraceCallback   = 0x80386bb4;
-constexpr uint32_t kViNextFrameBufferAddr   = 0x80386ba0;
-constexpr uint32_t kViNextFrameBufferHwAddr = 0x80350890;
-constexpr uint32_t kViRetraceQueueAddr      = 0x80386bc0; // Thread queue for VIWaitForRetrace
+constexpr uint32_t kViInitializedFlagAddr   = MKW_GADDR(80386b38);
+constexpr uint32_t kViTvFormatAddr          = MKW_GADDR(80386ba8);
+constexpr uint32_t kViRenderWidthAddr       = MKW_GADDR(80350864);
+constexpr uint32_t kViRenderHeightAddr      = MKW_GADDR(80350866);
+constexpr uint32_t kViXfbWidthAddr          = MKW_GADDR(80350872);
+constexpr uint32_t kViXfbHeightAddr         = MKW_GADDR(8035087c);
+constexpr uint32_t kViRetraceCountAddr      = MKW_GADDR(80386be4); // matches VIWaitForRetrace/handler
+constexpr uint32_t kViTimingGuardAddr       = MKW_GADDR(80386b44);
+constexpr uint32_t kViPreRetraceCallback    = MKW_GADDR(80386bb8);
+constexpr uint32_t kViPostRetraceCallback   = MKW_GADDR(80386bb4);
+constexpr uint32_t kViNextFrameBufferAddr   = MKW_GADDR(80386ba0);
+constexpr uint32_t kViNextFrameBufferHwAddr = MKW_GADDR(80350890);
+constexpr uint32_t kViRetraceQueueAddr      = MKW_GADDR(80386bc0); // Thread queue for VIWaitForRetrace
 
 // EGG::BaseSystem::sSystem pointer - must be non-null before post-retrace callback is valid
-constexpr uint32_t kEggSSystemAddr = 0x80386F60;
+constexpr uint32_t kEggSSystemAddr = MKW_GADDR(80386F60);
 
 std::chrono::microseconds IntervalForFormat(uint32_t tvFormat) {
     // NTSC-ish defaults to 60 Hz; PAL uses 50 Hz.

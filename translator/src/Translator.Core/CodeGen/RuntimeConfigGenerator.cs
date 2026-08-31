@@ -15,12 +15,17 @@ public sealed class RuntimeConfigGenerator
     /// Generates a C++ header file containing runtime configuration metadata. SDA bases come from the
     /// project manifest, not from scanning the boot code: they're data pinned to the DOL's SHA-256, and
     /// guessing them from section midpoints could silently produce a wrong runtime.
+    /// <paramref name="guestRegionHeader"/> is the project's guest address table
+    /// (<c>runtime.guest_address_table</c>) as a workspace-relative include path; the runtime resolves
+    /// its PAL-spelled guest addresses through it (runtime/include/region/guest_region.h), so writing
+    /// it here binds the runtime to the executable this translation was made from.
     /// </summary>
     public static void GenerateConfigHeader(
         uint sda1Base,
         uint sda2Base,
         string outputPath,
-        string projectName = "PowerPC DOL")
+        string projectName = "PowerPC DOL",
+        string? guestRegionHeader = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"// AUTO-GENERATED for {projectName}");
@@ -32,6 +37,14 @@ public sealed class RuntimeConfigGenerator
         sb.AppendLine();
         sb.AppendLine("#include <cstdint>");
         sb.AppendLine();
+        if (guestRegionHeader is not null)
+        {
+            sb.AppendLine("// Which executable's addresses the runtime binds to: the region header its PAL-spelled");
+            sb.AppendLine("// guest addresses resolve through (see runtime/include/region/guest_region.h).");
+            sb.AppendLine("// Relative to the workspace root, which is on every runtime include path.");
+            sb.AppendLine($"#define MKW_GUEST_REGION_HEADER \"{guestRegionHeader}\"");
+            sb.AppendLine();
+        }
         sb.AppendLine("namespace RuntimeConfig {");
         sb.AppendLine();
         sb.AppendLine("// PowerPC ABI Small Data Area base pointers");

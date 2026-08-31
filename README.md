@@ -143,6 +143,9 @@ and then throw a C++ compiler at the result. It's a **one-time cost** on your ma
 **Which game version works?**
 Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
 them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
+(The translator and runtime also carry validated projects for the NTSC-U `RMCE01`, NTSC-J `RMCJ01`
+and NTSC-K `RMCK01` discs - `projects/mkwii-ntsc-*`, see `tools/region/README.md` - but setup
+does not offer them yet.)
 
 **Can I recompile other GameCube/Wii games with it?**
 The translator itself handles DOLs and RELs generically, see

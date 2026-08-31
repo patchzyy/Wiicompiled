@@ -430,7 +430,7 @@ extern "C" void NAND_IOS_OpenBody_HLE_801938FC(CpuContext* ctx) {
     ctx->gpr[3] = static_cast<uint32_t>(result);
     ctx->gpr[1] = ctx->gpr[1] + 32u;
 }
-REGISTER_NATIVE_FUNCTION_AS(0x801938FC, NAND_IOS_OpenBody_HLE_801938FC, "NAND_IOS_OpenBody_HLE_801938FC");
+REGISTER_NATIVE_FUNCTION_AS(MKW_GADDR(801938FC), NAND_IOS_OpenBody_HLE_801938FC, "NAND_IOS_OpenBody_HLE_801938FC");
 
 extern "C" int32_t NAND_IOS_Close_HLE(uint32_t fd) {
     if (fd == ISFS_DEV_FD) {
@@ -828,15 +828,21 @@ static bool g_isfsInitialized = false;
 // load-bearing and must not be "tidied". Names come from the RVL IPC/ISFS
 // sources; only the naming changed here, never a value.
 namespace {
-constexpr uint32_t kIsfsFdSda1Offset = 29408u;              // __ISFS_fd
-constexpr uint32_t kIsfsPathSda1Offset = 29400u;            // __ISFS_path ("/dev/fs")
-constexpr uint32_t kIpcBufferLoSda1Offset = 25620u;         // IPC buffer window, low
-constexpr uint32_t kIpcBufferHiSda1Offset = 25616u;         // IPC buffer window, high
-constexpr uint32_t kIpcArenaLoSda1Offset = 25732u;          // __IPCArenaLo
-constexpr uint32_t kIpcArenaHiSda1Offset = 25728u;          // __IPCArenaHi
-constexpr uint32_t kIsfsHeapHandleSda1Offset = 25724u;      // ISFS heap handle
-constexpr uint32_t kIsfsHeapBaseSda1Offset = 25740u;        // ISFS heap base address
-constexpr uint32_t kIsfsHeapInitializedSda1Offset = 25744u; // ISFS heap created flag
+// The ISFS client's small-data globals, named by PAL identity rather than by an r13 offset.
+// Their offsets inside the small-data block are not the same in every region: RMCK01 keeps the
+// .sbss cluster 0x20 lower, and __ISFS_fd/__ISFS_path 0x8 lower, than PAL/NTSC-U/NTSC-J. Writing
+// them at a hardcoded PAL offset therefore lands on unrelated globals in Korea, the filesystem
+// client never comes up, and the save-data check fails with the "cannot read/write the Wii
+// system memory" dialog. See projects/mkwii-ntsc-*/data_addresses.txt for each address's evidence.
+constexpr uint32_t kIsfsFdGlobal = MKW_GADDR(80385920);            // __ISFS_fd
+constexpr uint32_t kIsfsPathGlobal = MKW_GADDR(80385928);          // __ISFS_path ("/dev/fs")
+constexpr uint32_t kIpcBufferLoGlobal = MKW_GADDR(803867EC);       // IPC buffer window, low
+constexpr uint32_t kIpcBufferHiGlobal = MKW_GADDR(803867F0);       // IPC buffer window, high
+constexpr uint32_t kIpcArenaLoGlobal = MKW_GADDR(8038677C);        // __IPCArenaLo
+constexpr uint32_t kIpcArenaHiGlobal = MKW_GADDR(80386780);        // __IPCArenaHi
+constexpr uint32_t kIsfsHeapHandleGlobal = MKW_GADDR(80386784);    // ISFS heap handle
+constexpr uint32_t kIsfsHeapBaseGlobal = MKW_GADDR(80386774);      // ISFS heap base address
+constexpr uint32_t kIsfsHeapInitializedGlobal = MKW_GADDR(80386770);  // ISFS heap created flag
 } // namespace
 
 static void WriteGuestString(uint32_t address, const char* value) {
@@ -866,51 +872,36 @@ int32_t ISFS_OpenLib_Initialize(CpuContext* ctx) {
         return ISFS_OK;
     }
 
-    const uint32_t r13 = ctx->gpr[13];
-    if (r13 == 0) {
-        return ISFS_OK;
-    }
+    WriteGuestString(kIsfsPathGlobal, "/dev/fs");
 
-    const uint32_t isfsFdGlobal = r13 - kIsfsFdSda1Offset;
-    const uint32_t isfsPathGlobal = r13 - kIsfsPathSda1Offset;
-    const uint32_t ipcBufferLoGlobal = r13 - kIpcBufferLoSda1Offset;
-    const uint32_t ipcBufferHiGlobal = r13 - kIpcBufferHiSda1Offset;
-    const uint32_t ipcArenaLoGlobal = r13 - kIpcArenaLoSda1Offset;
-    const uint32_t ipcArenaHiGlobal = r13 - kIpcArenaHiSda1Offset;
-    const uint32_t isfsHeapGlobal = r13 - kIsfsHeapHandleSda1Offset;
-    const uint32_t isfsHeapBaseGlobal = r13 - kIsfsHeapBaseSda1Offset;
-    const uint32_t isfsHeapInitializedGlobal = r13 - kIsfsHeapInitializedSda1Offset;
-
-    WriteGuestString(isfsPathGlobal, "/dev/fs");
-
-    if (Memory::Contains(isfsFdGlobal, 4)) {
-        Memory::Write32(isfsFdGlobal, static_cast<uint32_t>(ISFS_DEV_FD));
+    if (Memory::Contains(kIsfsFdGlobal, 4)) {
+        Memory::Write32(kIsfsFdGlobal, static_cast<uint32_t>(ISFS_DEV_FD));
     }
 
     // The heap bring-up below reads and writes all seven IPC globals, so it only
     // runs when every one of them is inside guest memory.
-    for (const uint32_t global : {ipcBufferLoGlobal, ipcBufferHiGlobal, ipcArenaLoGlobal,
-                                  ipcArenaHiGlobal, isfsHeapGlobal, isfsHeapBaseGlobal,
-                                  isfsHeapInitializedGlobal}) {
+    for (const uint32_t global : {kIpcBufferLoGlobal, kIpcBufferHiGlobal, kIpcArenaLoGlobal,
+                                  kIpcArenaHiGlobal, kIsfsHeapHandleGlobal, kIsfsHeapBaseGlobal,
+                                  kIsfsHeapInitializedGlobal}) {
         if (!Memory::Contains(global, 4)) {
             return ISFS_OK;
         }
     }
 
-    uint32_t ipcLo = Memory::Read32(ipcBufferLoGlobal);
-    uint32_t ipcHi = Memory::Read32(ipcBufferHiGlobal);
+    uint32_t ipcLo = Memory::Read32(kIpcBufferLoGlobal);
+    uint32_t ipcHi = Memory::Read32(kIpcBufferHiGlobal);
     if (ipcLo == 0 || ipcHi == 0 || ipcLo >= ipcHi) {
         return ISFS_OK;
     }
 
-    if (Memory::Read32(isfsHeapInitializedGlobal) == 0) {
-        Memory::Write32(ipcArenaLoGlobal, ipcLo);
-        Memory::Write32(ipcArenaHiGlobal, ipcHi);
+    if (Memory::Read32(kIsfsHeapInitializedGlobal) == 0) {
+        Memory::Write32(kIpcArenaLoGlobal, ipcLo);
+        Memory::Write32(kIpcArenaHiGlobal, ipcHi);
 
         const uint32_t heapBase = (ipcLo + 31u) & ~31u;
         const uint32_t heapSize = 5440u;
         if (heapBase + heapSize <= ipcHi) {
-            Memory::Write32(isfsHeapBaseGlobal, heapBase);
+            Memory::Write32(kIsfsHeapBaseGlobal, heapBase);
 
             const uint32_t savedR3 = ctx->gpr[3];
             const uint32_t savedR4 = ctx->gpr[4];
@@ -919,21 +910,21 @@ int32_t ISFS_OpenLib_Initialize(CpuContext* ctx) {
 
             ctx->gpr[3] = heapBase;
             ctx->gpr[4] = heapSize;
-            ctx->lr = 0x80169BCCu;
-            InvokeDirectCpu<0x801949B8u>(ctx);
+            ctx->lr = MKW_GADDR(80169BCC);
+            InvokeDirectCpu<MKW_GADDR(801949B8)>(ctx);
             const uint32_t heapHandle = ctx->gpr[3];
 
             ctx->gpr[3] = heapBase + heapSize;
-            ctx->lr = 0x80169BCCu;
-            InvokeDirectCpu<0x80193040u>(ctx);
+            ctx->lr = MKW_GADDR(80169BCC);
+            InvokeDirectCpu<MKW_GADDR(80193040)>(ctx);
 
             ctx->gpr[3] = savedR3;
             ctx->gpr[4] = savedR4;
             ctx->gpr[5] = savedR5;
             ctx->lr = savedLr;
 
-            Memory::Write32(isfsHeapGlobal, heapHandle);
-            Memory::Write32(isfsHeapInitializedGlobal, 1u);
+            Memory::Write32(kIsfsHeapHandleGlobal, heapHandle);
+            Memory::Write32(kIsfsHeapInitializedGlobal, 1u);
         }
     }
 
@@ -944,7 +935,7 @@ extern "C" void ISFS_OpenLib_HLE_80169BCC(CpuContext* ctx) {
     ctx->gpr[3] = static_cast<uint32_t>(ISFS_OpenLib_Initialize(ctx));
 }
 
-REGISTER_NATIVE_FUNCTION_AS(0x80169BCC, ISFS_OpenLib_HLE_80169BCC, "ISFS_OpenLib_HLE_80169BCC");
+REGISTER_NATIVE_FUNCTION_AS(MKW_GADDR(80169BCC), ISFS_OpenLib_HLE_80169BCC, "ISFS_OpenLib_HLE_80169BCC");
 
 // ============================================================================
 // IOS_Ioctlv HLE - Vector Ioctl for complex ISFS operations

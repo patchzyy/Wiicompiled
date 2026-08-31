@@ -312,7 +312,7 @@ extern "C" void OS__SleepTicks_HLE_801aaca8(CpuContext* ctx)
 
     OS__RestoreInterrupts_801a65d4(irqState);
 }
-REGISTER_NATIVE_FUNCTION(0x801AACA8, OS__SleepTicks_HLE_801aaca8);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(801AACA8), OS__SleepTicks_HLE_801aaca8);
 
 namespace {
 // OSSleepThread must reach SelectThread with the scheduler-disable count at zero, or the thread

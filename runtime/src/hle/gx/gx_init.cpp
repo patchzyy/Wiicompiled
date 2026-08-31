@@ -24,8 +24,8 @@ extern "C" GXFifoObj* GXInit(void* base, u32 size);
  */
 extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
 {
-    constexpr uint32_t kFifoObjAddr = 0x80343740u;
-    constexpr uint32_t kGXDataAddr = 0x803437C0u;
+    constexpr uint32_t kFifoObjAddr = MKW_GADDR(80343740);
+    constexpr uint32_t kGXDataAddr = MKW_GADDR(803437C0);
     constexpr uint32_t kGXDataSize = 0x600u;
 
     GXInit(GuestToHostPtr(fifoBase, fifoSize), fifoSize);
@@ -77,7 +77,6 @@ extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
     } catch (...) {}
 
     __GX__SetTmemConfig_80171458(2);
-
     RT_LOGF(RT_TAG_GX, "GX initialized, FIFO at 0x%08X (base=0x%08X size=0x%08X)\n",
             kFifoObjAddr, fifoBase, fifoSize);
 
@@ -107,14 +106,14 @@ extern "C" void __GX__FifoInit_8016d180()
 {
     constexpr uint32_t kCpInterruptId = 0x11u;
     constexpr uint32_t kCpInterruptMask = 0x4000u;
-    constexpr uint32_t kCpInterruptHandlerAddr = 0x8016c668u;
-    constexpr uint32_t kGxCurrentThreadPtrAddr = 0x803867c4u;
-    constexpr uint32_t kGxThreadQueueAddr = 0x803867c0u;
-    constexpr uint32_t kCpuFifoObjAddr = 0x80343de4u;
-    constexpr uint32_t kGpFifoObjAddr = 0x80343dc0u;
+    constexpr uint32_t kCpInterruptHandlerAddr = MKW_GADDR(8016c668);
+    constexpr uint32_t kGxCurrentThreadPtrAddr = MKW_GADDR(803867c4);
+    constexpr uint32_t kGxThreadQueueAddr = MKW_GADDR(803867c0);
+    constexpr uint32_t kCpuFifoObjAddr = MKW_GADDR(80343de4);
+    constexpr uint32_t kGpFifoObjAddr = MKW_GADDR(80343dc0);
     constexpr size_t kFifoObjSize = 0x24u;
-    constexpr uint32_t kFifoWrapFlagAddr = 0x803867b0u;
-    constexpr uint32_t kFifoWrapFlag2Addr = 0x803867b1u;
+    constexpr uint32_t kFifoWrapFlagAddr = MKW_GADDR(803867b0);
+    constexpr uint32_t kFifoWrapFlag2Addr = MKW_GADDR(803867b1);
 
     __OSSetInterruptHandler_801a65f8_hle(kCpInterruptId, kCpInterruptHandlerAddr);
     __OSUnmaskInterrupts_801a69bc_hle(kCpInterruptMask);
@@ -141,9 +140,9 @@ extern "C" void __GX__PEInit_8016ee14()
     constexpr uint32_t kPeFinishInterruptId = 0x13u;
     constexpr uint32_t kPeTokenInterruptMask = 0x1000u;
     constexpr uint32_t kPeFinishInterruptMask = 0x2000u;
-    constexpr uint32_t kPeTokenHandlerAddr = 0x8016eccc;
-    constexpr uint32_t kPeFinishHandlerAddr = 0x8016ed94;
-    constexpr uint32_t kPeThreadQueueAddr = 0x803867d0u;
+    constexpr uint32_t kPeTokenHandlerAddr = MKW_GADDR(8016eccc);
+    constexpr uint32_t kPeFinishHandlerAddr = MKW_GADDR(8016ed94);
+    constexpr uint32_t kPeThreadQueueAddr = MKW_GADDR(803867d0);
 
     __OSSetInterruptHandler_801a65f8_hle(kPeTokenInterruptId, kPeTokenHandlerAddr);
     __OSSetInterruptHandler_801a65f8_hle(kPeFinishInterruptId, kPeFinishHandlerAddr);
@@ -170,20 +169,20 @@ extern "C" void GX__BeginDisplayList_80172e00(uint32_t la, uint32_t s) {
         uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (!gd) return;
         if (Memory::Read32(gd + 0x5FCu)) GX__SetDirtyState_8016ee78();
-        if (Memory::Read8(gd + 0x5F9u)) std::memcpy(Memory::GetPointer(0x80344110, 0x600), Memory::GetPointer(gd, 0x600), 0x600);
-        Memory::Write32(0x80344094, la + s - 4u);
-        Memory::Write32(0x803440AC, 0);
-        Memory::Write32(0x80344090, la);
-        Memory::Write32(0x80344098, s);
-        Memory::Write32(0x803440A4, la);
-        Memory::Write32(0x803440A8, la);
+        if (Memory::Read8(gd + 0x5F9u)) std::memcpy(Memory::GetPointer(MKW_GADDR(80344110), 0x600), Memory::GetPointer(gd, 0x600), 0x600);
+        Memory::Write32(MKW_GADDR(80344094), la + s - 4u);
+        Memory::Write32(MKW_GADDR(803440AC), 0);
+        Memory::Write32(MKW_GADDR(80344090), la);
+        Memory::Write32(MKW_GADDR(80344098), s);
+        Memory::Write32(MKW_GADDR(803440A4), la);
+        Memory::Write32(MKW_GADDR(803440A8), la);
         Memory::Write8(gd + 0x5F8u, 1u);
         // Mirror the guest fifo-object fields the FIFO write path consumes so
         // HleFifoWrite never has to read them back out of guest memory.
         BeginDisplayListRecording(la, s);
         GXFlush();
-        GX__GetCPUFifo_8016cf10(0x80344710);
-        GX__SetCPUFifo_8016c94c(0x80344090);
+        GX__GetCPUFifo_8016cf10(MKW_GADDR(80344710));
+        GX__SetCPUFifo_8016c94c(MKW_GADDR(80344090));
     } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(80172e00, GX__BeginDisplayList_80172e00, (uint32_t la, uint32_t s), (la, s));
@@ -191,9 +190,9 @@ PPC_NATIVE_OVERRIDE_VOID(80172e00, GX__BeginDisplayList_80172e00, (uint32_t la, 
 extern "C" uint32_t GX__EndDisplayList_80172eb4() {
     try {
         GXFlush();
-        GX__GetCPUFifo_8016cf10(0x80344090);
+        GX__GetCPUFifo_8016cf10(MKW_GADDR(80344090));
         const uint8_t wrapped = Memory::Read8(kDlFifoAddr + kDlWrapFlagOffset);
-        GX__SetCPUFifo_8016c94c(0x80344710);
+        GX__SetCPUFifo_8016c94c(MKW_GADDR(80344710));
 
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) {
@@ -201,7 +200,7 @@ extern "C" uint32_t GX__EndDisplayList_80172eb4() {
                 const int32_t interruptLevel = OS__DisableInterrupts_801a65ac();
                 const uint32_t savedWord8 = Memory::Read32(gd + 0x08u);
                 std::memcpy(Memory::GetPointer(gd, 0x600),
-                            Memory::GetPointer(0x80344110, 0x600),
+                            Memory::GetPointer(MKW_GADDR(80344110), 0x600),
                             0x600);
                 Memory::Write32(gd + 0x08u, savedWord8);
                 OS__RestoreInterrupts_801a65d4(interruptLevel);

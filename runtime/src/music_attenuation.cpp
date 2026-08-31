@@ -1,4 +1,5 @@
 #include "music_attenuation.h"
+#include "region/guest_region.h"
 
 #include "memory.h"
 
@@ -26,7 +27,7 @@
 namespace MusicAttenuation {
 namespace {
 
-constexpr uint32_t kSoundManagerPointer = 0x809C2898u;
+constexpr uint32_t kSoundManagerPointer = MKW_GADDR(809C2898);
 constexpr uint32_t kArchivePlayerOffset = 0x5BCu;
 constexpr uint32_t kSoundPlayersOffset = 0x34u;
 constexpr uint32_t kSoundPlayerVolumeOffset = 0x2Cu;

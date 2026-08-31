@@ -58,6 +58,12 @@ if (functionMap is not null)
 {
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
 }
+// The runtime's native registrations are spelled as PAL identities; the project's region table
+// turns them into this executable's addresses before any source scan (PAL's maps each to itself).
+if (project?.Runtime.GuestAddressTablePath is { } guestAddressTablePath)
+{
+    GuestAddressTable.Current = GuestAddressTable.Load(guestAddressTablePath);
+}
 var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
 var preferCachedInputs = HasFlag(tail, "--prefer-cached-inputs");
 var dolFile = new Lazy<DolFile>(LoadDol);
@@ -2896,7 +2902,8 @@ int RunGenerateDataInit()
     // Generate runtime configuration header with the manifest's SDA base pointers
     var (dataInitSda1Base, dataInitSda2Base) = loadedProject.RequireSdaBases();
     RuntimeConfigGenerator.GenerateConfigHeader(
-        dataInitSda1Base, dataInitSda2Base, runtimeConfigOutput, loadedProject.Identity.DisplayName);
+        dataInitSda1Base, dataInitSda2Base, runtimeConfigOutput, loadedProject.Identity.DisplayName,
+        loadedProject.Runtime.GuestAddressTableInclude);
 
     // Load the REL file for runtime embedding (apply relocations since runtime does not OSLink)
     RelImage? relImage = null;
@@ -3788,7 +3795,8 @@ ProgramImage LoadImage()
         sda1Base,
         sda2Base,
         loadedProject.Output.RuntimeConfig,
-        loadedProject.Identity.DisplayName);
+        loadedProject.Identity.DisplayName,
+        loadedProject.Runtime.GuestAddressTableInclude);
     Console.WriteLine(
         $"[translator] SDA bases: r13 (_SDA_BASE_) 0x{sda1Base:X8}, r2 (_SDA2_BASE_) 0x{sda2Base:X8} " +
         $"(entry 0x{dol.EntryPoint:X8}).");

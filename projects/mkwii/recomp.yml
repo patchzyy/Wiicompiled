@@ -38,6 +38,9 @@ runtime:
   native_registration_root: runtime/src
   native_abi_directories:
     - runtime/src/hle/gx
+  # The table the runtime's PAL-spelled guest addresses resolve through. PAL is the identity
+  # region, so this maps every address to itself; see runtime/include/region/guest_region.h.
+  guest_address_table: runtime/include/region/rmcp01.h
 
 output:
   root: generated
