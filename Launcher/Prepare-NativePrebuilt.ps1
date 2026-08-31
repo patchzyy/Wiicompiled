@@ -61,8 +61,6 @@ Assert-File $windres 'Portable resource compiler'
 Assert-File $clangBinary 'Portable clang driver binary'
 Assert-Directory $dependencies 'Pinned offline dependency sources'
 Assert-Directory $auroraSource 'aurora-main source tree'
-Assert-File (Join-Path $repoRoot 'generated\build_shards\shards.cmake') `
-    'Translator shard manifest (run the developer build once so runtime/ can configure)'
 
 if ($Parallel -le 0) { $Parallel = [Environment]::ProcessorCount }
 

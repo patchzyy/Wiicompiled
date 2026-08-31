@@ -121,7 +121,8 @@ Source: <https://github.com/higan-emu/libco>. Full license text:
 These are pinned in `aurora-main/extern/CMakeLists.txt`, `aurora-main/CMakeLists.txt` and
 `aurora-main/cmake/AuroraDawnProvider.cmake`. They are not stored in this repository; the build
 downloads them, and release installers carry the resulting binaries. Their license texts are
-included in the installer's `licenses/` folder.
+included in the installer's `licenses/` folder. The Windows installer bundles the pinned source
+trees themselves (fetched by `Launcher/Prepare-Dependencies.ps1`) so end-user builds run offline.
 
 | Component | Version | License | Upstream |
 | --- | --- | --- | --- |

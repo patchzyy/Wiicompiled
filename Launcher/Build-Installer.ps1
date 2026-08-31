@@ -94,12 +94,17 @@ if (-not (Test-Path -LiteralPath (Join-Path $portableTools 'llvm-mingw\bin\x86_6
 }
 Assert-File (Join-Path $portableTools 'CMake\bin\cmake.exe') 'Portable CMake'
 Assert-File (Join-Path $portableTools 'Ninja\ninja.exe') 'Portable Ninja'
-Assert-Directory $dependencySources 'Pinned offline dependency sources'
 # native_prebuilt carries the aurora/third-party archives the user no longer has
 # to compile (launcher/Prepare-NativePrebuilt.ps1).
 # Kept in step with InstalledLayout.DependencyNames by Test-PinnedFacts.ps1: the installed host
 # refuses to call a toolkit complete unless every one of these directories is present.
 $requiredDependencies = @('abseil-cpp','cppwinrt','dawn_prebuilt','fmt','freetype','imgui','libusb','native_prebuilt','png','SDL','sqlite3','tracy','xxhash','zlib','zstd')
+$missingSources = @($requiredDependencies | Where-Object { $_ -ne 'native_prebuilt' } |
+    Where-Object { -not (Test-Path -LiteralPath (Join-Path $dependencySources $_) -PathType Container) })
+if ($missingSources.Count -gt 0) {
+    & (Join-Path $PSScriptRoot 'Prepare-Dependencies.ps1') -Destination $dependencySources
+}
+Assert-Directory $dependencySources 'Pinned offline dependency sources'
 
 # The precompiled archives are only interchangeable with what the user's machine
 # compiles if both came from this toolchain and this flag set, so a stale package

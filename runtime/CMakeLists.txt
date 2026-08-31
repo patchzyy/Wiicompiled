@@ -243,6 +243,12 @@ list(REMOVE_ITEM SOURCES ${MKW_BASE_PRODUCT_SOURCE} ${MKW_RETRO_REWIND_PRODUCT_S
 set(MKW_TRANSLATED_SHARD_MANIFEST
     "${CMAKE_CURRENT_LIST_DIR}/../generated/build_shards/shards.cmake"
     CACHE FILEPATH "Translator-owned aggregate shard manifest")
+# The prebuilt export only needs the aurora/third-party closure configured above, so a
+# packaging machine without a translation stops here instead of failing.
+if(MKW_NATIVE_PREBUILT_EXPORT_DIR AND NOT EXISTS "${MKW_TRANSLATED_SHARD_MANIFEST}")
+    message(STATUS "No translator shard manifest; configuring the native prebuilt export only")
+    return()
+endif()
 if(NOT EXISTS "${MKW_TRANSLATED_SHARD_MANIFEST}")
     message(FATAL_ERROR
         "Missing translator-owned shard manifest: ${MKW_TRANSLATED_SHARD_MANIFEST}. "
