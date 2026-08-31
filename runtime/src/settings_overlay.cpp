@@ -511,15 +511,16 @@ void DrawControllerSettings() {
                 if (!ImGui::BeginCombo(label, current.c_str())) {
                     return;
                 }
-                for (int candidate = -1; candidate < 8; ++candidate) {
-                    const std::string name = candidate < 0 ? "Detected automatically"
-                                                           : "Axis " + std::to_string(candidate);
-                    if (ImGui::Selectable(name.c_str(), candidate == axis)) {
-                        axis = candidate;
+                for (int candidate = 0; candidate < 8; ++candidate) {
+                    const int value = candidate == 0 ? -1 : candidate;
+                    const std::string name =
+                        candidate == 0 ? "Detected automatically" : "Axis " + std::to_string(value);
+                    if (ImGui::Selectable(name.c_str(), value == axis)) {
+                        axis = value;
                         if (accelerator) {
-                            RuntimeConfigFile::SetAcceleratorAxis(candidate);
+                            RuntimeConfigFile::SetAcceleratorAxis(value);
                         } else {
-                            RuntimeConfigFile::SetBrakeAxis(candidate);
+                            RuntimeConfigFile::SetBrakeAxis(value);
                         }
                     }
                 }

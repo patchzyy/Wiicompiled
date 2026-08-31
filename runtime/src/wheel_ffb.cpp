@@ -305,7 +305,10 @@ bool HasBuiltinLayout(uint32_t instance) {
            std::end(kDrivingForcePids);
 }
 
-void NotifyControllersChanged() { g_dirty = true; }
+void NotifyControllersChanged() {
+    g_dirty = true;
+    std::fill(std::begin(g_restsHigh), std::end(g_restsHigh), false);
+}
 
 void Tick() {
     const auto now = Clock::now();
@@ -436,44 +439,39 @@ uint32_t PedalButtons(uint32_t port) {
         return 0;
     }
     const int axes = std::min(SDL_GetNumJoystickAxes(joystick), kMaxTrackedAxes);
-    for (int axis = 1; axis < axes; ++axis) {
-        const int16_t value = SDL_GetJoystickAxis(joystick, axis);
-        if (value > kPedalRestZone) {
-            g_restsHigh[axis] = true;
-        }
-    }
     if (axes == 2) {
         const int16_t value = SDL_GetJoystickAxis(joystick, 1);
-        if (g_restsHigh[1]) {
-            return value < kPedalThreshold ? PAD_BUTTON_A : 0;
-        }
         if (value < kPedalThreshold) {
             return PAD_BUTTON_A;
         }
         return value > -kPedalThreshold ? PAD_BUTTON_B : 0;
     }
+    int learned[2] = {-1, -1};
+    int count = 0;
+    for (int axis = 1; axis < axes; ++axis) {
+        if (SDL_GetJoystickAxis(joystick, axis) > kPedalRestZone) {
+            g_restsHigh[axis] = true;
+        }
+        if (g_restsHigh[axis] && count < 2) {
+            learned[count++] = axis;
+        }
+    }
     int accel = RuntimeConfigFile::AcceleratorAxis();
     int brake = RuntimeConfigFile::BrakeAxis();
-    if (accel < 0 || brake < 0) {
-        int found[2] = {-1, -1};
-        int count = 0;
-        for (int axis = 1; axis < axes && count < 2; ++axis) {
-            if (g_restsHigh[axis]) {
-                found[count++] = axis;
-            }
-        }
-        if (accel < 0) {
-            accel = count > 0 ? found[0] : 1;
-        }
-        if (brake < 0) {
-            brake = count > 1 ? found[1] : 2;
-        }
+    if (accel < 0) {
+        accel = count > 0 ? learned[0] : 1;
+    }
+    if (brake < 0) {
+        brake = count > 1 ? learned[1] : accel + 1;
+    }
+    if (brake == accel) {
+        brake = -1;
     }
     uint32_t pressed = 0;
-    if (accel < axes && SDL_GetJoystickAxis(joystick, accel) < kPedalThreshold) {
+    if (accel > 0 && accel < axes && SDL_GetJoystickAxis(joystick, accel) < kPedalThreshold) {
         pressed |= PAD_BUTTON_A;
     }
-    if (brake < axes && SDL_GetJoystickAxis(joystick, brake) < kPedalThreshold) {
+    if (brake > 0 && brake < axes && SDL_GetJoystickAxis(joystick, brake) < kPedalThreshold) {
         pressed |= PAD_BUTTON_B;
     }
     return pressed;

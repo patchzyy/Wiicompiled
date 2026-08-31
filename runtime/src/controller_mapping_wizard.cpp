@@ -202,6 +202,7 @@ void FinishWizard() {
         RT_LOG(RT_TAG_CONFIG) << "controller wizard: " << g_wizard.status << std::endl;
         return;
     }
+    g_userMappedGuids.push_back(guid);
     RT_LOG(RT_TAG_CONFIG) << "controller wizard: applied mapping " << mapping << std::endl;
     StopWizard();
 }
@@ -373,7 +374,9 @@ void ApplyBuiltinWheelMappings() {
         }
         const std::string guid = GuidString(ids[i]);
         if (std::find(g_userMappedGuids.begin(), g_userMappedGuids.end(), guid) !=
-            g_userMappedGuids.end()) {
+                g_userMappedGuids.end() ||
+            std::find(g_builtinMappedGuids.begin(), g_builtinMappedGuids.end(), guid) !=
+                g_builtinMappedGuids.end()) {
             continue;
         }
         const char* rawName = SDL_GetJoystickNameForID(ids[i]);

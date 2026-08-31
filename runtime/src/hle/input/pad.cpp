@@ -1,6 +1,7 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "hle/controller_status_contract.h"
+#include "controller_mapping_wizard.h"
 #include "wheel_ffb.h"
 
 #include <algorithm>
@@ -47,9 +48,12 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     PADStatus statuses[PAD_CHANMAX]{};
     uint32_t rumbleMask = PADRead(statuses);
 
-    for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
-        statuses[i].stickX = static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
-        statuses[i].button |= static_cast<uint16_t>(wheel_ffb::PedalButtons(i));
+    if (!controller_mapping_wizard::IsActive()) {
+        for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
+            statuses[i].stickX =
+                static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
+            statuses[i].button |= static_cast<uint16_t>(wheel_ffb::PedalButtons(i));
+        }
     }
 
     try {

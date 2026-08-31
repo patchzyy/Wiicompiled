@@ -506,11 +506,13 @@ inline bool FfbForceWheel(bool fallback = false) {
 }
 
 inline int32_t AcceleratorAxis(int32_t fallback = -1) {
-    return std::clamp(Get().acceleratorAxis.value_or(fallback), -1, 7);
+    const int32_t value = Get().acceleratorAxis.value_or(fallback);
+    return value >= 1 && value <= 7 ? value : -1;
 }
 
 inline int32_t BrakeAxis(int32_t fallback = -1) {
-    return std::clamp(Get().brakeAxis.value_or(fallback), -1, 7);
+    const int32_t value = Get().brakeAxis.value_or(fallback);
+    return value >= 1 && value <= 7 ? value : -1;
 }
 
 inline int32_t SteeringSensitivity(int32_t fallback = 350) {
@@ -690,13 +692,13 @@ inline bool SetFfbSpring(int32_t value) {
 }
 
 inline bool SetAcceleratorAxis(int32_t value) {
-    value = std::clamp(value, -1, 7);
+    value = value >= 1 && value <= 7 ? value : -1;
     Mutable().acceleratorAxis = value;
     return WriteSetting("controller", "accelerator_axis", std::to_string(value));
 }
 
 inline bool SetBrakeAxis(int32_t value) {
-    value = std::clamp(value, -1, 7);
+    value = value >= 1 && value <= 7 ? value : -1;
     Mutable().brakeAxis = value;
     return WriteSetting("controller", "brake_axis", std::to_string(value));
 }
