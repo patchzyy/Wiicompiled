@@ -47,16 +47,13 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     PADStatus statuses[PAD_CHANMAX]{};
     uint32_t rumbleMask = PADRead(statuses);
 
+    for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
+        statuses[i].stickX = static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
+        statuses[i].button |= static_cast<uint16_t>(wheel_ffb::PedalButtons(i));
+    }
+
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
-            statuses[i].stickX = static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
-            const uint32_t pedals = wheel_ffb::PedalButtons(i);
-            if ((pedals & wheel_ffb::kPedalAccelerate) != 0) {
-                statuses[i].button |= PAD_BUTTON_A;
-            }
-            if ((pedals & wheel_ffb::kPedalBrake) != 0) {
-                statuses[i].button |= PAD_BUTTON_B;
-            }
             WritePadStatus(statusPtr + static_cast<uint32_t>(i * PadStatusContract::kGuestStatusSize),
                            statuses[i]);
         }

@@ -60,26 +60,21 @@ inputs like paddles, touchpads and share buttons show up when the hardware repor
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
 
-**Racing wheels (Logitech G29 / Driving Force and similar).**
-Wheels are not gamepads, so SDL has no built-in layout for them. Install Logitech G HUB (or the
-older Logitech Gaming Software) and turn combined pedals off. Then press **F10**, open
-**Controller settings**, and pick **Set up** next to the wheel under *Unrecognized controllers*.
-The wizard asks for each control in turn: press the throttle pedal for A, the brake pedal for B, a
-paddle for L and R, and turn the wheel left for the Control Stick; skip anything the wheel does not
-have. The mapping is saved to `gamecontrollerdb.txt` next to `Config.toml` and reused on later
-launches. The same menu has sliders for the stick dead zone (lower it so the wheel responds around
-centre), the L/R press point, and rumble strength.
+**Racing wheels.** 
+Logitech Driving Force wheels (G29, G27, G25, DFGT, DFP, Driving Force, MOMO, G920, G923) are
+recognized on their own. Plug one in and it gets a layout, a port and force feedback with no setup:
+the accelerator and brake pedals are A and B, the paddles are L and R, the wheel steers, and the
+clutch is left alone. Install Logitech G HUB first and turn Combined Pedals off. A wheel the
+runtime does not know still shows up under *Unrecognized controllers* with a **Set up** button, and
+so does any wheel whose built-in layout you want to replace, since a mapping you capture yourself
+wins over the built-in one.
 
-**Force feedback.**
-Wheels from the Logitech Driving Force family (Driving Force, DFP, DFGT, G25, G27, G29, G920,
-G923, PRO, MOMO and the WingMan wheels) get a real force-feedback section under **F10 →
-Controller settings**: a centering spring so the wheel loads up as you steer, vibration driven by
-the game's own rumble (collisions, off-road, boosts), and an overall strength slider. Everything is
-saved to `Config.toml` and applied live. Forces keep working when the window loses focus. Set the
-wheel's rotation range in G HUB, around 270° feels closest to a stick. Other brands of FFB wheel
-can be tried with `force_wheel = true` under `[ffb]` in `Config.toml`; known-good IDs get added to
-the wheel table over time. The G29 family is the tested baseline; G920/G923 have known
-force-feedback issues in the underlying SDL library.
+Force feedback is a centering spring that loads up as you steer, plus vibration from the game's own
+rumble. **F10**, **Controller settings** has sliders for steering sensitivity, strength, spring and
+vibration; they apply as you drag and are saved to `Config.toml`. Set the wheel's rotation range in
+G HUB, around 270 degrees suits a kart game better than the default 900. The G29 is what this was
+built and tested against; the G920 and G923 have force feedback problems in SDL itself. Other
+brands can be tried with `force_wheel = true` under `[ffb]`.
 
 ## Requirements
 

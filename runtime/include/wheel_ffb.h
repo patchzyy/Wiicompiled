@@ -4,9 +4,6 @@
 
 namespace wheel_ffb {
 
-inline constexpr uint32_t kPedalAccelerate = 1u;
-inline constexpr uint32_t kPedalBrake = 2u;
-
 bool IsWheelDevice(uint16_t vendor, uint16_t product);
 uint32_t PedalButtons(uint32_t port);
 void NotifyControllersChanged();
