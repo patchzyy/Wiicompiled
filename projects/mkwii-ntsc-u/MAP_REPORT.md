@@ -48,26 +48,26 @@ Not added: 59 pointer-referenced addresses that failed the structural check (jum
 
 ctors/dtors table entry (REL) (11):
 
-```
+```text
 805b69b4 8061e8d8 80623dec 80625410 807d6b6c 807df5a0 807ede74 8083a93c 8083e2ec 808425bc 808428cc
 ```
 
 bl target (REL R_PPC_REL24 relocation into the DOL) (1):
 
-```
+```text
 80243f18
 ```
 
 bl target (REL text, link-resolved) (13):
 
-```
+```text
 8054f70c 8054f734 805512e4 805b3a8c 8064c754 8065cbe0 8065cc44 8065cc98 807139a0 807dc484 807ede88 8083c2e0
 8086868c
 ```
 
 pointer-referenced text address (REL R_PPC_ADDR32) (118):
 
-```
+```text
 80551328 80551380 80551384 80551388 80551394 805513a0 8059eea4 805a0544 805a0584 805a05c4 805a0d20 805a2e30
 805b6984 806065fc 8060a958 80623d14 80623d20 80623d2c 80623d5c 80623d8c 80623dbc 806266f0 806c708c 806c7090
 806c7094 806d92e0 806eca4c 806eca50 8070ff20 8072297c 80723690 80723694 80724760 80724768 80726c78 80726c7c
@@ -160,7 +160,7 @@ The PAL map contains Ghidra-style labels that are not function starts: `*_caseD_
 - Result: **r13=0x80388880 (matches expectation); r2=0x8038AC20 (matches expectation)**
 - All lis/ori(addi) register values materialised in the function: r1=0x80394E00, r2=0x8038AC20, r13=0x80388880
 
-```
+```text
 80006210  38000000  li r0,0
 80006214  38600000  li r3,0
 80006218  38800000  li r4,0

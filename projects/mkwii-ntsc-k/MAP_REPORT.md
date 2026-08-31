@@ -48,26 +48,26 @@ Not added: 60 pointer-referenced addresses that failed the structural check (jum
 
 bl target (DOL text) (17):
 
-```
+```text
 8000810c 80008158 8017790c 80177ac4 80177c3c 80177c88 80177c94 801784f4 8017864c 801786d0 8017b2b0 8017f284
 8017f4e4 8017f594 8017f5b0 8017f794 8017f98c
 ```
 
 bl target (REL R_PPC_REL24 relocation into the DOL) (9):
 
-```
+```text
 80177788 801777b8 801777f4 80177818 8017783c 80177870 80177894 801778e8 801e8770
 ```
 
 bl target (REL text, link-resolved) (9):
 
-```
+```text
 8050ba18 8050bae8 8050bd94 8050bfe4 8050c138 8050c384 8050c444 805dcd04 8066388c
 ```
 
 pointer-referenced text address (DOL data word) (39):
 
-```
+```text
 8000ae40 8000ae50 8000ae60 8000ae70 8000ae80 8000ae90 8000aea4 8000aeb4 80174798 80174d90 80174da8 80175038
 80175040 8017504c 80175064 80177bd0 80179238 80179400 80179668 80179760 80179880 80179b48 80179c0c 80179dc4
 80179e18 80179f14 80179f58 80179f90 8017a088 8017a214 8017a298 8017a348 8017e330 8017e3c4 8017e51c 8017e7e8
@@ -76,7 +76,7 @@ pointer-referenced text address (DOL data word) (39):
 
 pointer-referenced text address (REL R_PPC_ADDR32) (19):
 
-```
+```text
 805ba10c 805ba178 805ba17c 8062a090 806637e0 806637f0 80663800 80663810 80663820 80663830 80663840 80663850
 80663860 80730f80 80730fcc 80731018 80731088 80731240 807313a0
 ```
@@ -143,7 +143,7 @@ The PAL map contains Ghidra-style labels that are not function starts: `*_caseD_
 - Result: **r13=0x8037AC00 (matches expectation); r2=0x8037CFC0 (matches expectation)**
 - All lis/ori(addi) register values materialised in the function: r1=0x803871A0, r2=0x8037CFC0, r13=0x8037AC00
 
-```
+```text
 80006210  38000000  li r0,0
 80006214  38600000  li r3,0
 80006218  38800000  li r4,0

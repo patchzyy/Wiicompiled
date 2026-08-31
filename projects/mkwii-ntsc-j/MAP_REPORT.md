@@ -48,13 +48,13 @@ Not added: 61 pointer-referenced addresses that failed the structural check (jum
 
 bl target (REL text, link-resolved) (1):
 
-```
+```text
 80600198
 ```
 
 pointer-referenced text address (REL R_PPC_ADDR32) (5):
 
-```
+```text
 805cba28 805fefe0 805ff184 805ff224 8063b3e4
 ```
 
@@ -98,7 +98,7 @@ The PAL map contains Ghidra-style labels that are not function starts: `*_caseD_
 - Result: **r13=0x8038C580 (matches expectation); r2=0x8038E920 (matches expectation)**
 - All lis/ori(addi) register values materialised in the function: r1=0x80398B00, r2=0x8038E920, r13=0x8038C580
 
-```
+```text
 80006210  38000000  li r0,0
 80006214  38600000  li r3,0
 80006218  38800000  li r4,0

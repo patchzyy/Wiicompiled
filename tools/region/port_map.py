@@ -1658,7 +1658,7 @@ def write_report(path: str, args: argparse.Namespace, dol: Dol, rel: Rel, table:
             continue
         L.append(f"{label} ({len(addrs)}):")
         L.append("")
-        L.append("```")
+        L.append("```text")
         for i in range(0, len(addrs), 12):
             L.append(" ".join(f"{a:08x}" for a in addrs[i:i + 12]))
         L.append("```")
@@ -1719,7 +1719,7 @@ def write_report(path: str, args: argparse.Namespace, dol: Dol, rel: Rel, table:
                  + ", ".join(f"{r}=0x{v:08X}" for r, v in sda["values"].items()))
     L.append("")
     if sda["listing"]:
-        L.append("```")
+        L.append("```text")
         for a, w, d in sda["listing"]:
             L.append(f"{a:08x}  {w:08x}  {d}")
         L.append("```")
