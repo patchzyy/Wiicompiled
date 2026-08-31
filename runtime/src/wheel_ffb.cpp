@@ -37,6 +37,8 @@ constexpr auto kSineRefresh = std::chrono::seconds(1);
 constexpr auto kOpenBackoff = std::chrono::seconds(30);
 constexpr uint16_t kAuroraStickDeadZone = 8000;
 constexpr uint16_t kWheelStickDeadZone = 600;
+constexpr int16_t kPedalThreshold = -8000;
+constexpr auto kSpringRefresh = std::chrono::seconds(2);
 
 struct Session {
     bool active = false;
@@ -50,6 +52,7 @@ struct Session {
     bool sineRunning = false;
     int16_t sineMagnitude = 0;
     Clock::time_point sineRunStamp{};
+    Clock::time_point springRunStamp{};
     bool motorOn = false;
     Clock::time_point motorStamp{};
     Clock::duration motorAccum{};
@@ -209,6 +212,7 @@ void OpenSession(uint32_t port, SDL_Joystick* joystick) {
         g_session.springId = SDL_CreateHapticEffect(haptic, &effect);
         springRunning = g_session.springId >= 0 &&
                         SDL_RunHapticEffect(haptic, g_session.springId, SDL_HAPTIC_INFINITY);
+        g_session.springRunStamp = Clock::now();
     }
     if (!springRunning && (g_session.features & SDL_HAPTIC_AUTOCENTER) != 0) {
         SDL_SetHapticAutocenter(haptic, g_spring);
@@ -284,6 +288,16 @@ void Tick() {
     }
     if (!g_session.active) {
         return;
+    }
+    if (g_session.springId >= 0 && now - g_session.springRunStamp >= kSpringRefresh) {
+        g_session.springRunStamp = now;
+        if ((g_session.features & SDL_HAPTIC_GAIN) != 0) {
+            SDL_SetHapticGain(g_session.haptic, g_strength);
+        }
+        SDL_HapticEffect effect = SpringEffect(g_spring);
+        if (Guard(SDL_UpdateHapticEffect(g_session.haptic, g_session.springId, &effect))) {
+            Guard(SDL_RunHapticEffect(g_session.haptic, g_session.springId, SDL_HAPTIC_INFINITY));
+        }
     }
     if (g_session.motorOn) {
         g_session.motorAccum += now - g_session.motorStamp;
@@ -393,6 +407,30 @@ void ApplyVibration(int percent) {
 
 void ApplySteeringSensitivity(int percent) {
     g_steering = std::clamp(percent, 100, 900);
+}
+
+uint32_t PedalButtons(uint32_t port) {
+    const int32_t index = PADGetIndexForPort(port);
+    if (index < 0) {
+        return 0;
+    }
+    SDL_Gamepad* gamepad = PADGetSDLGamepadForIndex(static_cast<uint32_t>(index));
+    if (gamepad == nullptr) {
+        return 0;
+    }
+    SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
+    if (joystick == nullptr || !IsKnownWheel(joystick)) {
+        return 0;
+    }
+    const int axes = SDL_GetNumJoystickAxes(joystick);
+    uint32_t pressed = 0;
+    if (axes > 1 && SDL_GetJoystickAxis(joystick, 1) < kPedalThreshold) {
+        pressed |= kPedalAccelerate;
+    }
+    if (axes > 2 && SDL_GetJoystickAxis(joystick, 2) < kPedalThreshold) {
+        pressed |= kPedalBrake;
+    }
+    return pressed;
 }
 
 int32_t ShapeSteering(uint32_t port, int32_t stickX) {

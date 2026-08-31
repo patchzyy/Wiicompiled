@@ -80,7 +80,7 @@ WizardState g_wizard;
 std::vector<std::string> g_userMappedGuids;
 
 constexpr const char* kWheelMappingFields =
-    "a:a2~,b:a1~,x:b0,y:b3,rightshoulder:b2,lefttrigger:b5,righttrigger:b4,start:b9,back:b8,"
+    "a:b0,b:b2,x:b1,y:b3,rightshoulder:b7,lefttrigger:b5,righttrigger:b4,start:b9,back:b8,"
     "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,leftx:a0,platform:Windows,";
 
 std::filesystem::path MappingDbPath() {
