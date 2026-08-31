@@ -362,7 +362,6 @@ def rel_secs():
 
 LOW_MEMORY_LIMIT = 0x80004000          # below this: exception vectors / runtime-copied code
 REL_MODULE_ID = 1
-EXPECTED_SDA = {"r13": 0x80388880, "r2": 0x8038AC20}
 INIT_REGISTERS_SYMBOL = "__init_registers"
 INIT_REGISTERS_PAL = 0x80006210
 
@@ -1372,7 +1371,7 @@ def read_sda_bases(entries: List[Entry], mem: Memory) -> dict:
     r2 = values.get(2)
     checks = []
     for reg, val in (("r13", r13), ("r2", r2)):
-        exp = EXPECTED_SDA[reg]
+        exp = SDA_BASES[TARGET][0 if reg == "r13" else 1]
         if val is None:
             checks.append(f"{reg}: not found")
         elif val == exp:
@@ -1515,7 +1514,7 @@ def write_json(path: str, table: ChunkTable, dol: Dol, rel: Rel) -> None:
 
 
 def layout_check(dol: Dol, rel: Rel) -> List[str]:
-    """Compare the parsed NTSC-U binaries with the vendored mkw-sp 'E' layout."""
+    """Compare the parsed target binaries with the vendored mkw-sp layout for that region."""
     notes = []
     parsed = {s.start: s for s in dol.sections}
     for name, start, end in dol_secs():
@@ -1529,7 +1528,7 @@ def layout_check(dol: Dol, rel: Rel) -> List[str]:
         else:
             notes.append(f"DOL {name}: {start:08x}-{end:08x} OK")
     if dol.bss_addr != dol_secs()[8][1]:
-        notes.append(f"DOL bss: header says {dol.bss_addr:08x}, table says {DOL_SECTIONS['E'][8][1]:08x}")
+        notes.append(f"DOL bss: header says {dol.bss_addr:08x}, table says {dol_secs()[8][1]:08x}")
     parsed_rel = {s.start: s for s in rel.sections}
     for name, start, end in rel_secs():
         s = parsed_rel.get(start)

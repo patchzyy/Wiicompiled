@@ -55,25 +55,28 @@ class Image:
         dol = open(os.path.join(disc, "sys", "main.dol"), "rb").read()
         off = struct.unpack(">18I", dol[0:72]); addr = struct.unpack(">18I", dol[72:144])
         size = struct.unpack(">18I", dol[144:216])
+        # The DOL header lays out 7 text sections then 11 data sections; only the text ones
+        # carry instructions the masked matcher may treat as such.
         for i in range(18):
             if size[i]:
-                self.spans.append((addr[i], addr[i] + size[i], dol[off[i]:off[i] + size[i]]))
+                self.spans.append((addr[i], addr[i] + size[i], dol[off[i]:off[i] + size[i]], i < 7))
         rel = open(os.path.join(disc, "files", "rel", "StaticR.rel"), "rb").read()
         load = pm.REL_LOAD_ADDRESS[region]
         n = struct.unpack(">I", rel[0x0C:0x10])[0]
         info = struct.unpack(">I", rel[0x10:0x14])[0]
         for i in range(n):
             o, ln = struct.unpack(">II", rel[info + i * 8:info + i * 8 + 8])
+            is_text = bool(o & 1)          # the REL section table keeps the executable bit in bit 0
             o &= ~3
             if ln and o:
-                self.spans.append((load + o, load + o + ln, rel[o:o + ln]))
+                self.spans.append((load + o, load + o + ln, rel[o:o + ln], is_text))
 
     def normalized(self):
         """The code spans as masked instruction words, computed once."""
         if getattr(self, "_normalized", None) is None:
             out = []
-            for s, e, b in self.spans:
-                if s >= 0x80300000:            # data sections carry no instructions
+            for s, e, b, is_text in self.spans:
+                if not is_text:                # data sections carry no instructions
                     continue
                 n = (e - s) // 4
                 if n:
@@ -92,7 +95,7 @@ class Image:
         return self._index
 
     def word(self, a):
-        for s, e, b in self.spans:
+        for s, e, b, _is_text in self.spans:
             if s <= a < e - 3:
                 return struct.unpack(">I", b[a - s:a - s + 4])[0]
         return None

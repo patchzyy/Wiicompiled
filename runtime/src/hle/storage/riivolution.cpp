@@ -47,9 +47,9 @@ std::optional<std::string> RiivoReadFile(const fs::path& path) {
     return buffer.str();
 }
 
-// Six-character game ID ("RMCP01") from guest low memory, with the same RMCP
-// fallback the rest of the storage HLE uses for boots that have not written
-// the disc header yet.
+// Six-character game ID ("RMCP01" etc.) from guest low memory, falling back to the built
+// executable's own game code - the same fallback the rest of the storage HLE uses for boots
+// that have not written the disc header yet.
 std::string RiivoGameId() {
     const uint32_t code = RuntimeHle::CurrentGameCode(MKW_REGION_GAME_CODE);
     std::string id(6, '\0');

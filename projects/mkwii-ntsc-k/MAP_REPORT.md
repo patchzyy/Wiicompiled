@@ -140,7 +140,7 @@ The PAL map contains Ghidra-style labels that are not function starts: `*_caseD_
 ### SDA bases read from the NTSC-K `__init_registers`
 
 - `__init_registers` PAL `80006210` -> NTSC-K `80006210`
-- Result: **r13=0x8037AC00 (EXPECTED 0x80388880); r2=0x8037CFC0 (EXPECTED 0x8038AC20)**
+- Result: **r13=0x8037AC00 (matches expectation); r2=0x8037CFC0 (matches expectation)**
 - All lis/ori(addi) register values materialised in the function: r1=0x803871A0, r2=0x8037CFC0, r13=0x8037AC00
 
 ```

@@ -281,4 +281,4 @@ def port_region(region, identities, pal_entries, provisional):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
