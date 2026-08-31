@@ -38,7 +38,8 @@ constexpr auto kOpenBackoff = std::chrono::seconds(30);
 constexpr uint16_t kAuroraStickDeadZone = 8000;
 constexpr uint16_t kWheelStickDeadZone = 600;
 constexpr int16_t kPedalThreshold = -8000;
-constexpr auto kSpringRefresh = std::chrono::seconds(2);
+constexpr auto kSpringRefresh = std::chrono::seconds(10);
+constexpr uint32_t kSpringLength = 30000;
 
 struct Session {
     bool active = false;
@@ -127,7 +128,7 @@ SDL_HapticEffect SpringEffect(int springPercent) {
     SDL_HapticEffect effect{};
     effect.type = SDL_HAPTIC_SPRING;
     effect.condition.direction.type = SDL_HAPTIC_STEERING_AXIS;
-    effect.condition.length = 5000;
+    effect.condition.length = kSpringLength;
     const auto coeff = static_cast<int16_t>(springPercent * 0x7FFF / 100);
     effect.condition.right_sat[0] = 0xFFFF;
     effect.condition.left_sat[0] = 0xFFFF;
