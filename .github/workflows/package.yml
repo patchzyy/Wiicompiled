@@ -29,11 +29,11 @@ jobs:
             arch: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -47,21 +47,22 @@ jobs:
       - name: Build AppImage
         run: bash Launcher/build-appimage.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: WiiCompiled-Setup-linux-${{ matrix.arch }}
           path: Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.AppImage
           if-no-files-found: error
+          archive: false
 
   windows-installer:
     name: Windows (installer exe)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
@@ -69,8 +70,9 @@ jobs:
         shell: pwsh
         run: ./Launcher/Build-Installer.ps1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: WiiCompiled-Setup-windows-x64
           path: Launcher/dist/WiiCompiled-Setup.exe
           if-no-files-found: error
+          archive: false
