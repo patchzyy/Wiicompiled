@@ -68,6 +68,7 @@ struct RuntimeUserConfig {
     std::optional<int32_t> ffbSpring;
     std::optional<int32_t> ffbVibration;
     std::optional<bool> ffbForceWheel;
+    std::optional<int32_t> steeringSensitivity;
 };
 
 namespace RuntimeConfigFile {
@@ -373,6 +374,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.ffbSpring = FindConfigInt(document, "ffb", "spring");
     config.ffbVibration = FindConfigInt(document, "ffb", "vibration");
     config.ffbForceWheel = FindConfigValue<bool>(document, "ffb", "force_wheel");
+    config.steeringSensitivity = FindConfigInt(document, "controller", "steering_sensitivity");
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
@@ -497,6 +499,10 @@ inline int32_t FfbVibration(int32_t fallback = 70) {
 
 inline bool FfbForceWheel(bool fallback = false) {
     return Get().ffbForceWheel.value_or(fallback);
+}
+
+inline int32_t SteeringSensitivity(int32_t fallback = 200) {
+    return std::clamp(Get().steeringSensitivity.value_or(fallback), 100, 400);
 }
 
 // Update one TOML value without discarding comments, unrelated settings, or
@@ -669,6 +675,12 @@ inline bool SetFfbSpring(int32_t value) {
     value = std::clamp(value, 0, 100);
     Mutable().ffbSpring = value;
     return WriteSetting("ffb", "spring", std::to_string(value));
+}
+
+inline bool SetSteeringSensitivity(int32_t value) {
+    value = std::clamp(value, 100, 400);
+    Mutable().steeringSensitivity = value;
+    return WriteSetting("controller", "steering_sensitivity", std::to_string(value));
 }
 
 inline bool SetFfbVibration(int32_t value) {

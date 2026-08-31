@@ -1,6 +1,7 @@
 #include "controller_mapping_wizard.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wheel_ffb.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_gamepad.h>
@@ -69,11 +70,18 @@ struct WizardState {
     size_t stepIndex = 0;
     std::array<std::optional<std::string>, kSteps.size()> bindings{};
     std::vector<int16_t> axisBaseline;
+    bool baselinePending = true;
     Clock::time_point acceptAfter{};
     std::string status;
 };
 
 WizardState g_wizard;
+
+std::vector<std::string> g_userMappedGuids;
+
+constexpr const char* kWheelMappingFields =
+    "a:a1~,b:a2~,x:b0,y:b3,rightshoulder:b2,lefttrigger:b5,righttrigger:b4,start:b9,back:b8,"
+    "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,leftx:a0,platform:Windows,";
 
 std::filesystem::path MappingDbPath() {
     return RuntimeConfigFile::ApplicationDataDirectory() / "gamecontrollerdb.txt";
@@ -102,6 +110,7 @@ void AdvanceStep(std::optional<std::string> value) {
     g_wizard.bindings[g_wizard.stepIndex] = std::move(value);
     ++g_wizard.stepIndex;
     g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
+    g_wizard.baselinePending = true;
     SnapshotAxes();
 }
 
@@ -134,6 +143,7 @@ void StartWizard(SDL_JoystickID instance) {
     const char* name = SDL_GetJoystickNameForID(instance);
     g_wizard.deviceName = name != nullptr ? name : "Controller";
     g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
+    g_wizard.baselinePending = true;
     SnapshotAxes();
 }
 
@@ -328,6 +338,10 @@ void LoadPersistedMappings() {
         if (trimmed.empty() || trimmed[0] == '#') {
             continue;
         }
+        const size_t comma = trimmed.find(',');
+        if (comma != std::string::npos) {
+            g_userMappedGuids.push_back(trimmed.substr(0, comma));
+        }
         if (SDL_AddGamepadMapping(trimmed.c_str()) >= 0) {
             ++added;
         } else {
@@ -341,7 +355,40 @@ void LoadPersistedMappings() {
     }
 }
 
+void ApplyBuiltinWheelMappings() {
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    if (ids == nullptr) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (!wheel_ffb::IsWheelDevice(SDL_GetJoystickVendorForID(ids[i]),
+                                      SDL_GetJoystickProductForID(ids[i]))) {
+            continue;
+        }
+        const std::string guid = GuidString(ids[i]);
+        if (std::find(g_userMappedGuids.begin(), g_userMappedGuids.end(), guid) !=
+            g_userMappedGuids.end()) {
+            continue;
+        }
+        const char* rawName = SDL_GetJoystickNameForID(ids[i]);
+        std::string name = rawName != nullptr ? rawName : "Racing Wheel";
+        std::replace(name.begin(), name.end(), ',', ' ');
+        const std::string mapping = guid + "," + name + "," + kWheelMappingFields;
+        if (SDL_AddGamepadMapping(mapping.c_str()) < 0) {
+            RT_LOG(RT_TAG_CONFIG) << "wheel profile: rejected for " << name << ": " << SDL_GetError()
+                                  << std::endl;
+            continue;
+        }
+        RT_LOG(RT_TAG_CONFIG) << "wheel profile: applied built-in layout for " << name << std::endl;
+    }
+    SDL_free(ids);
+}
+
 void HandleSdlEvent(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_JOYSTICK_ADDED) {
+        ApplyBuiltinWheelMappings();
+    }
     if (!g_wizard.active) {
         return;
     }
@@ -357,6 +404,10 @@ void HandleSdlEvent(const SDL_Event& event) {
         return;
     }
     if (Clock::now() < g_wizard.acceptAfter) {
+        return;
+    }
+    if (g_wizard.baselinePending) {
+        g_wizard.baselinePending = false;
         SnapshotAxes();
         return;
     }

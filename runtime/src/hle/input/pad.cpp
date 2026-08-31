@@ -49,6 +49,7 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
 
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
+            statuses[i].stickX = static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
             WritePadStatus(statusPtr + static_cast<uint32_t>(i * PadStatusContract::kGuestStatusSize),
                            statuses[i]);
         }

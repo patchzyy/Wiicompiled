@@ -103,6 +103,7 @@ uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessi
 int g_ffbStrength = RuntimeConfigFile::FfbStrength();
 int g_ffbSpring = RuntimeConfigFile::FfbSpring();
 int g_ffbVibration = RuntimeConfigFile::FfbVibration();
+int g_steeringSensitivity = RuntimeConfigFile::SteeringSensitivity();
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
     indices.fill(std::numeric_limits<int32_t>::min());
@@ -466,6 +467,14 @@ void DrawControllerSettings() {
             wheel_ffb::NotifyControllersChanged();
         }
         ImGui::TextDisabled("%s", wheel_ffb::StatusText());
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Steering sensitivity", &g_steeringSensitivity, 100, 400, "%d%%",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            wheel_ffb::ApplySteeringSensitivity(g_steeringSensitivity);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            RuntimeConfigFile::SetSteeringSensitivity(g_steeringSensitivity);
+        }
         if (ffbEnabled) {
             ImGui::SetNextItemWidth(190.0f);
             if (ImGui::SliderInt("Strength", &g_ffbStrength, 0, 100, "%d%%",
@@ -931,6 +940,7 @@ void PersistDisplayModeIfChanged() {
 
 void InitializeRuntimeSettings() noexcept {
     controller_mapping_wizard::LoadPersistedMappings();
+    controller_mapping_wizard::ApplyBuiltinWheelMappings();
     ApplyConfiguredMappings();
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
     AudioBackend::Instance().SetMuted(g_audioMuted);

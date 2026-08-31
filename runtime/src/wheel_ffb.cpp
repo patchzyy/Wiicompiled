@@ -34,6 +34,9 @@ constexpr auto kRetryDelay = std::chrono::seconds(2);
 constexpr int kMaxFailures = 8;
 constexpr uint32_t kSineIterations = 4;
 constexpr auto kSineRefresh = std::chrono::seconds(1);
+constexpr auto kOpenBackoff = std::chrono::seconds(30);
+constexpr uint16_t kAuroraStickDeadZone = 8000;
+constexpr uint16_t kWheelStickDeadZone = 600;
 
 struct Session {
     bool active = false;
@@ -63,13 +66,10 @@ const char* g_status = "No force feedback device found";
 int g_strength = RuntimeConfigFile::FfbStrength();
 int g_spring = RuntimeConfigFile::FfbSpring();
 int g_vibration = RuntimeConfigFile::FfbVibration();
+int g_steering = RuntimeConfigFile::SteeringSensitivity();
 
 bool IsKnownWheel(SDL_Joystick* joystick) {
-    if (SDL_GetJoystickVendor(joystick) != kLogitechVid) {
-        return false;
-    }
-    const uint16_t pid = SDL_GetJoystickProduct(joystick);
-    return std::find(std::begin(kWheelPids), std::end(kWheelPids), pid) != std::end(kWheelPids);
+    return IsWheelDevice(SDL_GetJoystickVendor(joystick), SDL_GetJoystickProduct(joystick));
 }
 
 SDL_Joystick* JoystickForPort(uint32_t port) {
@@ -81,26 +81,40 @@ SDL_Joystick* JoystickForPort(uint32_t port) {
     return gamepad != nullptr ? SDL_GetGamepadJoystick(gamepad) : nullptr;
 }
 
-SDL_HapticID FindHaptic(SDL_Joystick* joystick) {
+bool NamesRelated(const char* joystickName, const char* hapticName) {
+    if (joystickName == nullptr || hapticName == nullptr || *joystickName == '\0' ||
+        *hapticName == '\0') {
+        return false;
+    }
+    return std::strstr(joystickName, hapticName) != nullptr ||
+           std::strstr(hapticName, joystickName) != nullptr;
+}
+
+SDL_Haptic* OpenMatchingHaptic(SDL_Joystick* joystick) {
     int count = 0;
     SDL_HapticID* ids = SDL_GetHaptics(&count);
     if (ids == nullptr) {
-        return 0;
+        return nullptr;
     }
-    SDL_HapticID chosen = 0;
     const char* joystickName = SDL_GetJoystickName(joystick);
-    for (int i = 0; i < count; ++i) {
-        const char* name = SDL_GetHapticNameForID(ids[i]);
-        if (joystickName == nullptr || name == nullptr || *joystickName == '\0' || *name == '\0') {
-            continue;
+    SDL_Haptic* chosen = nullptr;
+    for (int pass = 0; pass < 2 && chosen == nullptr; ++pass) {
+        for (int i = 0; i < count; ++i) {
+            const bool related = NamesRelated(joystickName, SDL_GetHapticNameForID(ids[i]));
+            if (pass == 0 ? !related : related) {
+                continue;
+            }
+            SDL_Haptic* haptic = SDL_OpenHaptic(ids[i]);
+            if (haptic == nullptr) {
+                continue;
+            }
+            if (SDL_GetNumHapticAxes(haptic) >= 1 &&
+                (SDL_GetHapticFeatures(haptic) & (SDL_HAPTIC_SPRING | SDL_HAPTIC_CONSTANT)) != 0) {
+                chosen = haptic;
+                break;
+            }
+            SDL_CloseHaptic(haptic);
         }
-        if (std::strstr(joystickName, name) != nullptr || std::strstr(name, joystickName) != nullptr) {
-            chosen = ids[i];
-            break;
-        }
-    }
-    if (chosen == 0 && count == 1 && IsKnownWheel(joystick)) {
-        chosen = ids[0];
     }
     SDL_free(ids);
     return chosen;
@@ -160,17 +174,15 @@ bool Guard(bool ok) {
 }
 
 void OpenSession(uint32_t port, SDL_Joystick* joystick) {
-    const SDL_HapticID id = FindHaptic(joystick);
-    if (id == 0) {
-        g_status = "No force feedback device found";
-        return;
-    }
-    SDL_Haptic* haptic = SDL_OpenHaptic(id);
+    SDL_Haptic* haptic = OpenMatchingHaptic(joystick);
     if (haptic == nullptr) {
-        RT_LOG(RT_TAG_CONFIG) << "wheel ffb: failed to open haptic device: " << SDL_GetError()
+        RT_LOG(RT_TAG_CONFIG) << "wheel ffb: no usable haptic device for "
+                              << (SDL_GetJoystickName(joystick) != nullptr
+                                      ? SDL_GetJoystickName(joystick)
+                                      : "wheel")
                               << std::endl;
-        g_status = "Failed to open force feedback device";
-        g_retryAfter = Clock::now() + kRetryDelay;
+        g_status = "No force feedback device found";
+        g_retryAfter = Clock::now() + kOpenBackoff;
         return;
     }
     g_session.active = true;
@@ -182,6 +194,11 @@ void OpenSession(uint32_t port, SDL_Joystick* joystick) {
     g_session.windowStart = g_session.motorStamp;
     if (SDL_Gamepad* gamepad = SDL_GetGamepadFromID(g_session.instance)) {
         SDL_RumbleGamepad(gamepad, 0, 0, 0);
+    }
+    if (PADDeadZones* zones = PADGetDeadZones(port)) {
+        if (zones->stickDeadZone == kAuroraStickDeadZone) {
+            zones->stickDeadZone = kWheelStickDeadZone;
+        }
     }
     if ((g_session.features & SDL_HAPTIC_GAIN) != 0) {
         SDL_SetHapticGain(haptic, g_strength);
@@ -250,6 +267,11 @@ void Reconcile() {
 }
 
 } // namespace
+
+bool IsWheelDevice(uint16_t vendor, uint16_t product) {
+    return vendor == kLogitechVid &&
+           std::find(std::begin(kWheelPids), std::end(kWheelPids), product) != std::end(kWheelPids);
+}
 
 void NotifyControllersChanged() { g_dirty = true; }
 
@@ -367,6 +389,27 @@ void ApplySpring(int percent) {
 
 void ApplyVibration(int percent) {
     g_vibration = std::clamp(percent, 0, 100);
+}
+
+void ApplySteeringSensitivity(int percent) {
+    g_steering = std::clamp(percent, 100, 400);
+}
+
+int32_t ShapeSteering(uint32_t port, int32_t stickX) {
+    const int32_t index = PADGetIndexForPort(port);
+    if (index < 0) {
+        return stickX;
+    }
+    SDL_Gamepad* gamepad = PADGetSDLGamepadForIndex(static_cast<uint32_t>(index));
+    if (gamepad == nullptr || !IsKnownWheel(SDL_GetGamepadJoystick(gamepad))) {
+        return stickX;
+    }
+    int32_t raw = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX);
+    if (std::abs(raw) <= kWheelStickDeadZone) {
+        return 0;
+    }
+    raw = raw > 0 ? raw - kWheelStickDeadZone : raw + kWheelStickDeadZone;
+    return std::clamp(raw * g_steering / (100 * 256), -127, 127);
 }
 
 } // namespace wheel_ffb
