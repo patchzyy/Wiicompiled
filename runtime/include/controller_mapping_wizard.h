@@ -9,6 +9,7 @@
 namespace controller_mapping_wizard {
 
 void LoadPersistedMappings();
+void ApplyBuiltinWheelMappings();
 void HandleSdlEvent(const SDL_Event& event);
 
 // Lists devices that need setup inside the controller settings menu.

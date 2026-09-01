@@ -1,6 +1,8 @@
 #include "hle_stubs.h"
 #include "memory.h"
 #include "hle/controller_status_contract.h"
+#include "controller_mapping_wizard.h"
+#include "wheel_ffb.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -46,6 +48,14 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     PADStatus statuses[PAD_CHANMAX]{};
     uint32_t rumbleMask = PADRead(statuses);
 
+    if (!controller_mapping_wizard::IsActive()) {
+        for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
+            statuses[i].stickX =
+                static_cast<int8_t>(wheel_ffb::ShapeSteering(i, statuses[i].stickX));
+            statuses[i].button |= static_cast<uint16_t>(wheel_ffb::PedalButtons(i));
+        }
+    }
+
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {
             WritePadStatus(statusPtr + static_cast<uint32_t>(i * PadStatusContract::kGuestStatusSize),
@@ -73,6 +83,9 @@ PPC_NATIVE_OVERRIDE(801AF1E4, PAD__Recalibrate_HLE, uint32_t, (uint32_t mask), (
 
 extern "C" void PAD__ControlMotor_HLE(int32_t chan, uint32_t command)
 {
+    if (wheel_ffb::OnMotorCommand(chan, command)) {
+        return;
+    }
     PADControlMotor(chan, command);
 }
 PPC_NATIVE_OVERRIDE_VOID(801AF908, PAD__ControlMotor_HLE, (int32_t chan, uint32_t command), (chan, command));

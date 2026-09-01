@@ -5,6 +5,7 @@
 #include "ppc_runtime.h"
 #include "aurora_events.h"
 #include "settings_overlay.h"
+#include "wheel_ffb.h"
 #include "fiber_manager.h"
 #include "runtime_log.h"
 
@@ -586,6 +587,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
     settings_overlay::AdvancePresentedFrame();
+    wheel_ffb::Tick();
     g_auroraFrameActive.store(false, std::memory_order_release);
     g_auroraFrameHadWork.store(false, std::memory_order_release);
     if (presentedXfb) {

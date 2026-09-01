@@ -60,6 +60,27 @@ inputs like paddles, touchpads and share buttons show up when the hardware repor
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
 
+**Racing wheels.** 
+Any wheel SDL knows is treated as a wheel: the Logitech Driving Force line, Thrustmaster, Fanatec,
+Moza, Simagic, Simucube, Asetek, Cammus, PXN and others. That gets you force feedback, steering that
+uses the whole rotation of the wheel, and pedals on A and B. Pedal axes are worked out at runtime by
+watching which ones sit at rest and which travel, so a wheel does not need to be in any list here to
+work, and wheels that put both pedals on one axis are handled too.
+
+Logitech Driving Force wheels also get a full button layout without any setup, since their layout is
+known. Other wheels play immediately but their buttons come from the **Set up** wizard under
+*Unrecognized controllers* in **F10**, **Controller settings**; a mapping you capture there wins
+over anything built in. If the pedals come out the wrong way round, which happens because no two
+brands agree on axis order, set Accelerator and Brake in that same menu instead of running the
+wizard.
+
+Force feedback is a centering spring that loads up as you steer, plus vibration from the game's own
+rumble. The same menu has sliders for steering sensitivity, strength, spring and vibration; they
+apply as you drag and are saved to `Config.toml`. Set the wheel's rotation range in the wheel's own
+driver, around 270 degrees suits a kart game better than the usual 900. The G29 is what this was
+built and tested against. The G920 and G923 have force feedback problems in SDL itself, and a wheel
+SDL does not recognize at all can be forced with `force_wheel = true` under `[ffb]`.
+
 ## Requirements
 
 - Windows 10 or 11, 64-bit
