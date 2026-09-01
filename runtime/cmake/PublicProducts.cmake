@@ -84,9 +84,9 @@ target_link_libraries(mkw_runtime_common PRIVATE
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp)
 if(MKW_PLATFORM_WINDOWS)
     target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp)
-elseif(MKW_PLATFORM_LINUX)
+elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
     # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
-    # media monitoring). Empty string on glibc >= 2.34 where dl* is in libc.
+    # media monitoring). Empty on platforms where dl* is already in libc/libSystem.
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 endif()
 if(MKW_CPPWINRT_INCLUDE_DIR)
@@ -226,7 +226,7 @@ function(mkw_configure_product target)
             dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp)
 
         set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE TRUE)
-    elseif(MKW_PLATFORM_LINUX)
+    elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
         # mkw_runtime_common is an OBJECT library: WiiCompiled/RetroRewind only pull in its .o
         # files via $<TARGET_OBJECTS:>, which does not propagate mkw_runtime_common's own
         # target_link_libraries (object libraries don't carry usage requirements to a consumer

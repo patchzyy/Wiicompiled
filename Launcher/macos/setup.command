@@ -5,10 +5,7 @@ set -euo pipefail
 
 resources=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace_source="$resources/workspace"
-nodtool="$resources/tools/nodtool"
-translator="$resources/tools/Translator.Cli"
 cmake_bin="$resources/tools/cmake/bin/cmake"
-ninja_bin="$resources/tools/ninja"
 support_root="$HOME/Library/Application Support/WiiCompiled"
 workspace="$support_root/BuildWorkspace"
 products="$support_root/Products"
@@ -36,6 +33,13 @@ while (($#)); do
 done
 [[ "$install_location" == user || "$install_location" == applications ]] || fail '--install-location must be user or applications'
 
+host_arch=$(uname -m)
+case "$host_arch" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: $host_arch" ;; esac
+host_tools="$resources/tools/$host_arch"
+nodtool="$host_tools/nodtool"
+translator="$host_tools/Translator.Cli"
+ninja_bin="$host_tools/ninja"
+
 if [[ -z "$game" ]]; then
     game=$(/usr/bin/osascript <<'APPLESCRIPT'
 set selectedFile to choose file with prompt "Choose your clean Mario Kart Wii PAL (RMCP01) disc image"
@@ -60,6 +64,10 @@ if ! /usr/bin/xcode-select -p >/dev/null 2>&1; then
     /usr/bin/xcode-select --install || true
     exit 1
 fi
+for tool in "$nodtool" "$translator" "$cmake_bin" "$ninja_bin"; do
+    /usr/bin/lipo "$tool" -verify_arch "$host_arch" >/dev/null 2>&1 || \
+        fail "the packaged $(basename "$tool") does not support $host_arch"
+done
 
 mkdir -p "$support_root" "$products"
 if [[ ! -d "$workspace/.git" && ! -f "$workspace/projects/mkwii/recomp.yml" ]]; then
