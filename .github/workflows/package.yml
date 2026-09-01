@@ -7,6 +7,9 @@ name: Package installers
 # that step requires the end user's own Mario Kart Wii dump (Assets/main.dol, Assets/StaticR.rel),
 # which is proprietary and not present in this repository or in CI.
 on:
+  push:
+    tags:
+      - '*'
   workflow_dispatch:
 
 permissions:
