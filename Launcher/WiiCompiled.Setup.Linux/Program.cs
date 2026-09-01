@@ -150,6 +150,11 @@ internal static class Program
             skipPayload,
             flags.ContainsKey("force-clean-build"),
             flags.GetValueOrDefault("translator-bin"),
+            flags.GetValueOrDefault("cc"),
+            flags.GetValueOrDefault("cxx"),
+            flags.GetValueOrDefault("fuse-ld"),
+            flags.GetValueOrDefault("cmake"),
+            flags.GetValueOrDefault("ninja"),
             reporter, token);
 
         reporter.Progress(InstallStages.Shortcuts, "Creating shortcuts", 98);
@@ -317,6 +322,7 @@ internal static class Program
           install [--game ISO_PATH] [--install-dir DIR] [--retro-dir DIR
                   {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
                   [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
+                  [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
                   [--progress-json] [--workspace DIR]
           uninstall
           launch-base

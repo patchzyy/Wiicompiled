@@ -62,6 +62,7 @@ ninja_override=""
 dotnet_override=""
 translator_dll_override=""
 translator_bin_override=""
+fuse_ld_override=""
 
 usage() {
     cat <<'EOF'
@@ -77,6 +78,7 @@ Usage: local-build.sh --output-dir DIR [options]
   --force-clean-build             Discard every translation/build cache first
   --parallel N                    Pin translator threads, translated-shard job pool, and Ninja parallelism to N
   --cc PATH / --cxx PATH          C/C++ compiler (default: cc/c++ on PATH)
+  --fuse-ld NAME_OR_PATH          Linker passed to clang as -fuse-ld=NAME_OR_PATH (default: clang's own default linker)
   --cmake PATH / --ninja PATH     Build tools (default: on PATH)
   --dotnet PATH                   dotnet executable (default: on PATH)
   --translator-dll PATH           Pre-built Translator.Cli.dll (skips building the translator; still needs --dotnet to run it)
@@ -97,6 +99,7 @@ while [[ $# -gt 0 ]]; do
         --parallel) parallel_override=$2; shift 2 ;;
         --cc) cc_override=$2; shift 2 ;;
         --cxx) cxx_override=$2; shift 2 ;;
+        --fuse-ld) fuse_ld_override=$2; shift 2 ;;
         --cmake) cmake_override=$2; shift 2 ;;
         --ninja) ninja_override=$2; shift 2 ;;
         --dotnet) dotnet_override=$2; shift 2 ;;
@@ -350,12 +353,17 @@ elif [[ "$keep_native_build" -eq 1 ]]; then
     echo "MKWCBUILD: Reusing the incremental native build directory"
 fi
 
+configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin"
+    -DCMAKE_MAKE_PROGRAM="$ninja_bin"
+    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs")
+if [[ -n "$fuse_ld_override" ]]; then
+    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
+fi
+
 log_step configure-native "Configuring the native toolchain"
-"$cmake_bin" -S "$workspace/runtime" -B "$build" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin" \
-    -DCMAKE_MAKE_PROGRAM="$ninja_bin" \
-    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
+"$cmake_bin" "${configure_args[@]}"
 
 case "$profile" in
     base) targets=(WiiCompiled) ;;

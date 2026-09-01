@@ -5,8 +5,10 @@
 # self-contained binaries, and `nodtool` (a prebuilt MIT/Apache-2.0 CLI from encounter/nod, see
 # NodToolProvider.cs) is downloaded and bundled too - AppRun passes --translator-bin and
 # --disc-tool-bin so local-build.sh/DiscTool.cs skip their from-source/download fallbacks entirely.
-# It still shells out to system clang/cmake/ninja - no C/C++ toolchain is bundled, matching
-# Launcher/local-build.sh's own remaining prerequisites.
+# A pruned native clang/lld/cmake/ninja toolchain (see prepare-portable-tools.sh) is bundled the
+# same way - AppRun passes --cc/--cxx/--fuse-ld/--cmake/--ninja so local-build.sh never has to find
+# a system compiler, CMake, or Ninja. It still shells out to system pkg-config and Vulkan headers,
+# matching Launcher/local-build.sh's own remaining prerequisites.
 #
 # An AppImage mounts read-only, but local-build.sh writes generated/, native-build/, Assets/, etc.
 # into the workspace it's given. So AppRun (written below) copies the bundled workspace snapshot
@@ -107,6 +109,11 @@ nodtool_path=$(dotnet run --project "$workspace/Launcher/WiiCompiled.Setup.Commo
 cp "$nodtool_path" "$appdir/usr/bin/nodtool"
 chmod +x "$appdir/usr/bin/nodtool"
 
+echo "Preparing the portable clang/lld/cmake/ninja toolchain ($appimagetool_arch)..."
+bash "$script_dir/prepare-portable-tools.sh" --arch "$appimagetool_arch"
+mkdir -p "$appdir/usr/toolchain"
+cp -a "$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch"/. "$appdir/usr/toolchain/"
+
 echo "Staging the bundled workspace snapshot..."
 for dir in runtime aurora-main projects; do
     cp -r "$workspace/$dir" "$appdir/workspace/$dir"
@@ -144,7 +151,12 @@ if [ ! -f "$CACHE/.bundle-version" ] || \
 fi
 exec "$HERE/usr/bin/wiicompiled-setup" --workspace "$CACHE" \
     --translator-bin "$HERE/usr/bin/translator-cli" \
-    --disc-tool-bin "$HERE/usr/bin/nodtool" "$@"
+    --disc-tool-bin "$HERE/usr/bin/nodtool" \
+    --cc "$HERE/usr/toolchain/bin/clang" \
+    --cxx "$HERE/usr/toolchain/bin/clang++" \
+    --fuse-ld lld \
+    --cmake "$HERE/usr/toolchain/bin/cmake" \
+    --ninja "$HERE/usr/toolchain/bin/ninja" "$@"
 APPRUN
 chmod +x "$appdir/AppRun"
 
