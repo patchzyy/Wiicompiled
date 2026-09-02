@@ -8,7 +8,9 @@
 # A pruned native clang/lld/cmake/ninja toolchain (see prepare-portable-tools.sh) is bundled the
 # same way - AppRun passes --cc/--cxx/--fuse-ld/--cmake/--ninja so local-build.sh never has to find
 # a system compiler, CMake, or Ninja. It still shells out to system pkg-config and Vulkan headers,
-# matching Launcher/local-build.sh's own remaining prerequisites.
+# matching Launcher/local-build.sh's own remaining prerequisites. A precompiled aurora +
+# third-party package (see Prepare-NativePrebuilt.sh) is bundled the same way too - AppRun passes
+# --native-prebuilt-dir so local-build.sh never compiles aurora-main from source at all.
 #
 # An AppImage mounts read-only, but local-build.sh writes generated/, native-build/, Assets/, etc.
 # into the workspace it's given. So AppRun (written below) copies the bundled workspace snapshot
@@ -17,7 +19,17 @@
 # - generated/native-build/Assets/PulsarPacks live only in that writable cache and are never
 # touched by the sync, so local-build.sh's own incremental caching survives across runs and across
 # AppImage updates. translator/ isn't part of this snapshot at all: it's published as its own
-# self-contained binary (usr/bin/translator-cli) below and never needs a writable copy.
+# self-contained binary (usr/bin/translator-cli) below and never needs a writable copy. Neither
+# native-prebuilt/ nor the toolchain are copied into the cache either - both are large
+# (~90 MiB / ~500 MiB) and local-build.sh only ever reads from them - but AppRun does point
+# $CACHE/toolchain and $CACHE/native-prebuilt symlinks at the current mount on every single launch
+# (see AppRun's own comment): an AppImage's FUSE mount is at a fresh random /tmp/.mount_XXXXXX
+# every run, and CMake bakes whatever compiler/tool path it's given directly into each
+# build.ninja rule's command line, so referencing $HERE straight would change that command line -
+# and Ninja reruns any rule whose command line changed - forcing a full rebuild on every single
+# launch even though the compiler itself never actually changed. The symlink keeps the path
+# string CMake/Ninja see identical across runs while what it resolves to tracks the current mount
+# underneath.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -114,6 +126,42 @@ bash "$script_dir/prepare-portable-tools.sh" --arch "$appimagetool_arch"
 mkdir -p "$appdir/usr/toolchain"
 cp -a "$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch"/. "$appdir/usr/toolchain/"
 
+# Precompiled aurora + third-party package (see Prepare-NativePrebuilt.sh) so a user's own
+# local-build.sh never has to compile aurora itself (~43% of local build CPU time). Re-harvesting
+# recompiles the whole aurora/Crypto++ closure with the toolchain above, so this is skipped unless
+# --print-fingerprint-only (a fast, build-free check) says the existing package no longer matches
+# the current compiler/flags/aurora/third_party sources.
+native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$appimagetool_arch"
+echo "Checking whether the precompiled aurora + third-party package ($appimagetool_arch) is current..."
+current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch" --print-fingerprint-only)
+package_current=0
+if [[ -f "$native_prebuilt_dir/provenance.json" ]]; then
+    package_current=$(CURRENT_FINGERPRINT="$current_fingerprint" python3 - "$native_prebuilt_dir/provenance.json" <<'PY'
+import json
+import os
+import sys
+
+provenance = json.load(open(sys.argv[1], encoding="utf-8"))
+current = dict(line.split("=", 1) for line in os.environ["CURRENT_FINGERPRINT"].splitlines() if line)
+fields = {
+    "compiler_sha256": "CompilerSha256",
+    "flag_fingerprint": "FlagFingerprint",
+    "aurora_fingerprint": "AuroraSourceFingerprint",
+    "third_party_fingerprint": "ThirdPartySourceFingerprint",
+}
+print(1 if all(provenance.get(v) == current.get(k) for k, v in fields.items()) else 0)
+PY
+    )
+fi
+if [[ "$package_current" == "1" ]]; then
+    echo "Native prebuilt package is current; reusing $native_prebuilt_dir"
+else
+    echo "Native prebuilt package is missing or stale; harvesting a fresh one (compiles aurora once, can take a while)..."
+    bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch"
+fi
+mkdir -p "$appdir/native-prebuilt"
+cp -a "$native_prebuilt_dir/." "$appdir/native-prebuilt/"
+
 echo "Staging the bundled workspace snapshot..."
 for dir in runtime aurora-main projects; do
     cp -r "$workspace/$dir" "$appdir/workspace/$dir"
@@ -127,8 +175,21 @@ find "$appdir/workspace/aurora-main/extern" -mindepth 1 -maxdepth 1 -type d -exe
 rm -rf "$appdir/workspace/runtime/build"
 cp "$workspace/Launcher/local-build.sh" "$appdir/workspace/Launcher/local-build.sh"
 
+# AppRun re-syncs runtime/aurora-main/projects/local-build.sh into the writable cache only when
+# this changes, so it must change whenever any of those bundled paths actually did - a bare commit
+# hash gets this wrong for an uncommitted change (verified directly: rebuilding after editing
+# local-build.sh with no commit produced the same hash as the stale cache, so AppRun kept serving
+# the old script and failed on a flag that didn't exist yet). `git status --porcelain` catches both
+# modified tracked files and new untracked ones; appending a fresh timestamp when it's non-empty
+# guarantees this never matches a previous build's stamp, forcing a resync every time the tree is
+# dirty. A clean tree (a real tagged release) keeps the stable commit-hash behavior, so identical
+# reruns of the same release AppImage don't resync needlessly.
 if git -C "$workspace" rev-parse HEAD >/dev/null 2>&1; then
-    git -C "$workspace" rev-parse HEAD > "$appdir/workspace/.bundle-version"
+    version=$(git -C "$workspace" rev-parse HEAD)
+    if [[ -n "$(git -C "$workspace" status --porcelain 2>/dev/null)" ]]; then
+        version="$version-dirty-$(date -u +%s)"
+    fi
+    echo "$version" > "$appdir/workspace/.bundle-version"
 else
     date -u +%s > "$appdir/workspace/.bundle-version"
 fi
@@ -139,6 +200,7 @@ cat > "$appdir/AppRun" <<'APPRUN'
 set -euo pipefail
 HERE="$(dirname "$(readlink -f "$0")")"
 CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
+mkdir -p "$CACHE"
 if [ ! -f "$CACHE/.bundle-version" ] || \
    [ "$(cat "$HERE/workspace/.bundle-version")" != "$(cat "$CACHE/.bundle-version")" ]; then
     mkdir -p "$CACHE/Launcher"
@@ -149,14 +211,29 @@ if [ ! -f "$CACHE/.bundle-version" ] || \
     cp "$HERE/workspace/Launcher/local-build.sh" "$CACHE/Launcher/local-build.sh"
     cp "$HERE/workspace/.bundle-version" "$CACHE/.bundle-version"
 fi
+# toolchain/ and native-prebuilt/ are NOT copied into the cache (they're large - ~500 MiB /
+# ~90 MiB - and local-build.sh only ever reads from them): $CACHE/toolchain and
+# $CACHE/native-prebuilt are symlinks re-pointed at the current mount on every single launch
+# (unconditionally, not gated on .bundle-version above, since the mount path itself - unlike the
+# bundled content - changes every run regardless). CMake bakes a compiler/tool path directly into
+# each build.ninja rule's command line and Ninja reruns any rule whose command line changed since
+# the last build (verified directly) - an AppImage's FUSE mount is at a fresh random
+# /tmp/.mount_XXXXXX every launch, so referencing $HERE straight would change that command line,
+# and therefore force a full rebuild, on every single run even though the compiler itself never
+# actually changed. A symlink keeps the *path string* CMake/Ninja see identical across runs while
+# what it resolves to tracks the current mount underneath (verified directly: CMake records
+# whatever path it's given as-is - including a symlink - without resolving it first).
+ln -sfn "$HERE/usr/toolchain" "$CACHE/toolchain"
+ln -sfn "$HERE/native-prebuilt" "$CACHE/native-prebuilt"
 exec "$HERE/usr/bin/wiicompiled-setup" --workspace "$CACHE" \
     --translator-bin "$HERE/usr/bin/translator-cli" \
     --disc-tool-bin "$HERE/usr/bin/nodtool" \
-    --cc "$HERE/usr/toolchain/bin/clang" \
-    --cxx "$HERE/usr/toolchain/bin/clang++" \
+    --cc "$CACHE/toolchain/bin/clang" \
+    --cxx "$CACHE/toolchain/bin/clang++" \
     --fuse-ld lld \
-    --cmake "$HERE/usr/toolchain/bin/cmake" \
-    --ninja "$HERE/usr/toolchain/bin/ninja" "$@"
+    --cmake "$CACHE/toolchain/bin/cmake" \
+    --ninja "$CACHE/toolchain/bin/ninja" \
+    --native-prebuilt-dir "$CACHE/native-prebuilt" "$@"
 APPRUN
 chmod +x "$appdir/AppRun"
 

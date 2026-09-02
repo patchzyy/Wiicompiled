@@ -13,7 +13,8 @@ internal static class BuildRunner
         string workspace, string profile, string outputDir, string? baseOutputDir,
         string? retroDir, string? retroWfcOfflineDir, bool skipRetroWfcPayload,
         bool forceCleanBuild, string? translatorBin, string? ccBin, string? cxxBin, string? fuseLd,
-        string? cmakeBin, string? ninjaBin, IInstallReporter reporter, CancellationToken cancellationToken)
+        string? cmakeBin, string? ninjaBin, string? nativePrebuiltDir, IInstallReporter reporter,
+        CancellationToken cancellationToken)
     {
         var script = Path.Combine(workspace, "Launcher", "local-build.sh");
         if (!File.Exists(script)) throw new FileNotFoundException("local-build.sh is missing", script);
@@ -69,6 +70,12 @@ internal static class BuildRunner
         if (!string.IsNullOrEmpty(ninjaBin))
         {
             startInfo.ArgumentList.Add("--ninja"); startInfo.ArgumentList.Add(ninjaBin);
+        }
+        // Forwarded by AppRun so the AppImage's bundled precompiled aurora/third-party package (see
+        // Prepare-NativePrebuilt.sh) is used instead of local-build.sh compiling aurora-main itself.
+        if (!string.IsNullOrEmpty(nativePrebuiltDir))
+        {
+            startInfo.ArgumentList.Add("--native-prebuilt-dir"); startInfo.ArgumentList.Add(nativePrebuiltDir);
         }
 
         using var process = new Process { StartInfo = startInfo };

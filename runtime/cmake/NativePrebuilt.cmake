@@ -51,6 +51,16 @@ foreach(_dir IN LISTS _mkw_np_includes)
     endif()
 endforeach()
 
+# Dawn's own packaged config (DawnTargets.cmake) links dawn::webgpu_dawn against
+# Threads::Threads directly. A from-source aurora build resolves that as a side effect of
+# add_subdirectory(aurora-main) pulling in Dawn's own CMakeLists.txt; this mode never runs that
+# subdirectory at all, so nothing else would ever define it (verified directly: configuring without
+# this fails with "The link interface of target dawn::webgpu_dawn contains: Threads::Threads but
+# the target was not found"). find_package(Threads) is one of CMake's most basic finder modules and
+# is a no-op on Windows (its threading support is already part of the CRT), so this is safe on
+# every platform this package format targets, not just the one that first hit the failure.
+find_package(Threads REQUIRED)
+
 # Dawn is a prebuilt package on both sides; resolve the same install tree the
 # package was built against so its imported target (and therefore
 # webgpu_dawn.dll / dxcompiler.dll / dxil.dll) is available exactly as a

@@ -2,11 +2,12 @@
 # Linux build automation: translate -> emit build shards -> configure -> compile -> publish.
 #
 # This is the native-Linux counterpart to Launcher/LocalBuild.ps1. It is a from-scratch parallel
-# implementation, not a port of NativeBuildFlags.ps1: that file's canonical flags and
-# prebuilt-package fingerprinting exist only for the Windows/mingw toolchain (a precompiled
-# aurora/third-party package, offline pinned dependencies) that this script does not build.
-# Linux always builds aurora from source, letting its own CMake auto-detect Vulkan + vendor
-# SDL3/Dawn via FetchContent - the same configuration already verified working by hand.
+# implementation, not a port of NativeBuildFlags.ps1: that file's canonical flags exist only for
+# the Windows/mingw toolchain's offline pinned dependencies, which this script does not use.
+# Without --native-prebuilt-dir, aurora is built from source, letting its own CMake auto-detect
+# Vulkan + vendor SDL3/Dawn via FetchContent - the same configuration already verified working by
+# hand. With it, aurora is not compiled at all - see Launcher/Prepare-NativePrebuilt.sh, which
+# harvests exactly that package (the Linux counterpart to Prepare-NativePrebuilt.ps1).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,7 @@ dotnet_override=""
 translator_dll_override=""
 translator_bin_override=""
 fuse_ld_override=""
+native_prebuilt_dir=""
 
 usage() {
     cat <<'EOF'
@@ -83,6 +85,8 @@ Usage: local-build.sh --output-dir DIR [options]
   --dotnet PATH                   dotnet executable (default: on PATH)
   --translator-dll PATH           Pre-built Translator.Cli.dll (skips building the translator; still needs --dotnet to run it)
   --translator-bin PATH           Self-contained Translator.Cli executable (skips building AND needs no dotnet at all)
+  --native-prebuilt-dir DIR       Precompiled aurora/third-party package (see Prepare-NativePrebuilt.sh);
+                                   skips compiling aurora-main from source entirely
 EOF
 }
 
@@ -105,6 +109,7 @@ while [[ $# -gt 0 ]]; do
         --dotnet) dotnet_override=$2; shift 2 ;;
         --translator-dll) translator_dll_override=$2; shift 2 ;;
         --translator-bin) translator_bin_override=$2; shift 2 ;;
+        --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -159,6 +164,10 @@ require_command "$cmake_bin" cmake
 require_command "$ninja_bin" ninja
 require_command "$cc_bin" cc
 require_command "$cxx_bin" cxx
+
+if [[ -n "$native_prebuilt_dir" ]]; then
+    assert_file "$native_prebuilt_dir/native_prebuilt.cmake" "Native prebuilt package"
+fi
 
 project=$workspace/projects/mkwii/recomp.yml
 assets=$workspace/Assets
@@ -339,15 +348,39 @@ translator "${shard_args[@]}"
 # ---------------------------------------------------------------------------
 
 keep_native_build=0
+stale_reason=""
 if [[ -f "$build/CMakeCache.txt" ]]; then
     expected_home=$workspace/runtime
     cache_home=$(grep '^CMAKE_HOME_DIRECTORY:INTERNAL=' "$build/CMakeCache.txt" | cut -d= -f2- || true)
     if [[ -n "$cache_home" && "$(cd "$cache_home" 2>/dev/null && pwd)" == "$expected_home" ]]; then
         keep_native_build=1
+        # CMake auto-detects and caches auxiliary tool paths (CMAKE_AR/RANLIB/LINKER/ASM_COMPILER
+        # and their per-language *_AR/*_RANLIB variants) only once, the first time a language's
+        # compiler is checked - unlike CMAKE_C_COMPILER/CMAKE_CXX_COMPILER, which get overwritten by
+        # the -D flags below on every configure, these are never refreshed on a plain reconfigure.
+        # An AppImage's own AppRun works around this at the source by keeping --cc/--cxx/--cmake/
+        # --ninja pointed at a stable symlink it re-targets at the current mount every launch
+        # (see build-appimage.sh), so the *path string* CMake caches never actually changes run to
+        # run - but this check stays as a general fallback for any tool path that goes stale some
+        # other way (a moved/removed system toolchain, a relocated portable-tools directory, etc):
+        # any :FILEPATH= cache entry whose recorded path no longer exists means this cache belongs
+        # to a toolchain location that's gone - not just a workspace/path mismatch.
+        while IFS= read -r tool_path; do
+            [[ -n "$tool_path" ]] || continue
+            # CMake's own sentinel for "this optional tool was legitimately never found" (e.g.
+            # clang-scan-deps, not required here) - not a path at all, and not a sign of anything
+            # stale. Without this exclusion, every configure wiped the cache unconditionally.
+            [[ "$tool_path" != *-NOTFOUND ]] || continue
+            if [[ ! -e "$tool_path" ]]; then
+                keep_native_build=0
+                stale_reason=" (cached tool path no longer exists: $tool_path)"
+                break
+            fi
+        done < <(grep -o ':FILEPATH=.*' "$build/CMakeCache.txt" | sed 's/^:FILEPATH=//')
     fi
 fi
 if [[ -d "$build" && "$keep_native_build" -eq 0 ]]; then
-    echo "MKWCBUILD: The native build cache does not belong to this workspace path; rebuilding from scratch"
+    echo "MKWCBUILD: The native build cache does not belong to this workspace path or toolchain; rebuilding from scratch$stale_reason"
     rm -rf "$build"
 elif [[ "$keep_native_build" -eq 1 ]]; then
     echo "MKWCBUILD: Reusing the incremental native build directory"
@@ -358,8 +391,28 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
     -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin"
     -DCMAKE_MAKE_PROGRAM="$ninja_bin"
     -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs")
+# CMAKE_C_COMPILER/CXX_COMPILER stay stable across AppImage runs on their own (they're exactly
+# what's passed via -D above, and AppRun points --cc/--cxx at a symlink it re-targets at the
+# current mount every launch - see build-appimage.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT
+# inherit that stability just because $cc_bin does: verified directly that even with a stable
+# --cc symlink, CMake's own auto-detection of these still resolved to the *real*, ephemeral mount
+# path underneath (clang's own driver locates its sibling llvm-ar/ld.lld tools by resolving its own
+# invoked path, symlinks included, rather than trusting the symlink CMake invoked it through) -
+# each subsequent run's differing command line then made Ninja rebuild every object from scratch
+# even though nothing had actually changed. Deriving these from $cc_bin (itself already stable)
+# and re-passing them explicitly every configure keeps them pinned to the same stable value too.
+if [[ "$cc_bin" == */* ]]; then
+    toolchain_bin=$(dirname "$cc_bin")
+    [[ -x "$toolchain_bin/llvm-ar" ]] && configure_args+=(-DCMAKE_AR="$toolchain_bin/llvm-ar" -DCMAKE_ASM_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_C_COMPILER_AR="$toolchain_bin/llvm-ar" -DCMAKE_CXX_COMPILER_AR="$toolchain_bin/llvm-ar")
+    [[ -x "$toolchain_bin/llvm-ranlib" ]] && configure_args+=(-DCMAKE_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_ASM_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_C_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib" -DCMAKE_CXX_COMPILER_RANLIB="$toolchain_bin/llvm-ranlib")
+    [[ -x "$toolchain_bin/ld.lld" ]] && configure_args+=(-DCMAKE_LINKER="$toolchain_bin/ld.lld")
+    configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
+fi
 if [[ -n "$fuse_ld_override" ]]; then
     configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
+fi
+if [[ -n "$native_prebuilt_dir" ]]; then
+    configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")
 fi
 
 log_step configure-native "Configuring the native toolchain"
