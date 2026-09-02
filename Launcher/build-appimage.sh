@@ -223,6 +223,8 @@ fi
 # actually changed. A symlink keeps the *path string* CMake/Ninja see identical across runs while
 # what it resolves to tracks the current mount underneath (verified directly: CMake records
 # whatever path it's given as-is - including a symlink - without resolving it first).
+[ -L "$CACHE/toolchain" ] || rm -rf "$CACHE/toolchain"
+[ -L "$CACHE/native-prebuilt" ] || rm -rf "$CACHE/native-prebuilt"
 ln -sfn "$HERE/usr/toolchain" "$CACHE/toolchain"
 ln -sfn "$HERE/native-prebuilt" "$CACHE/native-prebuilt"
 exec "$HERE/usr/bin/wiicompiled-setup" --workspace "$CACHE" \
