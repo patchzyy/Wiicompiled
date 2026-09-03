@@ -364,7 +364,13 @@ void SDLCALL LogSdlMessage(void*, int category, SDL_LogPriority priority, const 
         return;
     }
     if (priority < SDL_LOG_PRIORITY_WARN) {
+        // Device paths in these messages keep changing (/dev/hidrawN climbs with
+        // hotplug churn), so cap the set instead of holding one string per line
+        // for the whole session.
         static std::unordered_set<std::string> s_seen;
+        if (s_seen.size() >= 256) {
+            s_seen.clear();
+        }
         if (!s_seen.insert(message).second) {
             return;
         }
@@ -500,6 +506,11 @@ void Poll() {
 // True while Poll() is looking for a remote.
 bool IsScanning() {
     return g_scanning;
+}
+
+// Whether looking for a remote means periodic rescans or waiting for hotplug.
+bool PeriodicRescanEnabled() {
+    return kPeriodicRescan;
 }
 
 // Number of rescans since a Wii controller was last seen.

@@ -102,8 +102,10 @@ void HideRemotesFromPad(PADStatus* statuses, uint32_t count);
 void Poll();
 // Forces one re-enumeration right now (settings overlay "Rescan now").
 void RescanNow();
-// True while Poll() is actively rescanning (no Wii controller connected).
+// True while Poll() is looking for a remote (no Wii controller connected).
 bool IsScanning();
+// True where looking means periodic rescans; elsewhere Poll() waits for hotplug.
+bool PeriodicRescanEnabled();
 // Rescans issued since a Wii controller was last seen.
 uint32_t ScanCount();
 
