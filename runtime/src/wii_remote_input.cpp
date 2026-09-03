@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <string>
+#include <unordered_set>
 
 namespace WiiRemoteInput {
 namespace {
@@ -346,6 +348,10 @@ bool AnyWiiControllerConnected() {
 
 // Route SDL's input diagnostics (HIDAPI open failures, the Wii driver's
 // extension/status messages) into console.log, minus the periodic chatter.
+// A sub-warning message is written once: SDL repeats the same line on every
+// enumeration (one "couldn't open /dev/hidraw7: Permission denied" per HID
+// device per pass), and console.log is unbuffered, so the repeats were a
+// per-pass burst of writes on the main thread for no new information.
 void SDLCALL LogSdlMessage(void*, int category, SDL_LogPriority priority, const char* message) {
     if (message == nullptr) {
         return;
@@ -354,10 +360,35 @@ void SDLCALL LogSdlMessage(void*, int category, SDL_LogPriority priority, const 
         (std::strstr(message, "Motion Plus") != nullptr || std::strstr(message, "Resetting report mode") != nullptr)) {
         return;
     }
-    if (category == SDL_LOG_CATEGORY_INPUT || priority >= SDL_LOG_PRIORITY_WARN) {
-        RT_LOG("sdl") << message << std::endl;
+    if (category != SDL_LOG_CATEGORY_INPUT && priority < SDL_LOG_PRIORITY_WARN) {
+        return;
     }
+    if (priority < SDL_LOG_PRIORITY_WARN) {
+        static std::unordered_set<std::string> s_seen;
+        if (!s_seen.insert(message).second) {
+            return;
+        }
+        RT_LOG("sdl") << message << " (further identical messages suppressed)" << std::endl;
+        return;
+    }
+    RT_LOG("sdl") << message << std::endl;
 }
+
+// Whether Poll() drives its own periodic re-enumeration. The 1->0->1 hint
+// flip below makes SDL close and re-open every HIDAPI device on the main
+// thread, and on Linux that means an open() attempt on every /dev/hidraw node
+// (each failing with EACCES until a udev rule grants access), which showed up
+// as a frame hitch every scan interval even on an empty menu. It exists for
+// Windows Bluetooth stacks, where a remote that drops or is switched on after
+// launch is not seen again until the driver re-enumerates. Linux and macOS
+// already get hotplug from udev / IOKit: SDL re-enumerates when a device
+// appears, so nothing periodic is needed there. The overlay's "Rescan now"
+// still works everywhere.
+#if defined(_WIN32)
+constexpr bool kPeriodicRescan = true;
+#else
+constexpr bool kPeriodicRescan = false;
+#endif
 
 // Second half of a rescan: re-enables the Wii driver once SDL has seen it off.
 void FinishRescan(uint64_t now) {
@@ -450,12 +481,13 @@ void Poll() {
     }
     const uint64_t now = SDL_GetTicks();
     if (!g_scanning) {
-        RT_LOG(RT_TAG_CONFIG) << "No Wii Remote connected; scanning for one (press 1+2 on the remote)"
-                              << std::endl;
+        RT_LOG(RT_TAG_CONFIG) << "No Wii Remote connected; "
+                              << (kPeriodicRescan ? "scanning for one" : "waiting for one to be paired")
+                              << " (press 1+2 on the remote)" << std::endl;
         g_scanning = true;
         g_lostAtMs = now;
     }
-    if (now - g_lostAtMs < kScanStartDelayMs) {
+    if (!kPeriodicRescan || now - g_lostAtMs < kScanStartDelayMs) {
         return;
     }
     const uint64_t interval = now - g_lostAtMs < kFastScanWindowMs ? kFastScanIntervalMs : kScanIntervalMs;
