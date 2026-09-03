@@ -79,3 +79,71 @@ jobs:
           path: Launcher/dist/WiiCompiled-Setup.exe
           if-no-files-found: error
           archive: false
+
+  # Publishes the packaged installers as a GitHub Release whenever a v* tag is pushed. Wheel Wizard
+  # discovers updates from these releases, so the contract it relies on is enforced here: a full
+  # (non-prerelease) release whose tag is v<semver>, carrying an asset named exactly
+  # WiiCompiled-Setup.exe, produced by a setup host that reports that same version.
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux-appimage, windows-installer]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Wheel Wizard runs the downloaded setup with --version and refuses it when the reported
+      # version differs from the release tag, so a tag that was pushed without bumping every pinned
+      # version would ship an update nobody can install. Catch that before anything is published.
+      - name: Verify the tag matches the pinned setup version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          status=0
+          check() {
+            if ! grep -Fq "$2" "$1"; then
+              echo "::error file=$1::expected '$2' for tag $TAG"
+              status=1
+            fi
+          }
+          check Launcher/WiiCompiled.Setup.Windows/Program.cs "public const string Version = \"$version\";"
+          check Launcher/WiiCompiled.Setup.Windows/WiiCompiled.Setup.Windows.csproj "<Version>$version</Version>"
+          check Launcher/Build-Installer.ps1 "ProductVersion = '$version'"
+          exit $status
+
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -l artifacts
+          assets=(
+            artifacts/WiiCompiled-Setup.exe
+            artifacts/WiiCompiled-Setup-x86_64.AppImage
+            artifacts/WiiCompiled-Setup-aarch64.AppImage
+          )
+          for asset in "${assets[@]}"; do
+            [ -s "$asset" ] || { echo "::error::missing release asset $asset"; exit 1; }
+          done
+          # A re-run of a tag whose release already exists only refreshes the assets.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" \
+              --verify-tag \
+              --generate-notes
+          fi
