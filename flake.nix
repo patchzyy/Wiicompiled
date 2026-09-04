@@ -68,7 +68,7 @@
       # the binary/ layout local-build.sh's --retro-wfc-offline-dir expects.
       retroWfcPayload = pkgs.fetchurl {
         url = "http://nas.play.rwfc.net/payload?g=RMCPD00";
-        hash = "sha256-/Y8m1q8m8aDPrs0eRy/nRKJddfUTaRBTO3x14+yi8dI=";
+        hash = "sha256-CZCXoPhal8NIEj2RQ4Q4sksRI2Lx+yPJTfajQ8U2ZHE=";
       };
       retroWfcOffline = pkgs.runCommand "retro-wfc-payload-offline" {} ''
         mkdir -p $out/binary
