@@ -11,6 +11,7 @@
   }: let
     systems = [
       "x86_64-linux"
+      "aarch64-linux"
     ];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
@@ -31,7 +32,7 @@
       # game dump, which the project may not redistribute, so they eval in
       # an allow-unfree scope. Everything else in the flake stays free.
       unfreePkgs = import pkgs.path {
-        inherit (pkgs) system;
+        system = pkgs.stdenv.hostPlatform.system;
         config.allowUnfree = true;
       };
       discImage = unfreePkgs.requireFile {
@@ -180,7 +181,7 @@
     # the packages output (whose values must be derivations). Handy for
     # inspecting a single dep: nix build .#legacyPackages.x86_64-linux.deps.fmt
     legacyPackages = forAllSystems (pkgs: {
-      inherit (mkOutputs pkgs) deps;
+      deps = pkgs.callPackage ./nix/deps.nix {};
     });
 
     apps = forAllSystems (

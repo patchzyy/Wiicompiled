@@ -221,6 +221,8 @@
         runHook preUnpack
         cp -r $src workspace
         chmod -R u+w workspace
+        cp -r ${deps.sdl} workspace/sdl-src
+        chmod -R u+w workspace/sdl-src
         mkdir -p workspace/generated workspace/build
         cp -r ${translation}/generated/. workspace/generated/
         cp -r ${translation}/build/. workspace/build/
@@ -238,7 +240,6 @@
         # survives.
         cmake -S runtime -B native-build -G Ninja \
           -DCMAKE_BUILD_TYPE=Release \
-          -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
           -DAURORA_DAWN_PROVIDER=package \
           -DAURORA_SDL3_PROVIDER=vendor \
           -DSDL_X11_SHARED=OFF \
@@ -260,7 +261,7 @@
           -DFETCHCONTENT_SOURCE_DIR_SQLITE3=${deps.sqlite3} \
           -DFETCHCONTENT_SOURCE_DIR_ZSTD=${deps.zstd} \
           -DFETCHCONTENT_SOURCE_DIR_TRACY=${deps.tracy} \
-          -DFETCHCONTENT_SOURCE_DIR_SDL=${deps.sdl} \
+          -DFETCHCONTENT_SOURCE_DIR_SDL=$PWD/sdl-src \
           -DFETCHCONTENT_SOURCE_DIR_DAWN_PREBUILT=${deps.dawn-prebuilt} \
           -DMKW_TRANSLATED_COMPILE_JOBS=$((NIX_BUILD_CORES / 2))
         runHook postConfigure
@@ -329,7 +330,7 @@
       meta = {
         description = "WiiCompiled native runtime (Mario Kart Wii static recompilation), base product";
         license = lib.licenses.gpl3Only;
-        platforms = ["x86_64-linux"];
+        platforms = ["x86_64-linux" "aarch64-linux"];
         mainProgram = "WiiCompiled";
       };
     };

@@ -6,6 +6,8 @@
 # aurora-main/extern/CMakeLists.txt, cmake/AuroraSDL3Provider.cmake and
 # cmake/AuroraDawnProvider.cmake exactly.
 {
+  lib,
+  stdenv,
   fetchurl,
   runCommand,
   unzip,
@@ -91,8 +93,18 @@ in {
 
   # Prebuilt Dawn install tree (DawnConfig.cmake, DAWN_ENABLE_INSTALL=ON),
   # consumed via aurora's AURORA_DAWN_PROVIDER=package.
-  dawn-prebuilt = unpackTar "dawn-prebuilt" (fetchurl {
-    url = "https://github.com/encounter/dawn-build/releases/download/v20260603.191052/dawn-linux-x86_64.tar.gz";
-    hash = "sha256-+eEdQYVI4pFP1bL280VipZIKa52dVS6/K/zHR6XfmuE=";
-  });
+  dawn-prebuilt = unpackTar "dawn-prebuilt" (fetchurl (
+    if stdenv.hostPlatform.system == "x86_64-linux"
+    then {
+      url = "https://github.com/encounter/dawn-build/releases/download/v20260603.191052/dawn-linux-x86_64.tar.gz";
+      hash = "sha256-+eEdQYVI4pFP1bL280VipZIKa52dVS6/K/zHR6XfmuE=";
+    }
+    else if stdenv.hostPlatform.system == "aarch64-linux"
+    then {
+      url = "https://github.com/encounter/dawn-build/releases/download/v20260603.191052/dawn-linux-aarch64.tar.gz";
+      hash = "sha256-C9pMaUOkSknwQfIw45+WIFve+noTiqud+RiQ0/kV4fA=";
+    }
+    else
+      throw "Unsupported Dawn prebuilt system: ${stdenv.hostPlatform.system}"
+  ));
 }

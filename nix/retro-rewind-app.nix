@@ -42,7 +42,7 @@ in
     meta = {
       description = "Retro Rewind install/update/build/launch orchestration for WiiCompiled";
       mainProgram = "retro-rewind";
-      platforms = ["x86_64-linux"];
+      platforms = ["x86_64-linux" "aarch64-linux"];
     };
   } ''
     install -Dm755 ${script} $out/bin/retro-rewind
