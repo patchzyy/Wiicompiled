@@ -482,8 +482,9 @@ double Eval(const Node& node, const InputSource& source) {
             node.released = true;
         } else if (node.released) {
             node.released = false;
-            const auto seconds =
-                std::chrono::duration_cast<Clock::duration>(FSec(Arg(node, 1, source)));
+            const double requested = Arg(node, 1, source);
+            const double safe = std::isfinite(requested) ? std::clamp(requested, 0.0, 3600.0) : 0.0;
+            const auto seconds = std::chrono::duration_cast<Clock::duration>(FSec(safe));
             if (node.state) {
                 node.mark += seconds;
             } else {
