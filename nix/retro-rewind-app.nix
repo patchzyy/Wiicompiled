@@ -22,16 +22,14 @@
   repoSrc,
   datatree,
   translator,
-  wfcOffline,
-  launcher,
+  drirc,
 }: let
   script = replaceVars ./retro-rewind.sh {
     inherit
       bash
       datatree
       translator
-      wfcOffline
-      launcher
+      drirc
       repoSrc
       vulkan-loader
       ;
