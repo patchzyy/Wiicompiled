@@ -11,17 +11,18 @@ set -euo pipefail
 
 readonly DATA_TREE="@datatree@"
 readonly TRANSLATOR="@translator@/bin/Translator.Cli"
-readonly WFC_OFFLINE="@wfcOffline@"
-readonly DRIRC_SRC="@launcher@/etc/drirc"
+readonly DRIRC_SRC="@drirc@/etc/drirc"
 readonly REPO_SRC="@repoSrc@"
 readonly VULKAN_LIB="@vulkan-loader@/lib"
 
 readonly WS_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled"
 readonly WORKSPACE="$WS_ROOT/workspace"
 readonly PACK_DIR="$WORKSPACE/PulsarPacks/completed/RetroRewind/RetroRewind6"
+readonly WFC_OFFLINE="$WORKSPACE/RetroWfc"
 readonly INSTALL_DIR="$WS_ROOT/Install/RetroRewind"
 readonly RR_VERSION_URL="https://update.rwfc.net/RetroRewind/RetroRewindVersion.txt"
 readonly RR_INSTALL_URL_FILE="https://update.rwfc.net/RetroRewind/RetroRewindInstall.txt"
+readonly WFC_PAYLOAD_URL="http://nas.play.rwfc.net/payload?g=RMCPD00"
 
 log() { printf 'retro-rewind: %s\n' "$*"; }
 die() { printf 'retro-rewind: error: %s\n' "$*" >&2; exit 1; }
@@ -141,8 +142,34 @@ install_rr() (
     chmod -R u+w "$WORKSPACE/PulsarPacks"
 )
 
+install_retro_wfc_payload() (
+    local pack_parent stage backup_payload
+    pack_parent="$WORKSPACE"
+    mkdir -p "$pack_parent"
+    stage=$(mktemp -d "$pack_parent/.retro-wfc.XXXXXX")
+    backup_payload=$(mktemp -d "$pack_parent/.RetroWfc.backup.XXXXXX")
+    rmdir "$backup_payload"
+    trap 'rm -rf "$stage" "${backup_payload:-}"' EXIT
+
+    log "Downloading Retro-WFC payload"
+    mkdir -p "$stage/binary"
+    curl -fL --progress-bar --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
+        "$WFC_PAYLOAD_URL" -o "$stage/binary/payload.RMCPD00.bin"
+    [ -s "$stage/binary/payload.RMCPD00.bin" ] || die "Retro-WFC payload download was empty"
+
+    if [ -e "$WFC_OFFLINE" ]; then
+        mv "$WFC_OFFLINE" "$backup_payload"
+    fi
+    if ! mv "$stage" "$WFC_OFFLINE"; then
+        [ ! -e "$backup_payload" ] || mv "$backup_payload" "$WFC_OFFLINE"
+        die "failed to install staged Retro-WFC payload"
+    fi
+    rm -rf "$backup_payload"
+)
+
 build_rr() {
     log "Translating and compiling (this can take a while; upstream caching applies)"
+    install_retro_wfc_payload
     (cd "$FLAKE_DIR" && nix develop .#retro-rewind-build -c bash "$WORKSPACE/Launcher/local-build.sh" \
         --workspace "$WORKSPACE" \
         --profile retro-rewind \

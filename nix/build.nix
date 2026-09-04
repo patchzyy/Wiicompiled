@@ -335,6 +335,27 @@
       };
     };
 
+  # Shared Mesa drirc file: cap RADV at Vulkan 1.3 for both products. Dawn
+  # emits SPIR-V 1.4 when the driver reports API 1.4 and then validates it
+  # under 1.0 semantics, so pipeline creation dies with "Produced invalid
+  # SPIRV" on RDNA4-era RADV. Other drivers ignore the radv device match.
+  # Remove once upstream Dawn validates against a matching environment.
+  drirc = runCommand "wiicompiled-drirc" {} ''
+    mkdir -p $out/etc
+    cat > $out/etc/drirc <<'DRIRC'
+    <driconf>
+      <device driver="radv">
+        <application name="WiiCompiled" executable="WiiCompiled">
+          <option name="radv_override_api_version" value="1.3"/>
+        </application>
+        <application name="RetroRewind" executable="RetroRewind">
+          <option name="radv_override_api_version" value="1.3"/>
+        </application>
+      </device>
+    </driconf>
+    DRIRC
+  '';
+
   # Launcher wrapper: seed the user's Config.toml on first run and keep
   # [paths] dvd_root pointing at this build's extracted disc tree (the game
   # owns every other setting afterwards). dvd_root is deterministic per
@@ -344,34 +365,17 @@
   # $XDG_DATA_HOME/WiiCompiled, mirroring runtime_config.h's
   # ApplicationDataDirectory().
   #
-  # The wrapper also scopes a Mesa drirc file to this game capping RADV at
-  # Vulkan 1.3: Dawn emits SPIR-V 1.4 (with the Vulkan memory model) when the
-  # driver reports API 1.4 and then validates it under 1.0 semantics, so
-  # pipeline creation dies with "Produced invalid SPIRV" on RDNA4-era RADV.
-  # Other drivers ignore the radv device match. Remove once upstream Dawn
-  # validates against a matching environment. The impure retro-rewind
-  # launcher reuses the same drirc file for the workspace-built binary.
   launcher = {
     game,
     dataTree,
+    drirc,
   }:
     runCommand "wiicompiled-launcher-wiicompiled" {
       nativeBuildInputs = [makeWrapper];
       passthru = {inherit game dataTree;};
     } ''
       mkdir -p $out/bin $out/etc
-      cat > $out/etc/drirc <<'DRIRC'
-      <driconf>
-        <device driver="radv">
-          <application name="WiiCompiled" executable="WiiCompiled">
-            <option name="radv_override_api_version" value="1.3"/>
-          </application>
-          <application name="RetroRewind" executable="RetroRewind">
-            <option name="radv_override_api_version" value="1.3"/>
-          </application>
-        </device>
-      </driconf>
-      DRIRC
+      cp ${drirc}/etc/drirc $out/etc/drirc
       makeWrapper ${game}/bin/WiiCompiled $out/bin/wiicompiled \
         --prefix LD_LIBRARY_PATH : ${vulkan-loader}/lib \
         --run '

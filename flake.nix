@@ -63,18 +63,6 @@
 
       dataTree = build.extractDisc {} {inherit discImage;};
 
-      # The Retro-WFC shared payload the workspace Retro Rewind build bakes
-      # in; fetched from the same endpoint the Windows build uses. Wrapped in
-      # the binary/ layout local-build.sh's --retro-wfc-offline-dir expects.
-      retroWfcPayload = pkgs.fetchurl {
-        url = "http://nas.play.rwfc.net/payload?g=RMCPD00";
-        hash = "sha256-CZCXoPhal8NIEj2RQ4Q4sksRI2Lx+yPJTfajQ8U2ZHE=";
-      };
-      retroWfcOffline = pkgs.runCommand "retro-wfc-payload-offline" {} ''
-        mkdir -p $out/binary
-        cp ${retroWfcPayload} $out/binary/payload.RMCPD00.bin
-      '';
-
       translation = build.translate {inherit dataTree;};
 
       game = build.buildNative {inherit translation;};
@@ -83,8 +71,7 @@
         inherit repoSrc;
         datatree = dataTree;
         inherit translator;
-        wfcOffline = retroWfcOffline;
-        launcher = build.launcher {inherit game dataTree;};
+        drirc = build.drirc;
       };
       translator = pkgs.callPackage ./nix/translator {};
     in rec {
@@ -95,6 +82,7 @@
 
       wiicompiled = build.launcher {
         inherit game dataTree;
+        drirc = build.drirc;
       };
 
       retro-rewind = retroRewindApp;
