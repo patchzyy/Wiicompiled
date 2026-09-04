@@ -432,6 +432,10 @@ double Eval(const Node& node, const InputSource& source) {
     }
     case Kind::FnHold: {
         const auto now = Clock::now();
+        if (!node.marked) {
+            node.mark = now;
+            node.marked = true;
+        }
         const double input = Arg(node, 0, source);
         if (input < kConditionThreshold) {
             node.state = false;
