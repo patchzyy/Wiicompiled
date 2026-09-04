@@ -91,16 +91,10 @@ download_verified() {
     mv "$tmp" "$dest"
 }
 
-# lib/bundled is part of the check so a toolchain prepared before runtime-library bundling existed
-# is rebuilt rather than reused.
-if [[ -x "$toolchain_dir/bin/clang" && -x "$toolchain_dir/bin/ninja" && -x "$toolchain_dir/bin/cmake" && -d "$toolchain_dir/lib/bundled" ]]; then
+if [[ -x "$toolchain_dir/bin/clang" && -x "$toolchain_dir/bin/ninja" && -x "$toolchain_dir/bin/cmake" ]]; then
     echo "prepare-portable-tools.sh: reusing existing toolchain at $toolchain_dir"
     exit 0
 fi
-
-for tool in patchelf ldd strip; do
-    command -v "$tool" >/dev/null || { echo "prepare-portable-tools.sh: '$tool' is required (apt-get install patchelf binutils libc-bin)" >&2; exit 1; }
-done
 
 work="$destination/.building-toolchain-$arch"
 rm -rf "$work"
@@ -190,98 +184,6 @@ echo "prepare-portable-tools.sh: staging ninja $ninja_version..."
 unzip -oq "$ninja_archive" -d "$work/bin"
 chmod +x "$work/bin/ninja"
 
-# --- runtime libraries the llvm.org binaries expect the host to provide ---
-#
-# The official LLVM release binaries are dynamically linked against a few host libraries beyond
-# glibc: lld needs libxml2, clang/lld need zlib and zstd, and whatever those pull in. A user's
-# distro is not guaranteed to have them under the same soname - libxml2 2.14 renamed
-# libxml2.so.2 to libxml2.so.16, so on current Arch/Fedora a fresh install died with
-# "ld.lld: error while loading shared libraries: libxml2.so.2". The smoke test below never caught
-# it because the build machine has every one of them. So: copy the transitive closure of non-core
-# libraries next to the binaries and point the binaries at that directory through an RPATH, the
-# way AppImages ship any dynamically linked tool. glibc and its companions stay on the host: they
-# exist everywhere, and a bundled copy could only ever be older than the host's own.
-bundled_lib_dir="$work/lib/bundled"
-mkdir -p "$bundled_lib_dir"
-
-is_host_provided_lib() {
-    case "$1" in
-        linux-vdso*|ld-linux*|libc.so*|libm.so*|libdl.so*|libpthread.so*|librt.so*|libresolv.so*|libutil.so*|\
-        libgcc_s.so*|libstdc++.so*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# Prints "soname path" for every dynamically resolved dependency of $1 that the host must not be
-# relied on for. ldd already reports the transitive closure, so no recursion is needed.
-non_host_deps() {
-    local line soname path
-    ldd "$1" 2>/dev/null | while read -r line; do
-        [[ "$line" == *"=>"* ]] || continue
-        soname=${line%% =>*}; soname=${soname## }
-        path=${line#*=> }; path=${path%% (*}
-        is_host_provided_lib "$soname" && continue
-        echo "$soname $path"
-    done
-}
-
-# A dependency the build machine itself lacks cannot be bundled; say so instead of shipping a
-# toolchain that is broken everywhere. (Checked separately because a failure inside the
-# process-substituted reader above could not stop the script.)
-assert_deps_resolved() {
-    if ldd "$1" 2>/dev/null | grep -q "not found"; then
-        echo "prepare-portable-tools.sh: $(basename "$1") has dependencies missing on this machine:" >&2
-        ldd "$1" | grep "not found" >&2
-        exit 1
-    fi
-}
-
-# Copies every non-core library $1 needs into lib/bundled, then does the same for each copy, so
-# a library's own dependencies (libxml2 -> ICU, ...) are bundled even if ldd's listing for the
-# executable did not already spell out the whole closure. The "already bundled" check ends the
-# recursion.
-bundle_deps_of() {
-    local file=$1 soname path
-    assert_deps_resolved "$file"
-    while read -r soname path; do
-        [[ -n "$soname" ]] || continue
-        [[ -e "$bundled_lib_dir/$soname" ]] && continue
-        cp -L "$path" "$bundled_lib_dir/$soname"
-        chmod u+w "$bundled_lib_dir/$soname"
-        # A bundled library must find its own dependencies beside itself: RUNPATH is not
-        # inherited from the executable that loaded it.
-        patchelf --set-rpath '$ORIGIN' "$bundled_lib_dir/$soname"
-        bundle_deps_of "$bundled_lib_dir/$soname"
-    done < <(non_host_deps "$file")
-}
-
-bundle_runtime_libs() {
-    local file=$1 existing
-    bundle_deps_of "$file"
-    # Prepend, keeping whatever RPATH the release build set (typically $ORIGIN/../lib).
-    existing=$(patchelf --print-rpath "$file" 2>/dev/null || true)
-    patchelf --set-rpath "\$ORIGIN/../lib/bundled${existing:+:$existing}" "$file"
-}
-
-echo "prepare-portable-tools.sh: bundling the host runtime libraries the toolchain binaries depend on..."
-for binary in "$work/bin/clang-22" "$work/bin/lld" "$work/bin/llvm-ar" "$work/bin/cmake"; do
-    bundle_runtime_libs "$binary"
-done
-echo "prepare-portable-tools.sh: bundled $(ls "$bundled_lib_dir" | wc -l) librar(y/ies): $(ls "$bundled_lib_dir" | tr '\n' ' ')"
-
-# Fail here, on the build machine, if any non-core dependency still resolves to a host path:
-# that is exactly the file a user's machine may lack.
-for binary in "$work/bin/clang-22" "$work/bin/lld" "$work/bin/llvm-ar" "$work/bin/cmake" "$bundled_lib_dir"/*; do
-    [[ -f "$binary" ]] || continue
-    while read -r soname path; do
-        [[ -n "$soname" ]] || continue
-        if [[ "$path" != "$bundled_lib_dir/"* ]]; then
-            echo "prepare-portable-tools.sh: $(basename "$binary") still resolves $soname from the host ($path); bundling failed" >&2
-            exit 1
-        fi
-    done < <(non_host_deps "$binary")
-done
-
 cat > "$work/LICENSE.txt" <<EOF
 Portable build tools bundled by WiiCompiled
 
@@ -297,11 +199,6 @@ CMake $cmake_version
 Ninja $ninja_version
   https://github.com/ninja-build/ninja
   Apache License 2.0
-
-Host runtime libraries bundled for the binaries above (lib/bundled), copied unmodified apart from
-their RPATH from the build machine's distribution packages; each is under its own license
-(libxml2: MIT, zlib: zlib, zstd: BSD 3-Clause, ICU: Unicode License, ...):
-$(ls "$bundled_lib_dir" | sed 's/^/  /')
 EOF
 
 echo "prepare-portable-tools.sh: smoke-testing the toolchain..."

@@ -42,12 +42,10 @@ jobs:
 
       # appimagetool ships as an AppImage itself and needs to self-mount via FUSE to run directly;
       # GitHub's ubuntu-latest runners don't have libfuse2 preinstalled.
-      # patchelf: prepare-portable-tools.sh bundles the host libraries the llvm.org binaries link
-      # against and rewrites their RPATH to find them.
-      - name: Install dependencies (required by appimagetool, SDL3 build and toolchain bundling)
+      - name: Install dependencies (required by appimagetool and SDL3 build)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 patchelf build-essential git make \
+          sudo apt-get install -y libfuse2 build-essential git make \
             pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
             libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
             libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
