@@ -804,7 +804,7 @@ inline bool SetWiiRemotesEnabled(bool value) {
 }
 
 // Whether to keep rescanning Bluetooth while no Wii controller is connected.
-inline bool WiiContinuousScanEnabled(bool fallback = true) {
+inline bool WiiContinuousScanEnabled(bool fallback = false) {
     return Get().wiiContinuousScan.value_or(fallback);
 }
 

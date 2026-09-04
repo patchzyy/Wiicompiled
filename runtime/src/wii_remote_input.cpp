@@ -481,7 +481,7 @@ void Poll() {
         g_lastScanMs = SDL_GetTicks();
         return;
     }
-    if (!RuntimeConfigFile::WiiContinuousScanEnabled(true)) {
+    if (!RuntimeConfigFile::WiiContinuousScanEnabled(false)) {
         g_scanning = false;
         return;
     }

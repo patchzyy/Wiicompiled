@@ -321,7 +321,7 @@ void ApplyConfiguredMappings() {
 }
 
 bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled(true);
-bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(true);
+bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(false);
 
 // Accelerometer readout and zero-point calibration for a bare remote / remote + Nunchuk.
 void DrawWiiRemoteAccelerometer(uint32_t port) {
