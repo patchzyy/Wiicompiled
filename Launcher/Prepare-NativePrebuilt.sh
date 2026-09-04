@@ -88,7 +88,7 @@ assert_file "$ninja_bin" "Portable Ninja"
 assert_file "$cc" "Portable C compiler"
 assert_file "$cxx" "Portable C++ compiler"
 assert_dir "$aurora_source" "aurora-main source tree"
-clang_binary=$(normalize "$toolchain_dir/bin/clang-23")
+clang_binary=$(normalize "$toolchain_dir/bin/clang-22")
 assert_file "$clang_binary" "Portable clang driver binary"
 
 (( parallel > 0 )) || parallel=$(nproc)
