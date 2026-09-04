@@ -107,6 +107,25 @@ if(NOT MKW_NATIVE_PREBUILT_DIR)
     set_target_properties(mkw_cryptopp PROPERTIES UNITY_BUILD OFF)
 endif()
 
+# TLS for non-Windows guest network HLE (runtime/src/hle/net/network_ssl.cpp) - the Windows path
+# uses Schannel (a Windows-only OS API), which has no equivalent on Linux/Android, so this project
+# needs its own TLS library there. mbed TLS was chosen over OpenSSL specifically because it cross-
+# compiles cleanly for Android with nothing beyond a plain C toolchain (no perl/asm build-script
+# dependency the way OpenSSL's build has), matching how this project already prefers toolchain-
+# simple vendored libraries (see Crypto++ above, similarly stripped of ASM/SIMD for portability).
+# Vendored under third_party/mbedtls the same way as Crypto++/pugixml - a real source checkout,
+# not a submodule or FetchContent download, matching this project's existing convention for
+# permissively-licensed C/C++ dependencies it needs to guarantee builds identically for every user.
+file(GLOB MKW_MBEDTLS_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/third_party/mbedtls/library/*.c")
+add_library(mkw_mbedtls STATIC ${MKW_MBEDTLS_SOURCES})
+add_library(mkw::mbedtls ALIAS mkw_mbedtls)
+target_include_directories(mkw_mbedtls SYSTEM PUBLIC "${CMAKE_CURRENT_LIST_DIR}/third_party/mbedtls/include")
+target_include_directories(mkw_mbedtls PRIVATE "${CMAKE_CURRENT_LIST_DIR}/third_party/mbedtls/library")
+target_compile_features(mkw_mbedtls PUBLIC c_std_99)
+target_compile_options(mkw_mbedtls PRIVATE -w)
+set_target_properties(mkw_mbedtls PROPERTIES UNITY_BUILD OFF)
+
 set(MKW_TRANSLATED_COMPILE_JOBS 0 CACHE STRING
     "Cap on concurrently compiling translated shard TUs via a Ninja job pool (0 = uncapped). \
 Scheduling only - never affects output bytes, so it is deliberately outside the canonical flag fingerprint.")
