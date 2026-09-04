@@ -56,7 +56,7 @@
       # the same nixpkgs ones either way.
       build = unfreePkgs.callPackage ./nix/build.nix {
         inherit repoSrc;
-        translator = pkgs.callPackage ./nix/translator {};
+        inherit translator;
         deps = pkgs.callPackage ./nix/deps.nix {};
         llvmPackages = pkgs.llvmPackages;
       };
@@ -82,14 +82,16 @@
       retroRewindApp = pkgs.callPackage ./nix/retro-rewind-app.nix {
         inherit repoSrc;
         datatree = dataTree;
-        translator = pkgs.callPackage ./nix/translator {};
+        inherit translator;
         wfcOffline = retroWfcOffline;
         launcher = build.launcher {inherit game dataTree;};
       };
+      translator = pkgs.callPackage ./nix/translator {};
     in rec {
       nodtool = pkgs.nodtool;
       datatree = dataTree;
-      inherit translation game;
+      inherit translation game translator;
+      translator-fetch-deps = translator.passthru.fetch-deps;
 
       wiicompiled = build.launcher {
         inherit game dataTree;
