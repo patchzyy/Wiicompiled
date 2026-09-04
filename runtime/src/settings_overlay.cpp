@@ -1,6 +1,8 @@
 #include "settings_overlay.h"
 #include "audio_backend.h"
+#include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
+#include "input_bindings.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -34,6 +36,8 @@
 #endif
 
 #include <dolphin/pad.h>
+
+extern "C" void PAD_HLE_SetRumbleEnabled(bool enabled);
 #include <dolphin/vi.h>
 #include <aurora/aurora.h>
 #include <aurora/gfx.h>
@@ -65,6 +69,7 @@ const char* GraphicsApiDisplayName() {
 }
 
 bool g_topBarVisible = false;
+bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
 int g_audioVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::AudioVolume(1.0f) * 100.0f));
@@ -106,62 +111,9 @@ std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     return indices;
 }();
 
-struct ControllerButtonItem {
-    const char* configKey;
-    const char* label;
-    PADButton padButton;
-};
-
-constexpr std::array<ControllerButtonItem, PAD_BUTTON_COUNT> kControllerButtons = {{
-    {"a", "A", PAD_BUTTON_A},
-    {"b", "B", PAD_BUTTON_B},
-    {"x", "X", PAD_BUTTON_X},
-    {"y", "Y", PAD_BUTTON_Y},
-    {"start", "Start", PAD_BUTTON_START},
-    {"z", "Z", PAD_TRIGGER_Z},
-    {"l", "L", PAD_TRIGGER_L},
-    {"r", "R", PAD_TRIGGER_R},
-    {"up", "D-pad Up", PAD_BUTTON_UP},
-    {"down", "D-pad Down", PAD_BUTTON_DOWN},
-    {"left", "D-pad Left", PAD_BUTTON_LEFT},
-    {"right", "D-pad Right", PAD_BUTTON_RIGHT},
-}};
-
-struct NativeButtonItem {
-    const char* configName;
-    const char* label;
-    uint32_t nativeButton;
-};
-
-constexpr std::array<NativeButtonItem, SDL_GAMEPAD_BUTTON_COUNT + 1> kNativeButtons = {{
-    {"unmapped", "Unmapped / analog trigger", PAD_NATIVE_BUTTON_INVALID},
-    {"south", "South (A / Cross)", SDL_GAMEPAD_BUTTON_SOUTH},
-    {"east", "East (B / Circle)", SDL_GAMEPAD_BUTTON_EAST},
-    {"west", "West (X / Square)", SDL_GAMEPAD_BUTTON_WEST},
-    {"north", "North (Y / Triangle)", SDL_GAMEPAD_BUTTON_NORTH},
-    {"back", "Back / Select", SDL_GAMEPAD_BUTTON_BACK},
-    {"guide", "Guide / Home", SDL_GAMEPAD_BUTTON_GUIDE},
-    {"start", "Start / Options", SDL_GAMEPAD_BUTTON_START},
-    {"left_stick", "Left stick click", SDL_GAMEPAD_BUTTON_LEFT_STICK},
-    {"right_stick", "Right stick click", SDL_GAMEPAD_BUTTON_RIGHT_STICK},
-    {"left_shoulder", "Left shoulder", SDL_GAMEPAD_BUTTON_LEFT_SHOULDER},
-    {"right_shoulder", "Right shoulder", SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER},
-    {"dpad_up", "D-pad Up", SDL_GAMEPAD_BUTTON_DPAD_UP},
-    {"dpad_down", "D-pad Down", SDL_GAMEPAD_BUTTON_DPAD_DOWN},
-    {"dpad_left", "D-pad Left", SDL_GAMEPAD_BUTTON_DPAD_LEFT},
-    {"dpad_right", "D-pad Right", SDL_GAMEPAD_BUTTON_DPAD_RIGHT},
-    {"misc1", "Misc 1 / Share", SDL_GAMEPAD_BUTTON_MISC1},
-    {"right_paddle1", "Right paddle 1", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1},
-    {"left_paddle1", "Left paddle 1", SDL_GAMEPAD_BUTTON_LEFT_PADDLE1},
-    {"right_paddle2", "Right paddle 2", SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2},
-    {"left_paddle2", "Left paddle 2", SDL_GAMEPAD_BUTTON_LEFT_PADDLE2},
-    {"touchpad", "Touchpad", SDL_GAMEPAD_BUTTON_TOUCHPAD},
-    {"misc2", "Misc 2", SDL_GAMEPAD_BUTTON_MISC2},
-    {"misc3", "Misc 3 / GC L click", SDL_GAMEPAD_BUTTON_MISC3},
-    {"misc4", "Misc 4 / GC R click", SDL_GAMEPAD_BUTTON_MISC4},
-    {"misc5", "Misc 5", SDL_GAMEPAD_BUTTON_MISC5},
-    {"misc6", "Misc 6", SDL_GAMEPAD_BUTTON_MISC6},
-}};
+using ControllerNames::kNativeButtons;
+using ControllerNames::NativeButtonItem;
+constexpr const auto& kControllerButtons = ControllerNames::kGameCubeButtons;
 
 // Classic Controller Pro layout, indexed like kControllerButtons: the SNES-style
 // diamond (A right, B bottom, X top, Y left) with digital bumpers driving the GC
@@ -175,6 +127,13 @@ constexpr std::array<const char*, PAD_BUTTON_COUNT> kClassicProPreset = {
     "back",           // Z
     "left_shoulder",  // L
     "right_shoulder", // R
+    "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+};
+
+// PlayStation layout: bumpers drive the GC triggers, Z moves to Create/Share.
+constexpr std::array<const char*, PAD_BUTTON_COUNT> kPlayStationPreset = {
+    "south", "east", "west", "north", "start", "back",
+    "left_shoulder", "right_shoulder",
     "dpad_up", "dpad_down", "dpad_left", "dpad_right",
 };
 
@@ -225,43 +184,25 @@ void LimitResolutionForFrameRate() {
     }
 }
 
-const NativeButtonItem* FindNativeButton(std::string value) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return value == item.configName;
-    });
-    return it == kNativeButtons.end() ? nullptr : &*it;
-}
+using ControllerNames::FindNativeButton;
 
 struct ControllerBindingPair {
     std::string primary;
     std::string secondary;
 };
 
-std::string TrimBindingToken(const std::string& token) {
-    const size_t begin = token.find_first_not_of(" \t");
-    if (begin == std::string::npos) {
-        return {};
-    }
-    const size_t end = token.find_last_not_of(" \t");
-    return token.substr(begin, end - begin + 1);
-}
 
 // Config values hold up to two comma-separated button names ("dpad_up" or
 // "dpad_up,left_shoulder"); pressing either one counts as the GC button.
 ControllerBindingPair SplitControllerBinding(const std::string& value) {
     const size_t comma = value.find(',');
     if (comma == std::string::npos) {
-        return {TrimBindingToken(value), {}};
+        return {ControllerNames::TrimToken(value), {}};
     }
-    return {TrimBindingToken(value.substr(0, comma)), TrimBindingToken(value.substr(comma + 1))};
+    return {ControllerNames::TrimToken(value.substr(0, comma)), ControllerNames::TrimToken(value.substr(comma + 1))};
 }
 
-const NativeButtonItem& NativeButtonForValue(uint32_t nativeButton) {
-    const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(), [&](const NativeButtonItem& item) {
-        return nativeButton == item.nativeButton;
-    });
-    return it == kNativeButtons.end() ? kNativeButtons.front() : *it;
-}
+using ControllerNames::NativeButtonForValue;
 
 void SetTopBarVisible(bool visible) {
     if (g_topBarVisible == visible) {
@@ -393,10 +334,8 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (WiiRemoteInput::IsScanning() && WiiRemoteInput::PeriodicRescanEnabled()) {
+    if (WiiRemoteInput::IsScanning()) {
         ImGui::TextDisabled("Scanning... (%u so far) - press 1+2 on the remote", WiiRemoteInput::ScanCount());
-    } else if (WiiRemoteInput::IsScanning()) {
-        ImGui::TextDisabled("Waiting for a remote - press 1+2 on the remote");
     } else {
         ImGui::TextDisabled("Not scanning");
     }
@@ -457,6 +396,105 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
 }
 
 // Controller settings menu: port selection, controller assignment and button mapping.
+int ExpressionResizeCallback(ImGuiInputTextCallbackData* data) {
+    if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
+        auto* text = static_cast<std::string*>(data->UserData);
+        text->resize(static_cast<size_t>(data->BufTextLen));
+        data->Buf = text->data();
+    }
+    return 0;
+}
+
+void DrawExpressionSettings() {
+    ImGui::SeparatorText("Expressions (Dolphin syntax)");
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 440.0f);
+    ImGui::TextDisabled(
+        "Optional. An expression overrides nothing: its result is combined with the "
+        "button mapping above. Operators ! & | ^ and functions if, min, max, clamp, "
+        "timer, toggle, hold, tap, pulse, smooth, deadzone behave as they do in Dolphin.");
+    ImGui::PopTextWrapPos();
+
+    static std::array<std::string, InputBindings::kControls.size()> errors;
+    static std::array<std::string, InputBindings::kControls.size()> buffers;
+    static std::string importStatus;
+    static int loadedPort = -1;
+    static bool reloadBuffers = true;
+    const auto port = static_cast<uint32_t>(g_controllerPort);
+
+    if (loadedPort != g_controllerPort || reloadBuffers) {
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            buffers[i] = InputBindings::GetExpression(port, i);
+        }
+        errors.fill(std::string());
+        loadedPort = g_controllerPort;
+        reloadBuffers = false;
+    }
+
+    if (ImGui::Button("Import from Dolphin")) {
+        const std::string path = InputBindings::DefaultDolphinConfigPath();
+        std::string summary;
+        std::string error;
+        if (InputBindings::ImportDolphinConfig(path, g_controllerPort + 1, port, summary, error) < 0) {
+            importStatus = error;
+        } else {
+            importStatus = summary;
+            errors.fill(std::string());
+            reloadBuffers = true;
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Reads [GCPad%d] from %%APPDATA%%\\Dolphin Emulator\\Config\\GCPadNew.ini,\n"
+                          "or GCPadNew.ini next to the executable.", g_controllerPort + 1);
+    }
+    if (!importStatus.empty()) {
+        ImGui::TextDisabled("%s", importStatus.c_str());
+    }
+
+    for (size_t i = 0; i < InputBindings::kControls.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i) + 2000);
+        std::string& text = buffers[i];
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::InputText(InputBindings::kControls[i].label, text.data(), text.capacity() + 1,
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackResize,
+                             ExpressionResizeCallback, &text)) {
+            std::string error;
+            errors[i] = InputBindings::SetExpression(port, i, text, error) ? std::string() : error;
+        }
+        if (InputBindings::IsActive(port, i)) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "active");
+        }
+        if (!errors[i].empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.3f, 1.0f), "%s", errors[i].c_str());
+        }
+        ImGui::PopID();
+    }
+}
+
+void DrawRumbleSettings() {
+    ImGui::SeparatorText("Vibration");
+    if (ImGui::Checkbox("Controller vibration", &g_rumbleEnabled)) {
+        PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+        RuntimeConfigFile::SetRumbleEnabled(g_rumbleEnabled);
+        if (!g_rumbleEnabled) {
+            // Stop whatever is already running: the game will not send another
+            // motor command until its own state machine decides to.
+            constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
+                PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD,
+            };
+            PADControlAllMotors(stopAll.data());
+#if defined(_WIN32)
+            for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+                Wup028Adapter::SetRumble(port, false);
+            }
+#endif
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Applies to every port.");
+    }
+}
+
 void DrawControllerSettings() {
     for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         const std::string label = "Port " + std::to_string(port + 1);
@@ -545,20 +583,28 @@ void DrawControllerSettings() {
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Classic Controller Pro")) {
+    const auto applyPreset = [&](const std::array<const char*, PAD_BUTTON_COUNT>& preset) {
         const uint32_t port = static_cast<uint32_t>(g_controllerPort);
         for (size_t i = 0; i < kControllerButtons.size(); ++i) {
-            if (const NativeButtonItem* native = FindNativeButton(kClassicProPreset[i])) {
+            if (const NativeButtonItem* native = FindNativeButton(preset[i])) {
                 PADSetButtonMapping(port, PADButtonMapping{native->nativeButton, kControllerButtons[i].padButton});
                 PADSetAltButtonMapping(port,
                                        PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
-                RuntimeConfigFile::SetControllerButton(i, kClassicProPreset[i]);
+                RuntimeConfigFile::SetControllerButton(i, preset[i]);
             }
         }
         altRowExpanded.fill(false);
         PADSerializeMappings();
         mappings = PADGetButtonMappings(port, &mappingCount);
+    };
+
+    ImGui::SameLine();
+    if (ImGui::Button("Classic Controller Pro")) {
+        applyPreset(kClassicProPreset);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("PlayStation")) {
+        applyPreset(kPlayStationPreset);
     }
 
     ImGui::SeparatorText("Button mapping");
@@ -640,6 +686,8 @@ void DrawControllerSettings() {
         ImGui::TextUnformatted(kControllerButtons[i].label);
         ImGui::PopID();
     }
+    DrawExpressionSettings();
+    DrawRumbleSettings();
 }
 
 void DrawAudioSettings() {
@@ -994,6 +1042,8 @@ void PersistDisplayModeIfChanged() {
 } // namespace
 
 void InitializeRuntimeSettings() noexcept {
+    PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
+    InputBindings::Reload();
     controller_mapping_wizard::LoadPersistedMappings();
     ApplyConfiguredMappings();
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
@@ -1014,6 +1064,7 @@ void InitializeRuntimeSettings() noexcept {
     g_strapInputAccepted.store(false, std::memory_order_relaxed);
     g_startupDismissFrame.store(UINT64_MAX, std::memory_order_relaxed);
     PADBlockInput(false);
+    InputBindings::SetInputBlocked(false);
 }
 
 void HandleEvents(const AuroraEvent* events) noexcept {
@@ -1056,7 +1107,9 @@ void Draw() noexcept {
     DrawTopBar();
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game.
-    PADBlockInput(controller_mapping_wizard::IsActive());
+    const bool inputBlocked = controller_mapping_wizard::IsActive();
+    PADBlockInput(inputBlocked);
+    InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();
 }
 

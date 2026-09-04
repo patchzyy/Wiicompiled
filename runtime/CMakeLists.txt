@@ -277,6 +277,15 @@ target_link_libraries(mkw_platform_paths_tests PRIVATE mkw_platform)
 target_compile_features(mkw_platform_paths_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_platform_paths_tests COMMAND mkw_platform_paths_tests)
 
+# The input expression engine is self-contained, so it can be exercised without
+# linking the runtime or SDL.
+add_executable(mkw_input_expr_tests
+    "${CMAKE_CURRENT_LIST_DIR}/tests/test_expr.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/input_expr.cpp")
+target_include_directories(mkw_input_expr_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(mkw_input_expr_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_input_expr_tests COMMAND mkw_input_expr_tests)
+
 # HostContext deliberately keeps the platform-specific context primitive out
 # of fiber_manager.cpp. Exercise the Linux libco handoff directly so future
 # refactors cannot silently remove its headers, implementation, or link edge.

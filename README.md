@@ -46,7 +46,9 @@ Press **F10** while the game window has focus:
 - Internal resolution
 - FPS counter
 - Controller assignment for all four ports
-- Full per-controller button mapping
+- Full per-controller button mapping, including the bumpers
+- Dolphin-syntax input expressions and GCPadNew.ini import
+- Controller vibration on/off
 - Volume, instant mute, and the music ducking toggle
 
 Everything you change is saved to `Config.toml` on the spot and restored next launch.
@@ -56,6 +58,16 @@ Controllers are fed to the game as a GameCube controller.
 Mappings are positional (`south`, `east`, `west`, `north`) rather than Xbox-labelled, so the
 same config makes sense on Xbox, PlayStation, Nintendo and generic SDL pads alike, and extra
 inputs like paddles, touchpads and share buttons show up when the hardware reports them.
+
+**Dolphin-compatible input expressions.** 
+Each GameCube control can carry an expression in Dolphin's input syntax, with the same operators
+(`!` `&` `|` `^`) and the same functions (`if`, `min`, `max`, `clamp`, `timer`, `toggle`, `hold`,
+`tap`, `pulse`, `smooth`, `deadzone`), evaluated against the same wall-clock timing. A Dolphin
+`GCPadNew.ini` can be imported directly from the F10 bar. Stick axes are not covered by expressions
+and keep their normal mapping.
+
+**Vibration toggle.** 
+Force feedback can be turned off for every port at once.
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
 

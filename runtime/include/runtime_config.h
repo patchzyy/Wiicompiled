@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -89,6 +90,8 @@ struct RuntimeUserConfig {
     // comma-separated SDL-style physical button names ("south", or
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
+    std::optional<bool> rumbleEnabled;
+    std::map<std::string, std::string> controllerExpressions;
 };
 
 namespace RuntimeConfigFile {
@@ -407,6 +410,17 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
             FindConfigValue<std::string>(document, "controller", buttonKeys[index]);
     }
 
+    config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
+
+    if (const auto* section = document.contains("controller") ? &document.at("controller") : nullptr;
+        section != nullptr && section->is_table()) {
+        for (const auto& [key, value] : section->as_table()) {
+            if (key.rfind("expr_", 0) == 0 && value.is_string()) {
+                config.controllerExpressions[key] = value.as_string();
+            }
+        }
+    }
+
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
     config.windowPosY = FindConfigInt(document, "video", "window_y");
@@ -675,6 +689,25 @@ inline bool SetControllerButton(size_t index, std::string value) {
     }
     Mutable().controllerButtons[index] = value;
     return WriteSetting("controller", kControllerButtonKeys[index], FormatString(value));
+}
+
+inline std::string ControllerExpression(const std::string& key) {
+    const auto it = Get().controllerExpressions.find(key);
+    return it == Get().controllerExpressions.end() ? std::string() : it->second;
+}
+
+inline bool SetControllerExpression(const std::string& key, const std::string& value) {
+    Mutable().controllerExpressions[key] = value;
+    return WriteSetting("controller", key, FormatString(value));
+}
+
+inline bool RumbleEnabled(bool fallback = true) {
+    return Get().rumbleEnabled.value_or(fallback);
+}
+
+inline bool SetRumbleEnabled(bool value) {
+    Mutable().rumbleEnabled = value;
+    return WriteSetting("controller", "rumble", value ? "true" : "false");
 }
 
 inline bool SetAudioVolume(float value) {
