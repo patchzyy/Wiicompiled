@@ -38,11 +38,14 @@
       discImage = unfreePkgs.requireFile {
         name = "RMCP01.rvz";
         hashMode = "recursive";
-        hash = "sha256-cP/ZT1wpezNbHYZFgtvCAFnWQwKkupe7/46uFPlFbJU=";
+        hash = "sha256-x2xbamRFEyVsJH08SeW1mpiLzVPmJOhBX2xSVbpt6LA=";
         message = ''
-          WiiCompiled needs your legally dumped clean PAL RMCP01 image
-          (RVZ/ISO/GCM/GCZ/CISO/WBFS/WIA). Nothing is downloaded; add your
-          own dump to the Nix store with:
+          WiiCompiled needs your legally dumped clean PAL RMCP01 RVZ named
+          RMCP01.rvz. Convert a clean PAL RMCP01 ISO with Dolphin's CLI:
+
+            dolphin-tool convert --input /path/to/MarioKart.iso --output /path/to/RMCP01.rvz --format rvz --block_size 131072 --compression zstd --compression_level 5
+
+          Then add that RVZ to the Nix store with:
 
             nix-store --add-fixed sha256 --recursive /path/to/RMCP01.rvz
         '';

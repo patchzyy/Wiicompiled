@@ -107,6 +107,25 @@ regions, patched executables) is rejected outright.
 > Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
 > game files won't be provided or tolerated.
 
+For the Nix flake, the canonical input is an RVZ named `RMCP01.rvz`, converted from a clean PAL
+`RMCP01` ISO with Dolphin's CLI:
+
+```bash
+dolphin-tool convert \
+  --input /path/to/MarioKart.iso \
+  --output /path/to/RMCP01.rvz \
+  --format rvz \
+  --block_size 131072 \
+  --compression zstd \
+  --compression_level 5
+```
+
+Then add that RVZ to the Nix store:
+
+```bash
+nix-store --add-fixed sha256 --recursive /path/to/RMCP01.rvz
+```
+
 ## Installing
 
 For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`
