@@ -153,6 +153,10 @@ public:
         if (!node) {
             return nullptr;
         }
+        if (m_failed) {
+            error = m_lexError;
+            return nullptr;
+        }
         if (m_tok.type != Token::End) {
             error = "unexpected trailing input in expression";
             return nullptr;
