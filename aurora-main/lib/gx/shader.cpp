@@ -993,11 +993,13 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "\n    let clip_base = select(clip_a, clip_b, use_b);"
         "\n    out.pos = vec4f(clip_base.xy + offset_ndc * clip_base.w, clip_base.zw);";
   }
-  if constexpr (UseReversedZ) {
-    vtxXfrAttrsPre += "\n    out.pos.z = -out.pos.z;";
-  } else {
-    vtxXfrAttrsPre += "\n    out.pos.z += out.pos.w;";
-  }
+  // The near/far depth correction used to be applied here per-vertex (out.pos.z = -out.pos.z for
+  // reversed, or += out.pos.w for forward), redundantly on top of the same correction already
+  // folded into ubuf.proj by effective_projection() (shader_info.cpp) - applying it twice canceled
+  // out for the common case (any draw where effective_projection() decides to flip), silently
+  // making "reversed" Z behave identically to forward Z. It is now applied exactly once, in the
+  // projection matrix alone (matching upstream aurora commit 1dde08fa: "Move depth correction to
+  // projection matrix"), so nothing needs to happen to out.pos.z here.
   // GX rasterizes at a 7/12 pixel center when antialiasing is disabled, while WebGPU rasterizes at 1/2.
   vtxXfrAttrsPre +=
       "\n    let gx_pixel_center_correction = "
