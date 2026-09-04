@@ -65,7 +65,7 @@ ensure_workspace() {
     cp -f "$DATA_TREE/files/rel/StaticR.rel" "$WORKSPACE/Assets/StaticR.rel"
 }
 
-install_rr() {
+install_rr() (
     local version url tmp exdir rrdir xml rizip
     version=$(latest_version) || die "cannot reach the Retro Rewind CDN"
     [ -n "$version" ] || die "CDN returned no version"
@@ -74,8 +74,9 @@ install_rr() {
 
     log "Downloading Retro Rewind $version"
     tmp=$(mktemp -d)
-    trap 'rm -rf "$tmp"' EXIT
-    curl -fL --progress-bar "$url" -o "$tmp/rr.zip"
+    trap 'rm -rf "$tmp" "${stage:-}" "${backup_pack:-}" "${backup_riivolution:-}"' EXIT
+    curl -fL --progress-bar --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
+        "$url" -o "$tmp/rr.zip"
 
     log "Extracting"
     exdir="$tmp/extracted"
@@ -95,22 +96,50 @@ install_rr() {
     #                                     /riivolution/...)
     rrdir=$(find "$exdir" -type d -name RetroRewind6 | head -n 1)
     [ -n "$rrdir" ] || die "no RetroRewind6 directory in the pack zip"
+    [ -f "$rrdir/Binaries/Code.pul" ] || die "RetroRewind6/Binaries/Code.pul is missing from the pack zip"
     xml=$(find "$exdir" -iname 'RetroRewind6.xml' -type f | head -n 1)
     [ -n "$xml" ] || die "no RetroRewind6.xml in the pack zip"
     rizip=$(find "$exdir" -type d -iname 'riivolution' | head -n 1)
 
     pack_parent="$WORKSPACE/PulsarPacks/completed/RetroRewind"
     mkdir -p "$pack_parent"
-    rm -rf "$PACK_DIR" "$pack_parent/riivolution"
-    cp -r "$rrdir" "$PACK_DIR"
-    mkdir -p "$PACK_DIR/xml"
-    cp "$xml" "$PACK_DIR/xml/RetroRewind6.xml"
+    stage=$(mktemp -d "$pack_parent/.install.XXXXXX")
+    backup_pack=$(mktemp -d "$pack_parent/.RetroRewind6.backup.XXXXXX")
+    rmdir "$backup_pack"
+    backup_riivolution=$(mktemp -d "$pack_parent/.riivolution.backup.XXXXXX")
+    rmdir "$backup_riivolution"
+
+    cp -r "$rrdir" "$stage/RetroRewind6"
+    mkdir -p "$stage/RetroRewind6/xml"
+    cp "$xml" "$stage/RetroRewind6/xml/RetroRewind6.xml"
     if [ -n "$rizip" ]; then
-        cp -r "$rizip" "$pack_parent/riivolution"
+        cp -r "$rizip" "$stage/riivolution"
     fi
-    printf '%s' "$version" > "$PACK_DIR/version.txt"
+    printf '%s' "$version" > "$stage/RetroRewind6/version.txt"
+
+    [ -f "$stage/RetroRewind6/Binaries/Code.pul" ] || die "staged Retro Rewind Code.pul is missing"
+    [ -f "$stage/RetroRewind6/xml/RetroRewind6.xml" ] || die "staged Retro Rewind XML is missing"
+
+    if [ -e "$PACK_DIR" ]; then
+        mv "$PACK_DIR" "$backup_pack"
+    fi
+    if [ -e "$pack_parent/riivolution" ]; then
+        mv "$pack_parent/riivolution" "$backup_riivolution"
+    fi
+    if ! mv "$stage/RetroRewind6" "$PACK_DIR"; then
+        [ ! -e "$backup_pack" ] || mv "$backup_pack" "$PACK_DIR"
+        [ ! -e "$backup_riivolution" ] || mv "$backup_riivolution" "$pack_parent/riivolution"
+        die "failed to install staged Retro Rewind pack"
+    fi
+    if [ -e "$stage/riivolution" ] && ! mv "$stage/riivolution" "$pack_parent/riivolution"; then
+        rm -rf "$PACK_DIR"
+        [ ! -e "$backup_pack" ] || mv "$backup_pack" "$PACK_DIR"
+        [ ! -e "$backup_riivolution" ] || mv "$backup_riivolution" "$pack_parent/riivolution"
+        die "failed to install staged Retro Rewind riivolution data"
+    fi
+    rm -rf "$backup_pack" "$backup_riivolution" "$stage"
     chmod -R u+w "$WORKSPACE/PulsarPacks"
-}
+)
 
 build_rr() {
     log "Translating and compiling (this can take a while; upstream caching applies)"
@@ -126,13 +155,48 @@ build_rr() {
 # $1 = key, $2 = value. Heals an uncommented key under [paths] without
 # clobbering any other user settings, mirroring the pure launcher.
 ensure_path_key() {
-    local key=$1 value=$2 file="$WS_ROOT/Config.toml"
-    if [ -f "$file" ] && grep -q "^[[:space:]]*$key" "$file"; then
-        sed -i "s|^[[:space:]]*$key = .*|$key = \"$value\"|" "$file"
-    elif [ -f "$file" ] && grep -q '^\[paths\]' "$file"; then
-        sed -i "/^\[paths\]/a $key = \"$value\"" "$file"
-    elif [ -f "$file" ]; then
-        printf '\n[paths]\n%s = "%s"\n' "$key" "$value" >> "$file"
+    local key=$1 value=$2 file="$WS_ROOT/Config.toml" tmp
+    mkdir -p "$WS_ROOT"
+    if [ -f "$file" ]; then
+        tmp=$(mktemp "$file.XXXXXX")
+        awk -v key="$key" -v value="$value" '
+            BEGIN {
+                in_paths = 0
+                found_paths = 0
+                found_key = 0
+                inserted = 0
+                entry = key " = \"" value "\""
+                key_re = "^[[:space:]]*" key "[[:space:]]*="
+            }
+            /^\[[^]]+\][[:space:]]*$/ {
+                if (in_paths && !found_key && !inserted) {
+                    print entry
+                    inserted = 1
+                }
+                in_paths = ($0 ~ /^\[paths\][[:space:]]*$/)
+                found_paths = found_paths || in_paths
+                print
+                next
+            }
+            in_paths && $0 ~ key_re {
+                if (!found_key) {
+                    print entry
+                    found_key = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!found_paths) {
+                    print ""
+                    print "[paths]"
+                    print entry
+                } else if (in_paths && !found_key && !inserted) {
+                    print entry
+                }
+            }
+        ' "$file" > "$tmp"
+        mv "$tmp" "$file"
     else
         printf '[paths]\n%s = "%s"\n' "$key" "$value" > "$file"
     fi

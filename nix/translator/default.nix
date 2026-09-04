@@ -12,10 +12,6 @@ buildDotnetModule rec {
   dotnet-sdk = dotnet-sdk_8;
   executables = ["Translator.Cli"];
 
-  passthru.fetch-deps = buildDotnetModule.fetchDeps {
-    inherit pname version src projectFile;
-  };
-
   meta = {
     description = "WiiCompiled static recompiler: DOL/REL to C++ translator";
     license = lib.licenses.gpl3Only;
