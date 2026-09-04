@@ -993,11 +993,13 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "\n    let clip_base = select(clip_a, clip_b, use_b);"
         "\n    out.pos = vec4f(clip_base.xy + offset_ndc * clip_base.w, clip_base.zw);";
   }
-  if constexpr (UseReversedZ) {
-    vtxXfrAttrsPre += "\n    out.pos.z = -out.pos.z;";
-  } else {
-    vtxXfrAttrsPre += "\n    out.pos.z += out.pos.w;";
-  }
+  // The near/far depth correction used to be applied here per-vertex (out.pos.z = -out.pos.z for
+  // reversed, or += out.pos.w for forward), redundantly on top of the same correction already
+  // folded into ubuf.proj by effective_projection() (shader_info.cpp) - applying it twice canceled
+  // out for the common case (any draw where effective_projection() decides to flip), silently
+  // making "reversed" Z behave identically to forward Z. It is now applied exactly once, in the
+  // projection matrix alone (matching upstream aurora commit 1dde08fa: "Move depth correction to
+  // projection matrix"), so nothing needs to happen to out.pos.z here.
   // GX rasterizes at a 7/12 pixel center when antialiasing is disabled, while WebGPU rasterizes at 1/2.
   vtxXfrAttrsPre +=
       "\n    let gx_pixel_center_correction = "
@@ -1465,7 +1467,14 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
                     textureDependency.texMapId, uvIn);
   }
 
-  std::string fogDepthExpr = UseReversedZ ? "in.pos.z" : "(1.0 - in.pos.z)";
+  // in.pos.z is the host NDC z (forward: 0=near/1=far; reversed: 1=near/0=far post-fix), but this
+  // expression needs to produce GX's own native distance term (always 0=near/1=far, matching how
+  // g_gxState.clearDepth/clear_depth_value() are interpreted before their own UseReversedZ
+  // inversion) - forward already matches directly; reversed needs the same 1-x flip everything
+  // else reversed-Z-aware uses. This was backwards (verified directly against upstream aurora's
+  // identical expression in build_shader_source), which fed both fog density and the GX_ZT_ADD
+  // z-texture path the wrong distance value.
+  std::string fogDepthExpr = UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z";
   std::string fogZCoordExpr =
       fmt::format("u32(round(clamp({}, 0.0, 1.0) * 16777216.0))", fogDepthExpr);
   if (usesZTextureDepth) {
@@ -1498,7 +1507,7 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
       fragmentFn += fmt::format(
           "\n    let oldZ = u32(round(clamp({0}, 0.0, 1.0) * 16777216.0));"
           "\n    ztexCoord = (ztexCoord + oldZ) & 0x00ffffffu;",
-          UseReversedZ ? "in.pos.z" : "(1.0 - in.pos.z)");
+          UseReversedZ ? "(1.0 - in.pos.z)" : "in.pos.z");
     }
     fragmentFn += "\n    let ztexDepth = f32(ztexCoord) / 16777216.0;";
     fogZCoordExpr = "ztexCoord";
@@ -1639,7 +1648,13 @@ wgpu::ShaderModule build_shader(const ShaderConfig& config) noexcept {
         "    @builtin(frag_depth) depth: f32,\n"
         "};";
 
-    fragmentFn += fmt::format("\n    let fragDepth = {}ztexDepth;", UseReversedZ ? "" : "1.0 - ");
+    // ztexDepth is in GX's native distance terms (0=near/1=far, see fogDepthExpr's comment above),
+    // but frag_depth must be written in the same host NDC-z convention in.pos.z itself uses -
+    // forward matches directly (no change), reversed needs the same 1-x flip. This was backwards
+    // the same way fogDepthExpr was (verified by the same derivation, since aurora upstream has no
+    // directly equivalent line here to cross-check against - this z-texture-depth-output path
+    // appears to be specific to this fork).
+    fragmentFn += fmt::format("\n    let fragDepth = {}ztexDepth;", UseReversedZ ? "1.0 - " : "");
     fragmentReturnType = "FragmentOutput";
     fragmentReturn =
         "    var out: FragmentOutput;\n"

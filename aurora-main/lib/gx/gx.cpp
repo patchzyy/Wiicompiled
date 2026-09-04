@@ -1416,23 +1416,32 @@ static inline GXBlendFactor remove_dst_alpha_usage(GXBlendFactor fac) {
   }
 }
 
+// GX_LEQUAL etc. describe "pass if this pixel is closer than/equal to what's stored" in GX's own
+// distance terms, independent of how that distance is encoded as a host depth value. Under
+// UseReversedZ the encoding is flipped (near=1, far=0), so "closer" now corresponds to a *larger*
+// stored value, not a smaller one - the ordered compare functions (LESS/LEQUAL/GREATER/GEQUAL)
+// must invert to match, or the depth test silently runs backwards (verified directly: this was
+// the actual cause of a bug report after the projection/shader half of the reverse-Z fix
+// eliminated the double-negation that used to accidentally keep the unreversed comparisons
+// correct - LEQUAL now needs GreaterEqual, not LessEqual, once the encoding it's testing against
+// is genuinely reversed). Matches upstream aurora's to_compare_function exactly.
 static inline wgpu::CompareFunction to_compare_function(GXCompare func) {
   switch (func) {
     DEFAULT_FATAL("invalid depth fn {}", underlying(func));
   case GX_NEVER:
     return wgpu::CompareFunction::Never;
   case GX_LESS:
-    return wgpu::CompareFunction::Less;
+    return UseReversedZ ? wgpu::CompareFunction::Greater : wgpu::CompareFunction::Less;
   case GX_EQUAL:
     return wgpu::CompareFunction::Equal;
   case GX_LEQUAL:
-    return wgpu::CompareFunction::LessEqual;
+    return UseReversedZ ? wgpu::CompareFunction::GreaterEqual : wgpu::CompareFunction::LessEqual;
   case GX_GREATER:
-    return wgpu::CompareFunction::Greater;
+    return UseReversedZ ? wgpu::CompareFunction::Less : wgpu::CompareFunction::Greater;
   case GX_NEQUAL:
     return wgpu::CompareFunction::NotEqual;
   case GX_GEQUAL:
-    return wgpu::CompareFunction::GreaterEqual;
+    return UseReversedZ ? wgpu::CompareFunction::LessEqual : wgpu::CompareFunction::GreaterEqual;
   case GX_ALWAYS:
     return wgpu::CompareFunction::Always;
   }

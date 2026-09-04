@@ -137,7 +137,7 @@ fn gx_z24_at_coord(unclamped_coord: vec2i) -> u32 {
     let tex_size = vec2i(textureDimensions(src));
     let coord = clamp(unclamped_coord, vec2i(0), tex_size - vec2i(1));
     let depth = textureLoad(src, coord, 0);
-    return min(u32(clamp(depth, 0.0, 1.0) * 16777216.0), 0x00ffffffu);
+    return min(u32(clamp(1.0 - depth, 0.0, 1.0) * 16777215.0 + 0.5), 0x00ffffffu);
 }
 )"s
                         : R"(

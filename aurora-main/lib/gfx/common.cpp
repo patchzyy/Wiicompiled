@@ -168,7 +168,12 @@ struct RenderPass {
   Range resolveUniformRange;
   std::array<u32, 3> resolveCopyFilterCoefficients{0, 64, 0};
   Vec4<float> clearColorValue{0.f, 0.f, 0.f, 0.f};
-  float clearDepthValue = 1.f;
+  // 1.f is the forward-Z "farthest" clear value; under UseReversedZ farthest is 0.f instead (see
+  // gx::clear_depth_value(), which the main render pass explicitly overrides this default with -
+  // any OTHER pass that keeps this default, e.g. an offscreen render-to-texture pass composited
+  // later, needs the same reversed-Z-aware value or its depth buffer starts "already nearest",
+  // failing every subsequent depth test and making whatever's drawn into it vanish).
+  float clearDepthValue = gx::UseReversedZ ? 0.f : 1.f;
   CommandList commands;
   bool clearColor = true;
   bool clearDepth = true;
@@ -757,7 +762,9 @@ void begin_offscreen(uint32_t width, uint32_t height) {
       .targetSize = {width, height, 1},
       .msaaSamples = 1,
       .clearColorValue = {0.f, 0.f, 0.f, 0.f},
-      .clearDepthValue = 1.f,
+      // See the RenderPass::clearDepthValue default's comment: this offscreen pass gets its own
+      // depth buffer, and the farthest clear value is 0.f, not 1.f, under UseReversedZ.
+      .clearDepthValue = gx::UseReversedZ ? 0.f : 1.f,
       .clearColor = true,
       .clearDepth = true,
   };
@@ -1410,10 +1417,19 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
     switch (cmd.type) {
     case CommandType::SetViewport: {
       const auto& vp = cmd.data.setViewport;
-      // WebGPU requires 0 <= minDepth <= maxDepth <= 1, and the guest's (near, far) order is already
-      // reproduced in clip space. Passing the raw swapped pair diverged per backend in release builds.
-      const float minDepth = std::clamp(std::min(vp.znear, vp.zfar), 0.0f, 1.0f);
-      const float maxDepth = std::clamp(std::max(vp.znear, vp.zfar), 0.0f, 1.0f);
+      // WebGPU requires 0 <= minDepth <= maxDepth <= 1. vp.znear/vp.zfar are in GX's own distance
+      // terms (0 = near); under UseReversedZ the host depth-buffer storage direction is flipped
+      // (near = 1, far = 0), so this range has to be remapped through 1-x the same way the
+      // projection matrix, depth compare function, and clear value all are - a plain min/max clamp
+      // (the previous code here) maps a *restricted* range (e.g. a viewport deliberately narrowed
+      // to force something to draw "in front of everything") to the wrong end of the buffer: what
+      // should land near the near-storage-extreme (1.0) instead lands near the far-storage-extreme
+      // (0.0), so anything else drawn afterward at its true depth wins the compare test and the
+      // "in front" geometry silently vanishes. A full [0,1] viewport is unaffected either way,
+      // which is why this only broke specific elements, not the whole scene. Matches upstream
+      // aurora's apply_viewport (lib/gfx/encoding.cpp) exactly.
+      const float minDepth = gx::UseReversedZ ? 1.0f - vp.zfar : vp.znear;
+      const float maxDepth = gx::UseReversedZ ? 1.0f - vp.znear : vp.zfar;
       pass.SetViewport(vp.left, vp.top, vp.width, vp.height, minDepth, maxDepth);
     } break;
     case CommandType::SetScissor: {
