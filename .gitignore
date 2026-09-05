@@ -28,6 +28,10 @@ Code.pul
 /native-build/
 /dist/
 /out/
+
+# Nix build results
+/result
+/result-*
 [Bb]in/
 [Oo]bj/
 *.o
