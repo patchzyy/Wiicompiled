@@ -92,7 +92,7 @@ if (( needs_workspace_refresh )); then
         /usr/bin/ditto "$source_bundle_version" "$workspace_bundle_version"
         # A dependency provider can be cached in this directory, so make the
         # refreshed sources configure from a clean native build tree.
-        rm -rf "$workspace/native-build-macos"
+        rm -rf "$workspace/native-build-macos-arm64" "$workspace/native-build-macos-x86_64"
     fi
 fi
 
