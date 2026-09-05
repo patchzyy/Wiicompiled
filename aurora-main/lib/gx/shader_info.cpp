@@ -548,14 +548,22 @@ constexpr size_t kStagedUniformBytes =
     96 + sizeof(Mat4x4<float>) + sizeof(Mat3x4<float>) * (MaxPostexMtx + MaxPnMtx);
 
 // The host viewport always receives the normalized GX depth window (render_pass_impl clamps to minDepth <= maxDepth).
+//
+// Folds the near/far depth correction the vertex shader used to apply per-vertex directly into the
+// projection matrix instead (matching upstream aurora commit 1dde08fa, "Move depth correction to
+// projection matrix") - valid because the correction is a linear combination of the z/w rows, so
+// applying it once here to the row is equivalent to applying it once per-vertex to the dot product,
+// and it must be applied exactly once: doing it here AND in the shader (the previous bug) canceled
+// the negation out for `flip`, silently making "reversed" Z behave identically to forward Z.
+// `flip` decides which of the two single-application forms this draw needs: true bakes in the
+// reversed-Z inversion (z' = -z), false bakes in the forward-Z near/far combination (z' = z + w) -
+// exactly one always applies, never both, and never neither.
 static Mat4x4<float> effective_projection() noexcept {
   const auto& vp = g_gxState.renderViewport;
   const bool flip = (vp.znear <= vp.zfar) == UseReversedZ;
   Mat4x4<float> proj = g_gxState.proj;
-  if (flip) {
-    for (size_t i = 0; i < 4; ++i) {
-      proj.m2.m[i] = -(proj.m2.m[i] + proj.m3.m[i]);
-    }
+  for (size_t i = 0; i < 4; ++i) {
+    proj.m2.m[i] = flip ? -proj.m2.m[i] : (proj.m2.m[i] + proj.m3.m[i]);
   }
   return proj;
 }

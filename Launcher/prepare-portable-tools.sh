@@ -233,5 +233,6 @@ EOF
 rm -rf "$smoke_dir"
 trap - EXIT
 
+rm -rf "$toolchain_dir"
 mv "$work" "$toolchain_dir"
 echo "prepare-portable-tools.sh: toolchain ready at $toolchain_dir ($(du -sh "$toolchain_dir" | cut -f1))"

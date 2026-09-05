@@ -92,7 +92,7 @@ struct Params {
 
 constexpr std::string_view ReversedZBody = R"(
 fn gx_z24(depth: f32) -> u32 {
-    return min(u32(clamp(depth, 0.0, 1.0) * 16777216.0), 0x00ffffffu);
+    return min(u32(clamp(1.0 - depth, 0.0, 1.0) * 16777215.0 + 0.5), 0x00ffffffu);
 }
 )"sv;
 
