@@ -148,7 +148,16 @@ ln -s lld "$work/bin/ld.lld"
 # (or ICU 74 once the LLVM builders move to 24.04) is picked up, and so that a dependency the
 # build host cannot resolve fails here instead of on a user's machine. Applied to every bundled
 # executable; the verification at the end then proves each one resolves everything outside the
-# glibc baseline from inside the bundle.
+# baseline from inside the bundle.
+#
+# The baseline is what the host is expected to provide: glibc itself, plus libstdc++/libgcc_s/
+# libz/liblzma. Those four are deliberately NOT bundled, matching the AppImage excludelist
+# (https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist lists libstdc++.so.6,
+# libgcc_s.so.1 and libz.so.1 by name) and what this toolchain already did before ICU was bundled:
+# they ship with every glibc distro under these exact sonames, and the LLVM binaries' floor
+# (GLIBC_2.34 / GLIBCXX_3.4.30, i.e. glibc 2.34+ with GCC 12's libstdc++) is met by every distro
+# whose glibc is new enough to load them at all. ICU is different in kind: its soname changes with
+# every major and distros carry exactly one, which is why it must travel with the bundle.
 baseline_sonames='^(ld-linux-[^ ]*|libc|libm|libdl|libpthread|librt|libgcc_s|libstdc\+\+|libz|liblzma)\.so(\.|$)'
 bundle_private_deps() {
     # $1 = executable under $work/bin. Each shared library it needs beyond the baseline is copied
