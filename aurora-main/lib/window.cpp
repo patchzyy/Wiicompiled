@@ -11,6 +11,9 @@
 #include <aurora/event.h>
 #include <aurora/gfx.h>
 #include <aurora/render_size_limits.hpp>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #include <SDL3/SDL_error.h>
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_keyboard.h>
@@ -408,8 +411,21 @@ bool create_window(AuroraBackend backend) {
     height = 480;
   }
 
-  const Sint32 posX = g_config.hasWindowPosition ? g_config.windowPosX : SDL_WINDOWPOS_CENTERED;
-  const Sint32 posY = g_config.hasWindowPosition ? g_config.windowPosY : SDL_WINDOWPOS_CENTERED;
+  Sint32 posX = g_config.hasWindowPosition ? g_config.windowPosX : SDL_WINDOWPOS_CENTERED;
+  Sint32 posY = g_config.hasWindowPosition ? g_config.windowPosY : SDL_WINDOWPOS_CENTERED;
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+  // Without this the window falls back to the 1280x960 default on any device
+  // with no saved size.
+  if (const SDL_DisplayID primary = SDL_GetPrimaryDisplay(); primary != 0) {
+    SDL_Rect bounds{};
+    if (SDL_GetDisplayBounds(primary, &bounds) && bounds.w > 0 && bounds.h > 0) {
+      width = bounds.w;
+      height = bounds.h;
+    }
+    posX = SDL_WINDOWPOS_CENTERED_DISPLAY(primary);
+    posY = SDL_WINDOWPOS_CENTERED_DISPLAY(primary);
+  }
+#endif
 
   const auto props = SDL_CreateProperties();
   TRY(SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, g_config.appName), "Failed to set {}: {}",

@@ -77,10 +77,17 @@ add_library(mkw_runtime_common OBJECT ${SOURCES})
 mkw_configure_object_target(mkw_runtime_common)
 target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
 target_compile_definitions(mkw_runtime_common PRIVATE
-    SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+if(NOT MKW_PLATFORM_IOS)
+    # iOS is the one target where SDL must own main(): its entry point is what
+    # drives UIApplicationMain. Defining this makes <SDL3/SDL_main.h> a no-op,
+    # so the app links a bare main() that UIKit never calls.
+    target_compile_definitions(mkw_runtime_common PRIVATE SDL_MAIN_HANDLED)
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
+# The touch overlay decodes its button artwork at startup.
+target_link_libraries(mkw_runtime_common PRIVATE PNG::PNG)
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp)
 if(MKW_PLATFORM_WINDOWS)
     target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp)
@@ -192,7 +199,10 @@ function(mkw_configure_product target)
         "${MKW_RUNTIME_SOURCE_DIR}/.."
         "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
     target_compile_definitions(${target} PRIVATE
-        SDL_MAIN_HANDLED _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
+        _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
+    if(NOT MKW_PLATFORM_IOS)
+        target_compile_definitions(${target} PRIVATE SDL_MAIN_HANDLED)
+    endif()
     target_compile_features(${target} PRIVATE cxx_std_20)
     mkw_apply_common_compile_options(${target})
     # The dispatch-table and registration shards compile inside the product target itself and
@@ -219,6 +229,26 @@ function(mkw_configure_product target)
         MKW_SQLITE_TARGET_TYPE STREQUAL "MODULE_LIBRARY"))
         add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:sqlite3> $<TARGET_FILE_DIR:${target}>)
+    endif()
+
+    if(MKW_PLATFORM_IOS AND NOT CMAKE_HOST_APPLE)
+        set(shim "${MKW_RUNTIME_SOURCE_DIR}/src/platform/ios/compiler_rt_shim.c")
+        target_sources(${target} PRIVATE "${shim}")
+        set_source_files_properties("${shim}" PROPERTIES SKIP_PRECOMPILE_HEADERS ON SKIP_UNITY_BUILD_INCLUSION ON)
+    endif()
+
+    if(MKW_PLATFORM_IOS)
+        # CMake bundles iOS targets with its own default Info.plist, whose
+        # CFBundleIdentifier is empty and which carries none of the iOS keys, so
+        # iOS refuses to install the result. Supply a real one.
+        set_target_properties(${target} PROPERTIES
+            MACOSX_BUNDLE TRUE
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_LIST_DIR}/ios/Info.plist.in"
+            MACOSX_BUNDLE_EXECUTABLE_NAME "${target}"
+            MACOSX_BUNDLE_BUNDLE_NAME "${target}"
+            MACOSX_BUNDLE_GUI_IDENTIFIER "${MKW_IOS_BUNDLE_ID_PREFIX}.wiicompiled"
+            MACOSX_BUNDLE_BUNDLE_VERSION "1"
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0")
     endif()
 
     if(MKW_PLATFORM_WINDOWS)
@@ -263,6 +293,19 @@ function(mkw_configure_product target)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap")
 
+    # Touch control artwork. Only the touch build reads these, but they are copied
+    # everywhere the other assets are so the bundle layout stays uniform.
+    set(MKW_TOUCH_ASSET_DIR "${MKW_RUNTIME_SOURCE_DIR}/assets/touch")
+    if(NOT EXISTS "${MKW_TOUCH_ASSET_DIR}/a.png")
+        message(FATAL_ERROR "Missing touch control artwork: ${MKW_TOUCH_ASSET_DIR}")
+    endif()
+    # Cleared first: copy_directory merges, so a removed icon would otherwise
+    # linger in the bundle and get shipped.
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:${target}>/touch"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${MKW_TOUCH_ASSET_DIR}" "$<TARGET_FILE_DIR:${target}>/touch")
+
     set(MKW_DSP_COEFFICIENT_ROM "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
     if(NOT EXISTS "${MKW_DSP_COEFFICIENT_ROM}")
         message(FATAL_ERROR "Missing Wii DSP coefficient ROM: ${MKW_DSP_COEFFICIENT_ROM}")
@@ -286,6 +329,25 @@ function(mkw_configure_product target)
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${MKW_INITIAL_PIPELINE_CACHE}"
         "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+
+    if(MKW_PLATFORM_IOS)
+        # An .ipa is a zip with the bundle under Payload/. Left unsigned: the
+        # sideloaders people actually install with (AltStore, SideStore) sign on
+        # the device with the user's own Apple ID, and a signature applied here
+        # would only be replaced. WiiCompiled.entitlements beside this file names
+        # the one entitlement the runtime needs, for whatever does the signing.
+        add_custom_command(TARGET ${target} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:${target}>/../ipa"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${target}>/../ipa/Payload"
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "$<TARGET_BUNDLE_DIR:${target}>"
+                "$<TARGET_FILE_DIR:${target}>/../ipa/Payload/${target}.app"
+            COMMAND ${CMAKE_COMMAND} -E chdir "$<TARGET_FILE_DIR:${target}>/../ipa"
+                ${CMAKE_COMMAND} -E tar cf "${CMAKE_BINARY_DIR}/${target}-unsigned.ipa" --format=zip Payload
+            COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:${target}>/../ipa"
+            COMMENT "Packaging ${target}-unsigned.ipa")
+    endif()
+
 endfunction()
 
 add_executable(WiiCompiled "${MKW_BASE_PRODUCT_SOURCE}" ${MKW_BASE_REGISTRATION_SOURCES})
@@ -319,6 +381,11 @@ endif()
 # tuning rather than leaving target-specific performance on the table.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     set(MKW_BASELINE_ARCH_FLAG -march=x86-64-v3)
+elseif(MKW_PLATFORM_IOS)
+    # iOS 17 runs on the A12 and later, and the build host is never the device;
+    # -mcpu=native there would tune for whatever Mac (or Linux box) did the
+    # compile, and upstream clang rejects it when cross-compiling.
+    set(MKW_BASELINE_ARCH_FLAG -mcpu=apple-a12)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
 else()

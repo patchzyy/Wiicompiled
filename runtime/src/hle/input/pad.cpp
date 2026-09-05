@@ -1,4 +1,7 @@
 #include "hle_stubs.h"
+#include "touch_pad.h"
+
+#include <array>
 #include "memory.h"
 #include "hle/controller_status_contract.h"
 #include "wii_remote_input.h"
@@ -53,6 +56,16 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     // applies while input is blocked (overlay open) so the port does not flip
     // between "connected" and "no controller" every time the overlay toggles.
     WiiRemoteInput::HideRemotesFromPad(statuses, PAD_CHANMAX);
+
+    // On-screen controls drive port 0 unless a physical pad is connected.
+    // TouchPad::Read makes that call itself; the err field is no proxy for it,
+    // since keyboard bindings report PAD_ERR_NONE with no controller attached.
+    std::array<PADStatus, PAD_CHANMAX> touchStatuses{};
+#ifdef MKW_PLATFORM_IOS
+    if (!PADIsInputBlocked() && TouchPad::Read(touchStatuses)) {
+        statuses[0] = touchStatuses[0];
+    }
+#endif
 
     try {
         for (uint32_t i = 0; i < PAD_CHANMAX; ++i) {

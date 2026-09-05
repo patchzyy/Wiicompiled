@@ -1,0 +1,8 @@
+GameCube Button Icons and Controls - Zacksly
+Licensed under CC BY 3.0 - https://zacksly.itch.io
+
+The PNG files in this directory are taken unmodified from the "Buttons Outline /
+White" set of that pack, at 256px. They are drawn tinted and partly transparent
+at runtime, which is a rendering choice and not an edit to the artwork.
+
+Full licence: http://creativecommons.org/licenses/by/3.0/

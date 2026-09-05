@@ -7,6 +7,13 @@ endif()
 
 if(WIN32 AND MINGW AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     set(MKW_PLATFORM_WINDOWS TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # Checked before macOS: APPLE is true for iOS too, so the macOS branch would
+    # otherwise claim an iOS build and select a backend that cannot compile
+    # there (<mach/mach_vm.h> is absent from the iOS SDK) or run there (/tmp is
+    # outside the sandbox).
+    set(MKW_PLATFORM_IOS TRUE)
+    set(MKW_PLATFORM_MACOS TRUE)   # shares the Apple arm64 substrate
 elseif(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|ARM64)$")
     # The first native macOS target is Apple Silicon. Intel and universal
     # binaries remain future compatibility work; do not silently claim them.
@@ -15,13 +22,16 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(
     set(MKW_PLATFORM_LINUX TRUE)
 else()
     message(FATAL_ERROR
-        "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, or Apple Clang on macOS arm64")
+        "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux "
+        "x86_64/aarch64, or Apple Clang on macOS arm64 or iOS arm64")
 endif()
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
 
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
+set(MKW_IOS_BUNDLE_ID_PREFIX "it.tobyfox" CACHE STRING
+    "Reverse-DNS prefix for the iOS bundle identifier")
 
 # Preprocessor definitions that belong to this project's own code (the runtime,
 # the translated shards and the product glue) and to nothing else. They are
@@ -30,6 +40,11 @@ option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 # libraries and the products in cmake/PublicProducts.cmake) inherits them while
 # aurora-main and its third-party tree stay unaffected.
 set(MKW_PROJECT_COMPILE_DEFINITIONS NOMINMAX)
+if(MKW_PLATFORM_IOS)
+    # One project-wide answer to "is this iOS", so sources do not each pull in
+    # TargetConditionals.h and spell out the __APPLE__ && TARGET_OS_IPHONE dance.
+    list(APPEND MKW_PROJECT_COMPILE_DEFINITIONS MKW_PLATFORM_IOS=1)
+endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -135,6 +150,16 @@ if(MKW_NATIVE_PREBUILT_DIR)
 else()
     if(NOT EXISTS ${MKW_AURORA_DIR}/CMakeLists.txt)
         message(FATAL_ERROR "Requested aurora-main but ${MKW_AURORA_DIR} is missing")
+    endif()
+    # aurora picks shared third-party libraries whenever BUILD_SHARED_LIBS is
+    # merely undefined, and its extern/ tree calls unset(BUILD_SHARED_LIBS CACHE)
+    # while working around xxhash, which deletes any -D the user passed. Defining
+    # it here, before aurora is added, is what actually sticks across
+    # reconfigures. Apple builds ship a self-contained bundle, so a dylib
+    # resolved from the build tree or from Homebrew cannot be allowed to leak
+    # into the link.
+    if(APPLE)
+        set(BUILD_SHARED_LIBS OFF)
     endif()
     set(DAWN_ENABLE_D3D11 OFF CACHE BOOL "" FORCE)
     if(MKW_PLATFORM_WINDOWS)
@@ -249,8 +274,18 @@ if(MKW_PLATFORM_MACOS)
     # mkw_co_init/mkw_co_switch at link time.
     enable_language(ASM)
     list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/macos/co_switch.S")
+    set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/platform/macos/co_switch.S"
+        PROPERTIES LANGUAGE ASM SKIP_UNITY_BUILD_INCLUSION ON SKIP_PRECOMPILE_HEADERS ON)
+    # iOS cannot use the macOS backend: <mach/mach_vm.h> is absent from that SDK
+    # and /tmp is outside the sandbox.
+    if(MKW_PLATFORM_IOS)
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
+    else()
+        list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_ios.cpp")
+    endif()
 else()
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_ios.cpp")
 endif()
 set(MKW_PLATFORM_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/platform/host_platform.cpp")
 set(MKW_BASE_PRODUCT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp")
@@ -292,9 +327,11 @@ if(MKW_PLATFORM_LINUX)
     add_test(NAME mkw_linux_host_context_tests COMMAND mkw_linux_host_context_tests)
 endif()
 
-if(MKW_PLATFORM_MACOS)
+if(MKW_PLATFORM_MACOS AND NOT MKW_PLATFORM_IOS)
     # Exercise the Apple Silicon context ABI and the public host-memory
-    # contracts separately from translated products.
+    # contracts separately from translated products. Host-only: the flat memory
+    # test pulls in guest_flat_memory_macos.cpp, whose <mach/mach_vm.h> does not
+    # exist in the iOS SDK, and none of these can run on a device anyway.
     enable_language(ASM)
     add_executable(mkw_macos_context_abi_tests
         "${CMAKE_CURRENT_LIST_DIR}/tests/macos_context_abi_tests.cpp"
@@ -364,7 +401,7 @@ else()
         target_compile_definitions(mkw_macos_native_compile PRIVATE SDL_MAIN_HANDLED TARGET_PC)
         target_link_libraries(mkw_macos_native_compile PRIVATE
             aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
-            mkw::pugixml mkw::toml11 mkw::cryptopp)
+            PNG::PNG mkw::pugixml mkw::toml11 mkw::cryptopp)
         set_target_properties(mkw_macos_native_compile PROPERTIES UNITY_BUILD OFF)
     endif()
     add_custom_target(mkw_platform_paths_check DEPENDS mkw_platform)

@@ -1,5 +1,20 @@
 #include "discord_presence.h"
 
+
+#ifdef MKW_PLATFORM_IOS
+
+// iOS has no Discord client for the IPC socket to reach, so the whole thing is
+// stubbed out rather than retrying a connection that cannot succeed.
+namespace DiscordPresence {
+void Initialize(const std::string&, const std::string&) {}
+void SetClient(const std::string&) {}
+void SetActivity(Activity) {}
+void Reset() {}
+void Shutdown() {}
+} // namespace DiscordPresence
+
+#else
+
 #include "runtime_log.h"
 
 #include <algorithm>
@@ -464,3 +479,5 @@ void Shutdown() {
 }
 
 } // namespace DiscordPresence
+
+#endif

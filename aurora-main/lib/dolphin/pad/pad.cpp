@@ -1627,6 +1627,8 @@ void PADBlockInput(const bool block) {
   }
 }
 
+bool PADIsInputBlocked() { return g_blockPAD.load(std::memory_order_acquire); }
+
 
 SDL_Gamepad* PADGetSDLGamepadForIndex(const u32 index) {
   const auto* ctrl = __PADGetControllerForIndex(index);

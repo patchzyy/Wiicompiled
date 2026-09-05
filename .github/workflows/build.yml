@@ -34,3 +34,46 @@ jobs:
 
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+
+  ios-crosscompile:
+    name: iOS arm64 (cross-compile, no Xcode)
+    runs-on: ubuntu-24.04
+    env:
+      IOS_SDK_DIR: ${{ github.workspace }}/iOS-SDKs/iPhoneOS26.5.sdk
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The runner images carry clang up to 18; the iOS toolchain file is tested
+      # against upstream 19, so take it from apt.llvm.org rather than the archive.
+      - name: Install clang 19, lld and ninja
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh 19
+          sudo apt-get install -y lld-19 ninja-build
+
+      # The only Apple piece in the build. Sparse-cloned so the checkout is one
+      # SDK (~50 MB) rather than every SDK the repository carries.
+      - name: Fetch the iPhoneOS SDK
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+              https://github.com/xybp888/iOS-SDKs.git "${{ github.workspace }}/iOS-SDKs"
+          git -C "${{ github.workspace }}/iOS-SDKs" sparse-checkout set --no-cone iPhoneOS26.5.sdk
+
+      # Compile-only: linking a product needs the translated shards, which come
+      # from the user's own Mario Kart Wii dump and are not in this repository.
+      # This proves the runtime's own sources still build for iOS arm64.
+      - name: Configure
+        run: |
+          cmake -S runtime -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/runtime/cmake/ios-linux-toolchain.cmake" \
+              -DIOS_SDK="$IOS_SDK_DIR" \
+              -DMKW_IOS_LLVM_BIN=/usr/lib/llvm-19/bin \
+              -DMKW_BUILD_PRODUCTS=OFF \
+              -DCMAKE_DISABLE_FIND_PACKAGE_absl=TRUE \
+              -DAURORA_DAWN_PROVIDER=package
+
+      - name: Compile the runtime sources for iOS
+        run: cmake --build build-ios --target mkw_macos_native_compile

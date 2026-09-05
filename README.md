@@ -115,6 +115,92 @@ Wheel Wizard downloads the setup tool from this repo and walks you through insta
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
 
+### iOS
+
+Requires macOS with Xcode. Build the `WiiCompiled` target for iOS arm64; the build writes
+`WiiCompiled-unsigned.ipa` next to the app bundle.
+
+```sh
+cmake -S runtime -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_SYSTEM_PROCESSOR=arm64 \
+    -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_SYSROOT=iphoneos \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
+    -DCMAKE_DISABLE_FIND_PACKAGE_absl=TRUE \
+    -DAURORA_DAWN_PROVIDER=package
+cmake --build build-ios --target WiiCompiled
+```
+
+#### iOS from Linux
+
+The same .ipa builds on a Linux host with upstream clang and lld; no Theos, xtool or Xcode. Tested
+on Debian 13 with `clang-19 lld-19 llvm-19 cmake ninja-build git`. The only Apple piece is the
+iPhoneOS SDK, and [xybp888/iOS-SDKs](https://github.com/xybp888/iOS-SDKs) carries current ones:
+
+```sh
+git clone --depth 1 --filter=blob:none --sparse https://github.com/xybp888/iOS-SDKs.git /opt/iOS-SDKs
+git -C /opt/iOS-SDKs sparse-checkout set --no-cone iPhoneOS26.5.sdk
+```
+
+Pass that directory as `IOS_SDK` (or copy `iPhoneOS.sdk` out of a Mac's Xcode to `/opt/iPhoneOS.sdk`,
+the default). The translated shard manifest under `generated/` records absolute paths from the
+machine that ran the translator, so either translate on the Linux host or symlink that path to your
+checkout.
+
+```sh
+cmake -S runtime -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE=cmake/ios-linux-toolchain.cmake -DIOS_SDK=/opt/iOS-SDKs/iPhoneOS26.5.sdk \
+    -DCMAKE_DISABLE_FIND_PACKAGE_absl=TRUE -DAURORA_DAWN_PROVIDER=package
+cmake --build build-ios --target WiiCompiled
+```
+
+#### iOS from Windows
+
+The same toolchain file works on Windows with [llvm-mingw](https://github.com/mstorsjo/llvm-mingw),
+which is what the Windows build already uses. Three things differ from a Linux host:
+
+- llvm-mingw does not ship `ld64.lld.exe` or `llvm-install-name-tool.exe`; LLVM tools dispatch on
+  their file name, so copy `ld.lld.exe` to `ld64.lld.exe` and `llvm-objcopy.exe` to
+  `llvm-install-name-tool.exe` in its `bin` directory.
+- Git for Windows checks the SDK repo's symlinks out as small text files unless `core.symlinks`
+  is on (Developer Mode). Either enable that before cloning, or replace each placeholder with a
+  copy of its target; `libSystem.tbd` is one of them and the link fails without it.
+- Pass the toolchain file as an absolute path, and `MKW_IOS_LLVM_BIN` as the llvm-mingw `bin`
+  directory with forward slashes.
+
+```powershell
+cmake -S runtime -B build-ios -G Ninja -DCMAKE_BUILD_TYPE=Release `
+    -DCMAKE_TOOLCHAIN_FILE=C:/src/Wiicompiled/runtime/cmake/ios-linux-toolchain.cmake `
+    -DIOS_SDK=C:/iOS-SDKs/iPhoneOS26.5.sdk -DMKW_IOS_LLVM_BIN=C:/llvm-mingw/bin `
+    -DCMAKE_DISABLE_FIND_PACKAGE_absl=TRUE -DAURORA_DAWN_PROVIDER=package
+cmake --build build-ios --target WiiCompiled
+```
+
+Install it with AltStore or SideStore, which sign with your own Apple ID. The app needs the
+`com.apple.developer.kernel.increased-memory-limit` entitlement or it exits at startup;
+[GetMoreRam](https://github.com/hugeBlack/GetMoreRam) grants it with a free Apple ID.
+GetMoreRam grants `com.apple.developer.kernel.extended-virtual-addressing` at the same time, which
+matters on devices with less than 4 GB of RAM: the runtime reserves a 4 GiB guest address space at
+startup and that is right on the limit iOS allows without it. It makes no difference on the 8 GB
+devices this was developed on.
+
+`runtime/cmake/ios/WiiCompiled.entitlements` is a template for signing by hand, with placeholders to
+replace; the sideloaders build their own and ignore it. It carries both entitlements, so the
+provisioning profile you sign with needs both capabilities enabled.
+
+Copy `Config.toml` and an extracted `DATA` directory into the app's Documents folder, using Files on
+the device or the Finder with it connected. Keep `dvd_root` relative:
+
+```toml
+[paths]
+dvd_root = "DATA"
+```
+
+Touch controls appear when no gamepad is attached; tap the FPS readout for settings.
+
+
 > [!CAUTION]
 > Only take builds from this repository's
 > [Releases](https://github.com/patchzyy/Wiicompiled/releases) page. If someone's sharing an
