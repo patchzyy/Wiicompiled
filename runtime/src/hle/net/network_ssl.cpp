@@ -10,6 +10,7 @@
 #include <mbedtls/ssl.h>
 #include <mbedtls/x509_crt.h>
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -707,9 +708,18 @@ static int32_t SslHandshakeImpl(SslSession& ssl) {
         return setupRet;
     }
 
+    // The connect-time SO_RCVTIMEO/SO_SNDTIMEO bound a single blocking send()/recv(), but mbed
+    // TLS's net_sockets layer maps a timed-out recv() to MBEDTLS_ERR_SSL_WANT_READ - the same
+    // code used for "try again" - so without a deadline here this loop would just retry forever,
+    // one 15s block at a time, instead of ever giving up on a peer that never sends TLS data.
+    const auto handshakeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     int handshakeRet;
     while ((handshakeRet = mbedtls_ssl_handshake(&ssl.sslContext)) != 0) {
         if (handshakeRet == MBEDTLS_ERR_SSL_WANT_READ || handshakeRet == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (std::chrono::steady_clock::now() >= handshakeDeadline) {
+                NetFail("ssl handshake TIMED OUT host=%s", ssl.hostname.c_str());
+                return SSL_ERR_FAILED;
+            }
             // The socket is set blocking before the handshake ever starts (IOCTLV_NET_SSL_CONNECT),
             // so mbed TLS's own send/recv callbacks either return real data or a real error - a
             // WANT_READ/WANT_WRITE here means retry the same call immediately, not "come back
@@ -746,16 +756,22 @@ static int32_t SslWrite(SslSession& ssl, const uint8_t* data, uint32_t size) {
         return static_cast<int32_t>(total);
     }
 
-    for (;;) {
-        const int ret = mbedtls_ssl_write(&ssl.sslContext, data, size);
-        if (ret >= 0) {
-            return ret;
+    // mbed TLS is allowed to write fewer bytes than requested in one call (e.g. when size exceeds
+    // one TLS record) - the caller must resend the remainder starting from where it left off, so
+    // loop here until every byte is actually written rather than returning the first partial count.
+    uint32_t totalWritten = 0;
+    while (totalWritten < size) {
+        const int ret = mbedtls_ssl_write(&ssl.sslContext, data + totalWritten, size - totalWritten);
+        if (ret > 0) {
+            totalWritten += static_cast<uint32_t>(ret);
+            continue;
         }
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             continue;
         }
         return SSL_ERR_FAILED;
     }
+    return static_cast<int32_t>(totalWritten);
 }
 
 static int32_t SslRead(SslSession& ssl, uint8_t* out, uint32_t size) {
@@ -876,6 +892,14 @@ int32_t HandleSslIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const std
         const int timeoutMs = 15000;
         setsockopt(socket->native, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
         setsockopt(socket->native, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+#else
+        // Match the Windows 15s timeout so a peer that accepts the TCP connection but stalls
+        // during the TLS handshake or a later read/write can't hang this thread forever. POSIX
+        // takes a struct timeval here, not a plain millisecond count like Windows does.
+        struct timeval timeout {};
+        timeout.tv_sec = 15;
+        setsockopt(socket->native, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(socket->native, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif
         WriteSslReturn(in, SSL_OK);
         return 0;

@@ -86,6 +86,17 @@ sources are vendored in `runtime/third_party/cryptopp`; assembly implementations
 Source: <https://github.com/weidai11/cryptopp/tree/CRYPTOPP_8_9_0>. Full license text:
 `runtime/third_party/cryptopp/License.txt`.
 
+### Mbed TLS 3.6.7 - Apache-2.0 / GPL-2.0-or-later
+
+Copyright The Mbed TLS Contributors.
+The runtime uses Mbed TLS to implement real TLS (handshake, certificate verification, encrypted
+reads/writes) on non-Windows platforms, where the OS has no equivalent to Windows' built-in
+Schannel. Vendored in `runtime/third_party/mbedtls`, commit
+`068ff080b369adfac81509f9b57b2afabaf82dc5`, with upstream's own `CMakeLists.txt` and
+`library/CMakeLists.txt` omitted since this project builds it via `runtime/CMakeLists.txt` instead.
+Source: <https://github.com/Mbed-TLS/mbedtls/tree/v3.6.7>. Full license text:
+`runtime/third_party/mbedtls/LICENSE`.
+
 ### toml11 4.4.0 - MIT
 
 Copyright (c) 2017 Toru Niina.
