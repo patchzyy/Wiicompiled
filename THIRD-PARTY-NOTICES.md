@@ -86,17 +86,6 @@ sources are vendored in `runtime/third_party/cryptopp`; assembly implementations
 Source: <https://github.com/weidai11/cryptopp/tree/CRYPTOPP_8_9_0>. Full license text:
 `runtime/third_party/cryptopp/License.txt`.
 
-### Mbed TLS 3.6.7 - Apache-2.0 / GPL-2.0-or-later
-
-Copyright The Mbed TLS Contributors.
-The runtime uses Mbed TLS to implement real TLS (handshake, certificate verification, encrypted
-reads/writes) on non-Windows platforms, where the OS has no equivalent to Windows' built-in
-Schannel. Vendored in `runtime/third_party/mbedtls`, commit
-`068ff080b369adfac81509f9b57b2afabaf82dc5`, with upstream's own `CMakeLists.txt` and
-`library/CMakeLists.txt` omitted since this project builds it via `runtime/CMakeLists.txt` instead.
-Source: <https://github.com/Mbed-TLS/mbedtls/tree/v3.6.7>. Full license text:
-`runtime/third_party/mbedtls/LICENSE`.
-
 ### toml11 4.4.0 - MIT
 
 Copyright (c) 2017 Toru Niina.
@@ -125,14 +114,16 @@ Source: <https://github.com/higan-emu/libco>. Full license text:
 
 ## Fetched at build time and redistributed in release builds
 
-These are pinned in `aurora-main/extern/CMakeLists.txt`, `aurora-main/CMakeLists.txt` and
-`aurora-main/cmake/AuroraDawnProvider.cmake`. They are not stored in this repository; the build
-downloads them, and release installers carry the resulting binaries. Their license texts are
+These are pinned in `aurora-main/extern/CMakeLists.txt`, `aurora-main/CMakeLists.txt`,
+`aurora-main/cmake/AuroraDawnProvider.cmake`, and (for Mbed TLS) `runtime/CMakeLists.txt`. They are
+not stored in this repository; the build downloads them - each fetch is pinned to an exact version
+with a checked SHA-256 - and links or redistributes the resulting binaries. Their license texts are
 included in the installer's `licenses/` folder. The Windows installer bundles the pinned source
 trees themselves (fetched by `Launcher/Prepare-Dependencies.ps1`) so end-user builds run offline.
 
 | Component | Version | License | Upstream |
 | --- | --- | --- | --- |
+| Mbed TLS | 3.6.7 | Apache-2.0 / GPL-2.0-or-later | <https://github.com/Mbed-TLS/mbedtls> |
 | Dawn (WebGPU) | `v20260603.191052` prebuilt | BSD-3-Clause | <https://dawn.googlesource.com/dawn> |
 | Tint (part of Dawn) | with Dawn | BSD-3-Clause | <https://dawn.googlesource.com/dawn> |
 | DirectXShaderCompiler (`dxcompiler.dll`) | with Dawn | NCSA / University of Illinois Open Source | <https://github.com/microsoft/DirectXShaderCompiler> |
