@@ -10,7 +10,10 @@
 # libc++/libc++abi/libunwind (so the toolchain never has to fall back to the host's system
 # libstdc++ headers). The raw release is ~1.9 GiB per arch (every LLVM backend, mlir, flang, lldb,
 # docs, tests); pruned it is ~500 MiB uncompressed / ~100 MiB compressed, verified against a real
-# build of this project.
+# build of this project. The release binaries are dynamically linked against a few libraries of
+# the Ubuntu the LLVM project builds on (libstdc++, plus libxml2 and/or ICU for lld), so those
+# are bundled into lib/ too - see bundle_private_deps below - and every executable is verified to
+# resolve nothing but the glibc baseline from the host. Needs patchelf on the build host.
 #
 # cmake: pruned from the official Kitware GitHub release tarball down to bin/cmake (not
 # ccmake/cmake-gui/cpack/ctest, which local-build.sh never invokes) plus the Modules/Templates
@@ -96,6 +99,11 @@ if [[ -x "$toolchain_dir/bin/clang" && -x "$toolchain_dir/bin/ninja" && -x "$too
     exit 0
 fi
 
+command -v patchelf >/dev/null || {
+    echo "prepare-portable-tools.sh: patchelf is required to bundle the toolchain's shared libraries (apt-get install patchelf)" >&2
+    exit 1
+}
+
 work="$destination/.building-toolchain-$arch"
 rm -rf "$work"
 mkdir -p "$work/bin" "$work/lib/$target_triple" "$work/include/$target_triple/c++/v1"
@@ -131,11 +139,85 @@ cp -a "$src/bin/lld" "$work/bin/"
 strip "$work/bin/lld"
 ln -s lld "$work/bin/ld.lld"
 
+# The llvm.org release binaries are built on Ubuntu 22.04 and lld is dynamically linked against
+# libraries of that distro which neither the LLVM tarball nor this bundle shipped:
+#   - LLVM 22's lld needs libxml2.so.2. Arch (since libxml2 2.14), Fedora and Ubuntu 25.10+ ship
+#     libxml2.so.16 only, so there `ld.lld` could not even start (#136), and Ubuntu's libxml2 in
+#     turn pulls in ICU (libicuuc/libicudata .so.70).
+#   - LLVM 23's lld needs ICU 70 directly (libicui18n/libicuuc/libicudata; #150,
+#     llvm/llvm-project#215764). Every other distro carries a different ICU major (Arch 78,
+#     Fedora and Debian 13 76, Ubuntu 24.04 74) and no compat package.
+# Either way the symptom is "error while loading shared libraries: ..." from ld.lld and CMake's
+# "Check for working C compiler" aborting the whole install. The smoke test below never caught it
+# because it runs on the very Ubuntu 22.04 runner that has all of those in /usr/lib.
+#
+# So every non-baseline library an executable needs is copied next to the toolchain, driven by
+# ldd rather than a hardcoded list: ldd prints the whole transitive closure, an LLVM bump that
+# links something else is picked up automatically, and a dependency the build host cannot resolve
+# fails here instead of on a user's machine. The LLVM executables already carry a $ORIGIN/../lib
+# RUNPATH so they find lib/ on their own; each copied library gets a $ORIGIN RUNPATH of its own
+# because the loader resolves a library's dependencies through *that library's* RUNPATH, not the
+# executable's (Ubuntu's libxml2 -> libicuuc would otherwise be looked up on the host again).
+# Applied to every bundled executable; the verification at the end then proves each one resolves
+# everything outside the baseline from inside the bundle, with LD_LIBRARY_PATH out of the picture.
+#
+# The baseline is what the host is expected to provide: glibc itself, plus libgcc_s/libz/liblzma.
+# Those are deliberately NOT bundled, matching the AppImage excludelist
+# (https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist) and what this
+# toolchain always did: every glibc distro ships them under these exact sonames and the symbol
+# versions the tools want from them (GCC_3.3, ZLIB_1.2.x) are decades old. libstdc++ is NOT
+# baseline even though the excludelist has it: the LLVM binaries want GLIBCXX_3.4.30 (GCC 12),
+# and there are current distros with a glibc new enough for the tools (GLIBC_2.34) but an older
+# libstdc++ - RHEL 9 / Rocky / Alma / Amazon Linux 2023 all ship GCC 11's, which stops at
+# GLIBCXX_3.4.29 - where the tools would die with "version GLIBCXX_3.4.30 not found". Ubuntu
+# 22.04's libstdc++ (GCC 12.3) needs nothing newer than GLIBC_2.34 itself, so bundling it keeps
+# the glibc floor where it is. The excludelist's reason for leaving libstdc++ to the host (an
+# older bundled copy breaking host libraries dlopen'ed into the same process, GPU drivers above
+# all) does not apply to a compiler and a linker that dlopen nothing. libxml2 and ICU are
+# different in kind again: their sonames change across releases and distros carry exactly one.
+baseline_sonames='^(ld-linux-[^ ]*|libc|libm|libdl|libpthread|librt|libgcc_s|libz|liblzma)\.so(\.|$)'
+bundle_private_deps() {
+    # $1 = executable under $work/bin. Each shared library it needs beyond the baseline is copied
+    # (symlink-dereferenced, under its soname) into $work/lib and given a $ORIGIN RUNPATH so its
+    # own dependencies resolve there too. The executable itself gets a $ORIGIN/../lib RUNPATH if
+    # it does not already have one (the LLVM binaries do; the ninja release binary does not).
+    local exe=$1 deps soname arrow path rest needs_bundle=0 rpath
+    [[ -x "$exe" ]] || { echo "prepare-portable-tools.sh: $exe is missing or not executable" >&2; exit 1; }
+    if ! deps=$(LC_ALL=C ldd "$exe" 2>&1); then   # LC_ALL=C: the "not a dynamic executable" text is matched below
+        [[ "$deps" == *"not a dynamic executable"* ]] && return 0   # static: nothing to bundle
+        echo "prepare-portable-tools.sh: ldd failed on $exe:" >&2
+        echo "$deps" >&2
+        exit 1
+    fi
+    while read -r soname arrow path rest; do
+        [[ "$arrow" == "=>" ]] || continue            # vdso / the ELF interpreter line
+        soname=${soname##*/}                          # some ldd's print the interpreter as a path
+        [[ "$soname" =~ $baseline_sonames ]] && continue
+        needs_bundle=1
+        if [[ "$path" != /* || ! -f "$path" ]]; then
+            echo "prepare-portable-tools.sh: $(basename "$exe") needs $soname, which this host cannot resolve" >&2
+            exit 1
+        fi
+        [[ -e "$work/lib/$soname" ]] && continue
+        cp -L "$path" "$work/lib/$soname"
+        patchelf --set-rpath '$ORIGIN' "$work/lib/$soname"
+    done <<< "$deps"
+    (( needs_bundle )) || return 0
+    rpath=$(patchelf --print-rpath "$exe")
+    if [[ ":$rpath:" != *':$ORIGIN/../lib:'* ]]; then
+        patchelf --set-rpath "${rpath:+$rpath:}"'$ORIGIN/../lib' "$exe"
+    fi
+}
+bundle_private_deps "$work/bin/lld"
+
 # llvm-ar/llvm-ranlib: CMake's archiver for the many static libraries this project builds
 # (aurora, Crypto++, SDL3, Dawn's dependency closure, the translated game shards).
 cp -a "$src/bin/llvm-ar" "$work/bin/"
 strip "$work/bin/llvm-ar"
 ln -s llvm-ar "$work/bin/llvm-ranlib"
+
+bundle_private_deps "$work/bin/clang-22"
+bundle_private_deps "$work/bin/llvm-ar"
 
 # Clang's resource directory: builtin headers (stddef.h, immintrin.h, ...) and compiler-rt
 # (builtins, sanitizer runtimes). `clang -print-resource-dir` must find this at lib/clang/<ver>/.
@@ -173,6 +255,7 @@ cp -a "$cmake_src/bin/cmake" "$work/bin/"
 cp -a "$cmake_src/share/cmake-$cmake_share_version/Modules" "$cmake_src/share/cmake-$cmake_share_version/Templates" \
     "$work/share/cmake-$cmake_share_version/"
 rm -rf "$cmake_extract_root"
+bundle_private_deps "$work/bin/cmake"
 
 # --- ninja, used as-is ---
 
@@ -183,6 +266,7 @@ download_verified "$ninja_archive" \
 echo "prepare-portable-tools.sh: staging ninja $ninja_version..."
 unzip -oq "$ninja_archive" -d "$work/bin"
 chmod +x "$work/bin/ninja"
+bundle_private_deps "$work/bin/ninja"
 
 cat > "$work/LICENSE.txt" <<EOF
 Portable build tools bundled by WiiCompiled
@@ -192,6 +276,16 @@ clang/lld/llvm-ar $llvm_version (pruned from the official LLVM release for Linux
   Apache License v2.0 with LLVM Exceptions:
   https://github.com/llvm/llvm-project/blob/llvmorg-$llvm_version/LICENSE.TXT
 
+Shared libraries under lib/ that the tools above depend on, copied from the Ubuntu 22.04 packages
+the LLVM release was built against (bundled because their sonames differ between distributions):
+$(cd "$work/lib" && ls -1 *.so.* 2>/dev/null | sed 's/^/  /')
+  libstdc++ - GPL-3.0 with GCC Runtime Library Exception:
+  https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html
+  libxml2 - MIT License:
+  https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/Copyright
+  ICU - Unicode License:
+  https://github.com/unicode-org/icu/blob/main/LICENSE
+
 CMake $cmake_version
   https://github.com/Kitware/CMake
   BSD 3-Clause License
@@ -200,6 +294,35 @@ Ninja $ninja_version
   https://github.com/ninja-build/ninja
   Apache License 2.0
 EOF
+
+echo "prepare-portable-tools.sh: checking that the toolchain carries its own shared libraries..."
+# Every bundled executable must resolve all its non-baseline shared libraries - transitively, ldd
+# prints the whole closure - from inside the bundle, with LD_LIBRARY_PATH out of the picture. This
+# host has them all installed, so a "not found" from ldd could never fire here; the check is on
+# where each library resolves *from*, not on whether it resolves at all. A missing executable or
+# a failing ldd is an error too, never a silent pass. This is the check that would have caught
+# the unbundled libxml2 (#136) and ICU (#150) that lld shipped with for a while.
+for exe in clang-22 lld llvm-ar cmake ninja; do
+    [[ -x "$work/bin/$exe" ]] || { echo "prepare-portable-tools.sh: $work/bin/$exe is missing" >&2; exit 1; }
+    if ! deps=$(env -u LD_LIBRARY_PATH LC_ALL=C ldd "$work/bin/$exe" 2>&1); then
+        [[ "$deps" == *"not a dynamic executable"* ]] && continue
+        echo "prepare-portable-tools.sh: ldd failed on $exe:" >&2
+        echo "$deps" >&2
+        exit 1
+    fi
+    while read -r soname arrow path rest; do
+        [[ "$arrow" == "=>" ]] || continue
+        soname=${soname##*/}
+        [[ "$soname" =~ $baseline_sonames ]] && continue
+        case "$path" in
+            "$work"/*) ;;
+            /*) echo "prepare-portable-tools.sh: $exe resolves $soname from $path instead of the bundle - it would break on any host without it" >&2
+                exit 1 ;;
+            *)  echo "prepare-portable-tools.sh: $exe cannot resolve $soname at all ($path $rest)" >&2
+                exit 1 ;;
+        esac
+    done <<< "$deps"
+done
 
 echo "prepare-portable-tools.sh: smoke-testing the toolchain..."
 smoke_dir=$(mktemp -d)
