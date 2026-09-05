@@ -1467,7 +1467,10 @@ void __PADWriteDeadZones(SDL_IOStream* file, // NOLINT(*-reserved-identifier)
 void PADSerializeMappings() {
   const std::filesystem::path basePath = fs_path_from_string(aurora::g_config.userPath);
 
-  for (auto& controller : aurora::input::g_GameControllers | std::views::values) {
+  // Avoid std::views::values here: older Apple libc++ releases implement the
+  // C++20 ranges algorithms we use but not this adaptor.
+  for (auto& entry : aurora::input::g_GameControllers) {
+    auto& controller = entry.second;
     EnsureMappingLoaded(&controller);
     const auto filePath =
         basePath / fmt::format("{}_{:04X}_{:04X}.controller", aurora::input::controller_name(controller.m_index),

@@ -134,7 +134,9 @@ if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatc
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 
 step configure-native 'Configuring the native toolchain'
-"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
+# Use Aurora's pinned SDL3 source on macOS.  A system SDL3 can be older than
+# Aurora's required API even when find_package() succeeds.
+"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DAURORA_SDL3_PROVIDER=vendor
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"
 if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi

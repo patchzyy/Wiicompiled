@@ -70,10 +70,30 @@ for tool in "$nodtool" "$translator" "$cmake_bin" "$ninja_bin"; do
 done
 
 mkdir -p "$support_root" "$products"
-if [[ ! -d "$workspace/.git" && ! -f "$workspace/projects/mkwii/recomp.yml" ]]; then
+source_bundle_version="$workspace_source/.bundle-version"
+workspace_bundle_version="$workspace/.bundle-version"
+needs_workspace_refresh=0
+if [[ ! -f "$workspace/projects/mkwii/recomp.yml" ]]; then
+    needs_workspace_refresh=1
+elif [[ -f "$source_bundle_version" ]] && [[ ! -f "$workspace_bundle_version" || "$(<"$source_bundle_version")" != "$(<"$workspace_bundle_version")" ]]; then
+    needs_workspace_refresh=1
+fi
+
+if (( needs_workspace_refresh )); then
     printf 'Preparing the local build workspace...\n'
-    rm -rf "$workspace"
-    /usr/bin/ditto "$workspace_source" "$workspace"
+    if [[ ! -d "$workspace" ]]; then
+        /usr/bin/ditto "$workspace_source" "$workspace"
+    else
+        # Refresh only packaged source inputs. Assets and the staged Retro
+        # Rewind package belong to the user and stay in place.
+        for source in aurora-main projects runtime translator Launcher; do
+            /usr/bin/ditto "$workspace_source/$source" "$workspace/$source"
+        done
+        /usr/bin/ditto "$source_bundle_version" "$workspace_bundle_version"
+        # A dependency provider can be cached in this directory, so make the
+        # refreshed sources configure from a clean native build tree.
+        rm -rf "$workspace/native-build-macos"
+    fi
 fi
 
 profile=base

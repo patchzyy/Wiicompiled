@@ -145,6 +145,9 @@ copy_clean "$workspace/Launcher/local-build-macos.command" "$resources/workspace
 copy_clean "$workspace/Launcher/macos/extract-disc.command" "$resources/workspace/Launcher/macos/extract-disc.command"
 copy_clean "$workspace/Launcher/macos/publish-app.command" "$resources/workspace/Launcher/macos/publish-app.command"
 chmod +x "$resources/workspace/Launcher/local-build-macos.command" "$resources/workspace/Launcher/macos/"*.command
+# setup.command uses this marker to update source inputs in an existing user
+# workspace without replacing extracted game assets or Retro Rewind files.
+printf '%s\n' "$version" > "$resources/workspace/.bundle-version"
 mkdir -p "$resources/tools/cmake" "$resources/tools/arm64" "$resources/tools/x86_64"
 copy_clean "$nodtool_arm64" "$resources/tools/arm64/nodtool"; chmod +x "$resources/tools/arm64/nodtool"
 copy_clean "$nodtool_x86_64" "$resources/tools/x86_64/nodtool"; chmod +x "$resources/tools/x86_64/nodtool"

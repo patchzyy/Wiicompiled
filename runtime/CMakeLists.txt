@@ -38,6 +38,16 @@ else()
     message(FATAL_ERROR
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, or Apple Clang on macOS x86_64/arm64")
 endif()
+
+# Do not inherit the host SDK's deployment target (macOS 26 on current
+# toolchains). The supported Apple Silicon release is macOS 14 and the app
+# bundle advertises that same minimum. This remains arm64-only until the Intel
+# support work is merged.
+if(MKW_PLATFORM_MACOS)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING
+        "Minimum macOS version for the Apple Silicon build" FORCE)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
