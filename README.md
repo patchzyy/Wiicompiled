@@ -111,6 +111,21 @@ image under Settings, turn on **WiiCompiled (beta)**, and hit install from the H
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
+### macOS
+
+Download `WiiCompiled-Setup.pkg` from this repository's Releases page and open it. It requires an
+Apple Silicon Mac because its bundled nodtool and Translator.Cli executables are arm64. It installs
+**WiiCompiled Setup** in Applications; open that app, choose your clean PAL `RMCP01` disc image,
+and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
+or its parent folder.
+
+Setup verifies and extracts the image locally, then translates and compiles the native app on your
+Mac. On a first run it may ask macOS to install Xcode Command Line Tools; complete Apple's installer,
+then open Setup again. When the build completes, Setup asks for administrator approval once to install
+`WiiCompiled.app` (and, if selected, `RetroRewind.app`) in `/Applications`.
+
+Setup opens Terminal while it works, so the extraction and build progress—and any error that needs
+reporting—remain visible.
 
 > [!CAUTION]
 > Only take builds from this repository's

@@ -34,3 +34,32 @@ jobs:
 
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+
+  macos_substrate:
+    name: macOS arm64 (configure + substrate tests)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure native runtime
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          cmake -S runtime -B build-macos -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_PRODUCTS=OFF
+
+      - name: Build macOS portability targets
+        shell: bash
+        run: |
+          cmake --build build-macos --target \
+            mkw_platform_paths_tests \
+            mkw_macos_native_compile \
+            mkw_macos_context_abi_tests \
+            mkw_macos_host_context_tests \
+            mkw_macos_guest_flat_memory_tests
+
+      - name: Test execution substrate
+        shell: bash
+        run: ctest --test-dir build-macos --output-on-failure

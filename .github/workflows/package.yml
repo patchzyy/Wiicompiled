@@ -1,8 +1,8 @@
 name: Package installers
 
 # Builds the per-platform installer/setup tool (WiiCompiled-Setup.exe /
-# WiiCompiled-Setup-x86_64.AppImage) via Launcher/Build-Installer.ps1 and
-# Launcher/build-appimage.sh respectively - the same scripts a maintainer runs by hand today to
+# WiiCompiled-Setup-x86_64.AppImage / WiiCompiled-Setup.pkg) via the platform packaging scripts -
+# the same scripts a maintainer runs by hand today to
 # produce a GitHub Release asset. This does NOT build the actual translated game executable:
 # that step requires the end user's own Mario Kart Wii dump (Assets/main.dol, Assets/StaticR.rel),
 # which is proprietary and not present in this repository or in CI.
@@ -11,6 +11,11 @@ on:
     tags:
       - '*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -86,14 +91,117 @@ jobs:
           if-no-files-found: error
           archive: false
 
+  macos-setup-package:
+    name: macOS (Setup.pkg, Apple Silicon)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Verify Apple Silicon runner tools
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          xcode-select -p
+          command -v ninja
+          file "$(command -v ninja)" | grep -q arm64
+
+      - name: Download pinned nodtool release
+        shell: bash
+        run: |
+          mkdir -p Launcher/artifacts/macos
+          nodtool_version=v2.0.0-alpha.10
+          nodtool_asset=nodtool-macos-arm64
+          nodtool_sha256=e23ca466999b720c55e6d29c9683fce8cc74451ba64ead2e543d50129f24528a
+          curl -fsSL --retry 3 \
+            "https://github.com/encounter/nod/releases/download/${nodtool_version}/${nodtool_asset}" \
+            -o Launcher/artifacts/macos/nodtool
+          printf '%s  %s\n' "$nodtool_sha256" Launcher/artifacts/macos/nodtool | shasum -a 256 -c -
+          chmod +x Launcher/artifacts/macos/nodtool
+          Launcher/artifacts/macos/nodtool --version
+
+      - name: Publish self-contained translator
+        shell: bash
+        run: |
+          dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
+            -c Release -r osx-arm64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -o Launcher/artifacts/macos/translator
+
+      - name: Download pinned portable CMake
+        shell: bash
+        run: |
+          cmake_version=4.4.3
+          archive="cmake-${cmake_version}-macos-universal.tar.gz"
+          base_url="https://github.com/Kitware/CMake/releases/download/v${cmake_version}"
+          expected_sha256=0c5d65251c14cc884bfa16bdbed3c263ce5bffe2e21c0d0d00962cb0610464fa
+          curl -fsSL --retry 3 "$base_url/$archive" -o "$archive"
+          printf '%s  %s\n' "$expected_sha256" "$archive" | shasum -a 256 -c -
+          tar -xzf "$archive"
+          mv "cmake-${cmake_version}-macos-universal/CMake.app/Contents" Launcher/artifacts/macos/cmake
+
+      - name: Build Setup.pkg
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          TAG_VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          package_version="$PACKAGE_VERSION"
+          if [[ -z "$package_version" ]]; then package_version="${TAG_VERSION#v}"; fi
+          mkdir -p Launcher/dist
+          Launcher/macos/build-setup-pkg.command \
+            --nodtool Launcher/artifacts/macos/nodtool \
+            --translator Launcher/artifacts/macos/translator/Translator.Cli \
+            --cmake-root Launcher/artifacts/macos/cmake \
+            --ninja "$(command -v ninja)" \
+            --output Launcher/dist/WiiCompiled-Setup.pkg \
+            --version "$package_version"
+
+      - name: Build WheelWizard setup asset
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          TAG_VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          package_version="${PACKAGE_VERSION:-${TAG_VERSION#v}}"
+          mkdir -p Launcher/artifacts/wheelwizard-tools
+          cp Launcher/artifacts/macos/nodtool Launcher/artifacts/wheelwizard-tools/
+          cp Launcher/artifacts/macos/translator/Translator.Cli Launcher/artifacts/wheelwizard-tools/
+          cp "$(command -v ninja)" Launcher/artifacts/wheelwizard-tools/ninja
+          ditto Launcher/artifacts/macos/cmake Launcher/artifacts/wheelwizard-tools/cmake
+          Launcher/macos/build-wheelwizard-setup.command \
+            --tools-root Launcher/artifacts/wheelwizard-tools \
+            --version "$package_version" \
+            --output Launcher/dist/WiiCompiled-Setup-macos-arm64.run
+
+      - name: Verify package boundary
+        shell: bash
+        run: |
+          pkgutil --check-signature Launcher/dist/WiiCompiled-Setup.pkg
+          ! pkgutil --payload-files Launcher/dist/WiiCompiled-Setup.pkg | \
+            grep -E '/(Assets|generated|PulsarPacks|WiiCompiled.app|RetroRewind.app)(/|$)'
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WiiCompiled-Setup-macos-arm64
+          path: |
+            Launcher/dist/WiiCompiled-Setup.pkg
+            Launcher/dist/WiiCompiled-Setup-macos-arm64.run
+          if-no-files-found: error
+
   # Publishes the packaged installers as a GitHub Release whenever a v* tag is pushed. Wheel Wizard
   # discovers updates from these releases, so the contract it relies on is enforced here: a full
-  # (non-prerelease) release whose tag is v<semver>, carrying an asset named exactly
-  # WiiCompiled-Setup.exe, produced by a setup host that reports that same version.
+  # (non-prerelease) release whose tag is v<semver>, carrying the expected platform assets,
+  # produced by setup hosts that report that same version.
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, windows-installer]
+    needs: [linux-appimage, windows-installer, macos-setup-package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -139,7 +247,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg WiiCompiled-Setup-macos-arm64.run; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")
