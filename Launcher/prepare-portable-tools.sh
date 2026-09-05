@@ -10,7 +10,10 @@
 # libc++/libc++abi/libunwind (so the toolchain never has to fall back to the host's system
 # libstdc++ headers). The raw release is ~1.9 GiB per arch (every LLVM backend, mlir, flang, lldb,
 # docs, tests); pruned it is ~500 MiB uncompressed / ~100 MiB compressed, verified against a real
-# build of this project.
+# build of this project. The release binaries are dynamically linked against a few libraries of
+# the Ubuntu the LLVM project builds on (ICU, for lld), so those are bundled into lib/ too - see
+# bundle_private_deps below - and every executable is verified to resolve nothing but the glibc
+# baseline from the host.
 #
 # cmake: pruned from the official Kitware GitHub release tarball down to bin/cmake (not
 # ccmake/cmake-gui/cpack/ctest, which local-build.sh never invokes) plus the Modules/Templates
@@ -131,11 +134,48 @@ cp -a "$src/bin/lld" "$work/bin/"
 strip "$work/bin/lld"
 ln -s lld "$work/bin/ld.lld"
 
+# The llvm.org release binaries are built on Ubuntu 22.04, and lld is dynamically linked against
+# that distro's ICU (libicui18n/libicuuc/libicudata .so.70) - which neither the LLVM tarball nor
+# this bundle shipped. Every other distro carries a different ICU major (Arch/CachyOS 78, Fedora
+# and Debian 13 76, Ubuntu 24.04 74) and no compat package, so there `ld.lld` could not even
+# start ("error while loading shared libraries: libicui18n.so.70") and CMake's "Check for working
+# C compiler" aborted the whole install. The smoke test below never caught it because it runs on
+# the very Ubuntu 22.04 runner that has ICU 70 in /usr/lib. lld's own RUNPATH is already
+# $ORIGIN/../lib, so bundling the libraries there is all it takes: no rpath patching and no
+# LD_LIBRARY_PATH juggling in AppRun.
+#
+# Driven by ldd rather than a hardcoded ICU list so that an LLVM bump that links something else
+# (or ICU 74 once the LLVM builders move to 24.04) is picked up, and so that a dependency the
+# build host cannot resolve fails here instead of on a user's machine. Applied to every bundled
+# executable; the verification at the end then proves each one resolves everything outside the
+# glibc baseline from inside the bundle.
+baseline_sonames='^(ld-linux-[^ ]*|libc|libm|libdl|libpthread|librt|libgcc_s|libstdc\+\+|libz|liblzma)\.so(\.|$)'
+bundle_private_deps() {
+    # $1 = executable under $work/bin. Each shared library it needs beyond the baseline is copied
+    # (symlink-dereferenced, under its soname) into $work/lib, where the LLVM binaries' RUNPATH
+    # looks first.
+    local exe=$1 soname arrow path rest
+    while read -r soname arrow path rest; do
+        [[ "$arrow" == "=>" ]] || continue            # vdso / the ELF interpreter line
+        soname=${soname##*/}                          # some ldd's print the interpreter as a path
+        [[ "$soname" =~ $baseline_sonames ]] && continue
+        if [[ "$path" != /* || ! -f "$path" ]]; then
+            echo "prepare-portable-tools.sh: $(basename "$exe") needs $soname, which this host cannot resolve" >&2
+            exit 1
+        fi
+        [[ -e "$work/lib/$soname" ]] || cp -L "$path" "$work/lib/$soname"
+    done < <(ldd "$exe")
+}
+bundle_private_deps "$work/bin/lld"
+
 # llvm-ar/llvm-ranlib: CMake's archiver for the many static libraries this project builds
 # (aurora, Crypto++, SDL3, Dawn's dependency closure, the translated game shards).
 cp -a "$src/bin/llvm-ar" "$work/bin/"
 strip "$work/bin/llvm-ar"
 ln -s llvm-ar "$work/bin/llvm-ranlib"
+
+bundle_private_deps "$work/bin/clang-23"
+bundle_private_deps "$work/bin/llvm-ar"
 
 # Clang's resource directory: builtin headers (stddef.h, immintrin.h, ...) and compiler-rt
 # (builtins, sanitizer runtimes). `clang -print-resource-dir` must find this at lib/clang/<ver>/.
@@ -173,6 +213,7 @@ cp -a "$cmake_src/bin/cmake" "$work/bin/"
 cp -a "$cmake_src/share/cmake-$cmake_share_version/Modules" "$cmake_src/share/cmake-$cmake_share_version/Templates" \
     "$work/share/cmake-$cmake_share_version/"
 rm -rf "$cmake_extract_root"
+bundle_private_deps "$work/bin/cmake"
 
 # --- ninja, used as-is ---
 
@@ -183,6 +224,7 @@ download_verified "$ninja_archive" \
 echo "prepare-portable-tools.sh: staging ninja $ninja_version..."
 unzip -oq "$ninja_archive" -d "$work/bin"
 chmod +x "$work/bin/ninja"
+bundle_private_deps "$work/bin/ninja"
 
 cat > "$work/LICENSE.txt" <<EOF
 Portable build tools bundled by WiiCompiled
@@ -192,6 +234,12 @@ clang/lld/llvm-ar $llvm_version (pruned from the official LLVM release for Linux
   Apache License v2.0 with LLVM Exceptions:
   https://github.com/llvm/llvm-project/blob/llvmorg-$llvm_version/LICENSE.TXT
 
+ICU (libicui18n, libicuuc, libicudata under lib/), the shared libraries lld from that release
+depends on, taken from the Ubuntu 22.04 libicu package that built it
+  https://icu.unicode.org/
+  Unicode License:
+  https://github.com/unicode-org/icu/blob/main/LICENSE
+
 CMake $cmake_version
   https://github.com/Kitware/CMake
   BSD 3-Clause License
@@ -200,6 +248,24 @@ Ninja $ninja_version
   https://github.com/ninja-build/ninja
   Apache License 2.0
 EOF
+
+echo "prepare-portable-tools.sh: checking that the toolchain carries its own shared libraries..."
+# Every bundled executable must resolve all its non-baseline shared libraries from inside the
+# bundle. This host has them all installed, so a "not found" from ldd could never fire here; the
+# check is on where each library resolves *from*, not on whether it resolves at all. This is the
+# check that would have caught the unbundled ICU 70 that lld shipped with for a while.
+for exe in clang-23 lld llvm-ar cmake ninja; do
+    while read -r soname arrow path rest; do
+        [[ "$arrow" == "=>" ]] || continue
+        soname=${soname##*/}
+        [[ "$soname" =~ $baseline_sonames ]] && continue
+        case "$path" in
+            "$work"/*) ;;
+            *) echo "prepare-portable-tools.sh: $exe resolves $soname from ${path:-nowhere} instead of the bundle - it would break on any host without it" >&2
+               exit 1 ;;
+        esac
+    done < <(ldd "$work/bin/$exe")
+done
 
 echo "prepare-portable-tools.sh: smoke-testing the toolchain..."
 smoke_dir=$(mktemp -d)
