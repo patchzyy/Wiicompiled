@@ -45,7 +45,7 @@ jobs:
       - name: Install dependencies (required by appimagetool and SDL3 build)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfuse2 build-essential git make \
+          sudo apt-get install -y libfuse2 build-essential git make patchelf \
             pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
             libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
             libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
