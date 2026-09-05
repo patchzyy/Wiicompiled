@@ -92,7 +92,7 @@ jobs:
           archive: false
 
   macos-setup-package:
-    name: macOS (Setup.pkg, Apple Silicon)
+    name: macOS (universal Setup.pkg)
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v7
@@ -103,35 +103,52 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Verify Apple Silicon runner tools
+      - name: Verify Apple Silicon runner
         shell: bash
         run: |
           test "$(uname -m)" = arm64
           xcode-select -p
-          command -v ninja
-          file "$(command -v ninja)" | grep -q arm64
 
-      - name: Download pinned nodtool release
+      - name: Download pinned Nod tools
         shell: bash
         run: |
           mkdir -p Launcher/artifacts/macos
           nodtool_version=v2.0.0-alpha.10
-          nodtool_asset=nodtool-macos-arm64
-          nodtool_sha256=e23ca466999b720c55e6d29c9683fce8cc74451ba64ead2e543d50129f24528a
+          nodtool_arm64_asset=nodtool-macos-arm64
+          nodtool_arm64_sha256=e23ca466999b720c55e6d29c9683fce8cc74451ba64ead2e543d50129f24528a
+          nodtool_x86_64_asset=nodtool-macos-x86_64
+          nodtool_x86_64_sha256=f68f504dc2b72694b468ca78b6a24142c7aa5c8800f77564297f4143682e6575
           curl -fsSL --retry 3 \
-            "https://github.com/encounter/nod/releases/download/${nodtool_version}/${nodtool_asset}" \
-            -o Launcher/artifacts/macos/nodtool
-          printf '%s  %s\n' "$nodtool_sha256" Launcher/artifacts/macos/nodtool | shasum -a 256 -c -
-          chmod +x Launcher/artifacts/macos/nodtool
-          Launcher/artifacts/macos/nodtool --version
+            "https://github.com/encounter/nod/releases/download/${nodtool_version}/${nodtool_arm64_asset}" \
+            -o Launcher/artifacts/macos/nodtool-arm64
+          curl -fsSL --retry 3 \
+            "https://github.com/encounter/nod/releases/download/${nodtool_version}/${nodtool_x86_64_asset}" \
+            -o Launcher/artifacts/macos/nodtool-x86_64
+          printf '%s  %s\n' "$nodtool_arm64_sha256" Launcher/artifacts/macos/nodtool-arm64 | shasum -a 256 -c -
+          printf '%s  %s\n' "$nodtool_x86_64_sha256" Launcher/artifacts/macos/nodtool-x86_64 | shasum -a 256 -c -
+          chmod +x Launcher/artifacts/macos/nodtool-arm64 Launcher/artifacts/macos/nodtool-x86_64
 
-      - name: Publish self-contained translator
+      - name: Publish self-contained Translator tools
         shell: bash
         run: |
           dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
             -c Release -r osx-arm64 --self-contained true \
             -p:PublishSingleFile=true \
-            -o Launcher/artifacts/macos/translator
+            -o Launcher/artifacts/macos/translator-arm64
+          dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
+            -c Release -r osx-x64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -o Launcher/artifacts/macos/translator-x86_64
+
+      - name: Download pinned universal Ninja
+        shell: bash
+        run: |
+          ninja_version=1.13.2
+          ninja_sha256=c99048673aa765960a99cf10c6ddb9f1fad506099ff0a0e137ad8960a88f321b
+          curl -fsSL --retry 3 "https://github.com/ninja-build/ninja/releases/download/v${ninja_version}/ninja-mac.zip" -o ninja-mac.zip
+          printf '%s  %s\n' "$ninja_sha256" ninja-mac.zip | shasum -a 256 -c -
+          unzip -q ninja-mac.zip -d Launcher/artifacts/macos/ninja
+          chmod +x Launcher/artifacts/macos/ninja/ninja
 
       - name: Download pinned portable CMake
         shell: bash
@@ -155,23 +172,37 @@ jobs:
           if [[ -z "$package_version" ]]; then package_version="${TAG_VERSION#v}"; fi
           mkdir -p Launcher/dist
           Launcher/macos/build-setup-pkg.command \
-            --nodtool Launcher/artifacts/macos/nodtool \
-            --translator Launcher/artifacts/macos/translator/Translator.Cli \
+            --nodtool-arm64 Launcher/artifacts/macos/nodtool-arm64 \
+            --nodtool-x86_64 Launcher/artifacts/macos/nodtool-x86_64 \
+            --translator-arm64 Launcher/artifacts/macos/translator-arm64/Translator.Cli \
+            --translator-x86_64 Launcher/artifacts/macos/translator-x86_64/Translator.Cli \
             --cmake-root Launcher/artifacts/macos/cmake \
-            --ninja "$(command -v ninja)" \
+            --ninja-arm64 Launcher/artifacts/macos/ninja/ninja \
+            --ninja-x86_64 Launcher/artifacts/macos/ninja/ninja \
             --output Launcher/dist/WiiCompiled-Setup.pkg \
             --version "$package_version"
 
-      - name: Verify package boundary
+      - name: Verify package layout and architecture-specific tools
         shell: bash
         run: |
           pkgutil --check-signature Launcher/dist/WiiCompiled-Setup.pkg
           ! pkgutil --payload-files Launcher/dist/WiiCompiled-Setup.pkg | \
             grep -E '/(Assets|generated|PulsarPacks|WiiCompiled.app|RetroRewind.app)(/|$)'
+          expanded="$RUNNER_TEMP/wiicompiled-setup-expanded"
+          pkgutil --expand-full Launcher/dist/WiiCompiled-Setup.pkg "$expanded"
+          resources="$expanded/Payload/Applications/WiiCompiled Setup.app/Contents/Resources"
+          for arch in arm64 x86_64; do
+            for tool in nodtool Translator.Cli ninja; do
+              lipo "$resources/tools/$arch/$tool" -verify_arch "$arch"
+            done
+          done
+          lipo "$resources/tools/cmake/bin/cmake" -verify_arch arm64 x86_64
+          bash "$resources/setup.command" --help
+          /usr/bin/arch -x86_64 /bin/bash "$resources/setup.command" --help
 
       - uses: actions/upload-artifact@v7
         with:
-          name: WiiCompiled-Setup-macos-arm64
+          name: WiiCompiled-Setup-macos-universal
           path: Launcher/dist/WiiCompiled-Setup.pkg
           if-no-files-found: error
           archive: false

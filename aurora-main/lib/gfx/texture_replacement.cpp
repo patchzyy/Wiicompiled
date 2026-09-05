@@ -553,7 +553,7 @@ void build_index() noexcept {
       continue;
     }
 
-    s_replacementIndex.try_emplace(*parsed, path);
+    s_replacementIndex.try_emplace(*parsed, ReplacementIndexEntry{path});
   }
 
   Log.info("Indexed {} texture replacements", s_replacementIndex.size());

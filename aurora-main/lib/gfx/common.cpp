@@ -22,7 +22,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <ranges>
 
 #include <absl/container/flat_hash_map.h>
 #include <magic_enum.hpp>
@@ -1328,8 +1327,8 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
 
 #if defined(AURORA_GFX_DEBUG_GROUPS)
   if (finalize && !g_debugGroupStack.empty()) {
-    for (auto& it : std::ranges::reverse_view(g_debugGroupStack)) {
-      Log.warn("Debug group was not popped at end of frame: {}", it);
+    for (auto it = g_debugGroupStack.rbegin(); it != g_debugGroupStack.rend(); ++it) {
+      Log.warn("Debug group was not popped at end of frame: {}", *it);
     }
     g_debugGroupStack.clear();
   }

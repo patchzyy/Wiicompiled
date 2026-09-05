@@ -49,7 +49,7 @@ jobs:
           test "$(uname -m)" = arm64
           cmake -S runtime -B build-macos -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DMKW_BUILD_PRODUCTS=OFF
-          grep -qx 'CMAKE_OSX_DEPLOYMENT_TARGET:STRING=14.0' \
+          grep -qx 'CMAKE_OSX_DEPLOYMENT_TARGET:STRING=12.0' \
             build-macos/CMakeCache.txt
 
       - name: Build macOS portability targets
@@ -57,6 +57,7 @@ jobs:
         run: |
           cmake --build build-macos --target \
             mkw_platform_paths_tests \
+            mkw_input_expr_tests \
             mkw_macos_native_compile \
             mkw_macos_context_abi_tests \
             mkw_macos_host_context_tests \

@@ -4,9 +4,9 @@
 
 #include <array>
 #include <atomic>
-#include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -52,6 +52,20 @@ std::array<float, kSoundPlayerCount> g_requestedSoundPlayerVolumes{};
 std::array<float, kSoundPlayerCount> g_lastAppliedSoundPlayerVolumes{};
 std::array<bool, kSoundPlayerCount> g_haveSoundPlayerVolumes{};
 
+uint32_t FloatBits(float value) noexcept {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float BitsFloat(uint32_t bits) noexcept {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 float ClampSoundPlayerVolume(float volume) noexcept {
     // Match nw4r::snd::SoundPlayer::SetVolume at 0x800A35E0 exactly,
     // including its NaN behavior (unordered compares select the upper bound).
@@ -63,7 +77,7 @@ float ClampSoundPlayerVolume(float volume) noexcept {
 
 bool WriteGuestFloat(uint32_t address, float value) noexcept {
     try {
-        Memory::Write32(address, std::bit_cast<uint32_t>(value));
+        Memory::Write32(address, FloatBits(value));
         return true;
     } catch (const Memory::AccessViolation&) {
         return false;
@@ -75,7 +89,7 @@ bool ReadGuestFloat(uint32_t address, float& value) noexcept {
     if (!Memory::TryRead32(address, bits)) {
         return false;
     }
-    value = std::bit_cast<float>(bits);
+    value = BitsFloat(bits);
     return true;
 }
 
@@ -558,7 +572,7 @@ void SetSoundPlayerVolume(uint32_t soundPlayer, float requestedVolume) {
     }
     // Preserve the original function's access semantics. An invalid player is
     // a guest bug and must not be converted into a silent successful call.
-    Memory::Write32(soundPlayer + kSoundPlayerVolumeOffset, std::bit_cast<uint32_t>(applied));
+    Memory::Write32(soundPlayer + kSoundPlayerVolumeOffset, FloatBits(applied));
 }
 
 } // namespace MusicAttenuation

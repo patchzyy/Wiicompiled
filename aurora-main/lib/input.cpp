@@ -401,6 +401,8 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
       return -1;
     }
     controller.m_isGameCube = controller.m_vid == 0x057E && controller.m_pid == 0x0337;
+    const char* serial = SDL_GetGamepadSerial(ctrl);
+    controller.m_gameCubeUseOrdinaryStop = controller.m_isGameCube && serial && "GCP+"sv == serial;
     if (controller.m_isGameCube ||
         (SDL_GetGamepadType(ctrl) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO && controller.m_pid == 0x2073)) {
       controller.m_deadZones.emulateTriggers = false;
@@ -481,6 +483,13 @@ bool controller_has_rumble(Uint32 instance) noexcept {
 void controller_rumble(uint32_t instance, uint16_t low_freq_intensity, uint16_t high_freq_intensity,
                        uint16_t duration_ms) noexcept {
   if (auto it = g_GameControllers.find(instance); it != g_GameControllers.end()) {
+    // GC Pocket+ has been observed continuing to vibrate after a hard stop;
+    // an ordinary stop cleared it. With GAMECUBE_RUMBLE_BRAKE enabled, SDL
+    // encodes (0, 1) as adapter command 0, whereas (0, 0) sends command 2.
+    // Apply the workaround here so shutdown uses the same stop as PAD calls.
+    if (it->second.m_gameCubeUseOrdinaryStop && low_freq_intensity == 0 && high_freq_intensity == 0) {
+      high_freq_intensity = 1;
+    }
     SDL_RumbleGamepad(it->second.m_controller, low_freq_intensity, high_freq_intensity, duration_ms);
   }
 }
