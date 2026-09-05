@@ -1,38 +1,28 @@
 #pragma once
 
-#include "runtime_config.h"
+#include "nand_path.h"
+#include "nand_settings.h"
 
-#include <algorithm>
 #include <array>
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <iomanip>
-#include <optional>
-#include <random>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <utility>
 
 namespace RuntimeConsoleIdentity {
 
 struct Identity {
     std::string serial;
+    std::string productCode;
+    std::string area;
+    std::string gameRegion;
     std::array<uint8_t, 6> mac;
 };
 
-inline bool IsValidSerial(const std::string& serial) {
-    return serial.size() == 9 &&
-           serial != "000000000" &&
-           std::all_of(serial.begin(), serial.end(),
-                       [](unsigned char value) { return std::isdigit(value) != 0; });
-}
-
 inline Identity FromSerial(std::string serial) {
-    // Keep Nintendo's Wii OUI. The suffix is derived from the persisted serial
+    // Keep Nintendo's Wii OUI. The suffix is derived from the NAND serial
     // so every API exposes one coherent, stable virtual-console identity.
     uint32_t hash = 2166136261u;
     for (const unsigned char value : serial) {
@@ -46,6 +36,7 @@ inline Identity FromSerial(std::string serial) {
 
     return {
         std::move(serial),
+        {}, {}, {},
         {
             0x00,
             0x09,
@@ -57,83 +48,23 @@ inline Identity FromSerial(std::string serial) {
     };
 }
 
-inline std::optional<std::string> ReadSerial(const std::filesystem::path& path) {
-    std::ifstream input(path);
-    std::string line;
-    if (!input || !std::getline(input, line)) {
-        return std::nullopt;
+inline Identity LoadFromNand() {
+    const auto root = RuntimeNandPath::DiscoverNandRootPath();
+    const auto settings = RuntimeNandSettings::Read(root);
+    if (!settings || !RuntimeNandSettings::HasIdentity(*settings)) {
+        RuntimeNandPath::FailNandRoot(
+            "NAND setting.txt is missing or has invalid console identity fields (SERNO, CODE, AREA, GAME)",
+            root / "title/00000001/00000002/data/setting.txt");
     }
-    constexpr std::string_view prefix = "serial=";
-    if (line.rfind(prefix, 0) != 0) {
-        return std::nullopt;
-    }
-    std::string serial = line.substr(prefix.size());
-    if (!IsValidSerial(serial)) {
-        return std::nullopt;
-    }
-    return serial;
-}
-
-inline bool WriteSerial(const std::filesystem::path& path, const std::string& serial) {
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        return false;
-    }
-
-    std::filesystem::path temporary = path;
-    temporary += ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::trunc);
-        if (!output) {
-            return false;
-        }
-        output << "serial=" << serial << '\n';
-        output.close();
-        if (!output) {
-            return false;
-        }
-    }
-
-    std::filesystem::rename(temporary, path, ec);
-    if (!ec) {
-        return true;
-    }
-    std::filesystem::remove(temporary, ec);
-    return false;
-}
-
-inline std::string GenerateSerial() {
-    std::random_device entropy;
-    std::seed_seq seed{
-        entropy(),
-        entropy(),
-        entropy(),
-        entropy(),
-    };
-    std::mt19937 generator(seed);
-    std::uniform_int_distribution<uint32_t> distribution(100000000u, 999999999u);
-    return std::to_string(distribution(generator));
-}
-
-inline Identity LoadOrCreate(const std::filesystem::path& path) {
-    if (const auto serial = ReadSerial(path)) {
-        return FromSerial(*serial);
-    }
-
-    const std::string generated = GenerateSerial();
-    if (WriteSerial(path, generated)) {
-        return FromSerial(generated);
-    }
-
-    // Remain operational in a read-only environment. This fallback matches
-    // Dolphin's deterministic serial while keeping the same valid identity shape.
-    return FromSerial("123456789");
+    Identity identity = FromSerial(settings->at("SERNO"));
+    identity.productCode = settings->at("CODE");
+    identity.area = settings->at("AREA");
+    identity.gameRegion = settings->at("GAME");
+    return identity;
 }
 
 inline const Identity& Current() {
-    static const Identity identity =
-        LoadOrCreate(RuntimeConfigFile::ApplicationDataDirectory() / "ConsoleIdentity.txt");
+    static const Identity identity = LoadFromNand();
     return identity;
 }
 
