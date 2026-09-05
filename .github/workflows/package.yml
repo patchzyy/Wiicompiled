@@ -20,6 +20,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  recompilation:
+    name: Recompilation test
+    uses: ./.github/workflows/recomp-test.yml
+
   linux-appimage:
     name: Linux (AppImage, ${{ matrix.arch }})
     strategy:
@@ -93,7 +97,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, windows-installer]
+    needs: [linux-appimage, windows-installer, recompilation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
