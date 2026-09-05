@@ -11,9 +11,9 @@
 # libstdc++ headers). The raw release is ~1.9 GiB per arch (every LLVM backend, mlir, flang, lldb,
 # docs, tests); pruned it is ~500 MiB uncompressed / ~100 MiB compressed, verified against a real
 # build of this project. The release binaries are dynamically linked against a few libraries of
-# the Ubuntu the LLVM project builds on (libxml2 and/or ICU, for lld), so those are bundled into
-# lib/ too - see bundle_private_deps below - and every executable is verified to resolve nothing
-# but the glibc baseline from the host. Needs patchelf on the build host.
+# the Ubuntu the LLVM project builds on (libstdc++, plus libxml2 and/or ICU for lld), so those
+# are bundled into lib/ too - see bundle_private_deps below - and every executable is verified to
+# resolve nothing but the glibc baseline from the host. Needs patchelf on the build host.
 #
 # cmake: pruned from the official Kitware GitHub release tarball down to bin/cmake (not
 # ccmake/cmake-gui/cpack/ctest, which local-build.sh never invokes) plus the Modules/Templates
@@ -161,20 +161,27 @@ ln -s lld "$work/bin/ld.lld"
 # Applied to every bundled executable; the verification at the end then proves each one resolves
 # everything outside the baseline from inside the bundle, with LD_LIBRARY_PATH out of the picture.
 #
-# The baseline is what the host is expected to provide: glibc itself, plus libstdc++/libgcc_s/
-# libz/liblzma. Those four are deliberately NOT bundled, matching the AppImage excludelist
-# (https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist lists libstdc++.so.6,
-# libgcc_s.so.1 and libz.so.1 by name) and what this toolchain always did: they ship with every
-# glibc distro under these exact sonames, and the LLVM binaries' floor (GLIBC_2.34 /
-# GLIBCXX_3.4.30, i.e. glibc 2.34+ with GCC 12's libstdc++) is met by every distro whose glibc is
-# new enough to load them at all. libxml2 and ICU are different in kind: their sonames change
-# across releases and distros carry exactly one, which is why they must travel with the bundle.
-baseline_sonames='^(ld-linux-[^ ]*|libc|libm|libdl|libpthread|librt|libgcc_s|libstdc\+\+|libz|liblzma)\.so(\.|$)'
+# The baseline is what the host is expected to provide: glibc itself, plus libgcc_s/libz/liblzma.
+# Those are deliberately NOT bundled, matching the AppImage excludelist
+# (https://github.com/AppImageCommunity/pkg2appimage/blob/master/excludelist) and what this
+# toolchain always did: every glibc distro ships them under these exact sonames and the symbol
+# versions the tools want from them (GCC_3.3, ZLIB_1.2.x) are decades old. libstdc++ is NOT
+# baseline even though the excludelist has it: the LLVM binaries want GLIBCXX_3.4.30 (GCC 12),
+# and there are current distros with a glibc new enough for the tools (GLIBC_2.34) but an older
+# libstdc++ - RHEL 9 / Rocky / Alma / Amazon Linux 2023 all ship GCC 11's, which stops at
+# GLIBCXX_3.4.29 - where the tools would die with "version GLIBCXX_3.4.30 not found". Ubuntu
+# 22.04's libstdc++ (GCC 12.3) needs nothing newer than GLIBC_2.34 itself, so bundling it keeps
+# the glibc floor where it is. The excludelist's reason for leaving libstdc++ to the host (an
+# older bundled copy breaking host libraries dlopen'ed into the same process, GPU drivers above
+# all) does not apply to a compiler and a linker that dlopen nothing. libxml2 and ICU are
+# different in kind again: their sonames change across releases and distros carry exactly one.
+baseline_sonames='^(ld-linux-[^ ]*|libc|libm|libdl|libpthread|librt|libgcc_s|libz|liblzma)\.so(\.|$)'
 bundle_private_deps() {
     # $1 = executable under $work/bin. Each shared library it needs beyond the baseline is copied
-    # (symlink-dereferenced, under its soname) into $work/lib, where the LLVM binaries' RUNPATH
-    # looks first, and given a $ORIGIN RUNPATH so its own dependencies resolve there too.
-    local exe=$1 deps soname arrow path rest
+    # (symlink-dereferenced, under its soname) into $work/lib and given a $ORIGIN RUNPATH so its
+    # own dependencies resolve there too. The executable itself gets a $ORIGIN/../lib RUNPATH if
+    # it does not already have one (the LLVM binaries do; the ninja release binary does not).
+    local exe=$1 deps soname arrow path rest needs_bundle=0 rpath
     [[ -x "$exe" ]] || { echo "prepare-portable-tools.sh: $exe is missing or not executable" >&2; exit 1; }
     if ! deps=$(LC_ALL=C ldd "$exe" 2>&1); then   # LC_ALL=C: the "not a dynamic executable" text is matched below
         [[ "$deps" == *"not a dynamic executable"* ]] && return 0   # static: nothing to bundle
@@ -186,6 +193,7 @@ bundle_private_deps() {
         [[ "$arrow" == "=>" ]] || continue            # vdso / the ELF interpreter line
         soname=${soname##*/}                          # some ldd's print the interpreter as a path
         [[ "$soname" =~ $baseline_sonames ]] && continue
+        needs_bundle=1
         if [[ "$path" != /* || ! -f "$path" ]]; then
             echo "prepare-portable-tools.sh: $(basename "$exe") needs $soname, which this host cannot resolve" >&2
             exit 1
@@ -194,6 +202,11 @@ bundle_private_deps() {
         cp -L "$path" "$work/lib/$soname"
         patchelf --set-rpath '$ORIGIN' "$work/lib/$soname"
     done <<< "$deps"
+    (( needs_bundle )) || return 0
+    rpath=$(patchelf --print-rpath "$exe")
+    if [[ ":$rpath:" != *':$ORIGIN/../lib:'* ]]; then
+        patchelf --set-rpath "${rpath:+$rpath:}"'$ORIGIN/../lib' "$exe"
+    fi
 }
 bundle_private_deps "$work/bin/lld"
 
@@ -266,6 +279,8 @@ clang/lld/llvm-ar $llvm_version (pruned from the official LLVM release for Linux
 Shared libraries under lib/ that the tools above depend on, copied from the Ubuntu 22.04 packages
 the LLVM release was built against (bundled because their sonames differ between distributions):
 $(cd "$work/lib" && ls -1 *.so.* 2>/dev/null | sed 's/^/  /')
+  libstdc++ - GPL-3.0 with GCC Runtime Library Exception:
+  https://gcc.gnu.org/onlinedocs/libstdc++/manual/license.html
   libxml2 - MIT License:
   https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/Copyright
   ICU - Unicode License:
