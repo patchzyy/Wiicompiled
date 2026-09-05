@@ -54,10 +54,24 @@ Press **F10** while the game window has focus:
 Everything you change is saved to `Config.toml` on the spot and restored next launch.
 
 **Real controller support.** 
+
 Controllers are fed to the game as a GameCube controller.
 Mappings are positional (`south`, `east`, `west`, `north`) rather than Xbox-labelled, so the
 same config makes sense on Xbox, PlayStation, Nintendo and generic SDL pads alike, and extra
 inputs like paddles, touchpads and share buttons show up when the hardware reports them.
+Both button-binding slots also accept SDL triggers and stick directions. Selecting an analog
+input shows a threshold slider beneath it (1–100%, default 50%); reaching that amount of travel
+holds the chosen digital button. Each binding's threshold is saved independently in `Config.toml`
+(for example, `a = "right_trigger@35,south"`).
+
+**Keyboard and Mouse support.**
+
+Keyboard and mouse are also available through **F10 > Controller settings > Keyboard and mouse**
+for each port. Enabling this replaces that port's gamepad input. The default preset uses WASD
+for the main stick, left mouse for A (accelerate), Space for B (brake), right mouse for R
+(drift), middle mouse for Z (item), arrow keys for the D-pad (tricks), and Enter for Start.
+Keys and mouse buttons can be remapped, including both sticks and triggers; mouse movement
+is not used. These settings are saved in `keyboard_bindings.dat` and restored next launch.
 
 **Dolphin-compatible input expressions.** 
 Each GameCube control can carry an expression in Dolphin's input syntax, with the same operators

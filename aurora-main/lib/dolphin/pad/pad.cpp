@@ -319,6 +319,18 @@ std::array<bool, PAD_CHANMAX> g_suppressLeftTrigger{};
 std::array<bool, PAD_CHANMAX> g_suppressRightTrigger{};
 
 bool is_mouse_scancode(const s32 scancode) { return scancode < PAD_KEY_INVALID; }
+bool is_native_binding_pressed(SDL_Gamepad* gamepad, u32 binding) {
+  if (PADIsAxisButton(binding)) {
+    const u32 axis = PADAxisButtonAxis(binding);
+    const u32 threshold = PADAxisButtonThreshold(binding);
+    if (axis >= SDL_GAMEPAD_AXIS_COUNT || threshold < 1 || threshold > 100) return false;
+    int value = SDL_GetGamepadAxis(gamepad, static_cast<SDL_GamepadAxis>(axis));
+    if (PADAxisButtonNegative(binding)) value = -value;
+    return value > 0 && value * 100 >= static_cast<int>(threshold) * 32767;
+  }
+  return binding < SDL_GAMEPAD_BUTTON_COUNT &&
+         SDL_GetGamepadButton(gamepad, static_cast<SDL_GamepadButton>(binding));
+}
 bool is_mouse_button_pressed(const s32 scancode) {
   const int32_t buttonNum = -(scancode + 1);
   if (buttonNum < 1 || buttonNum > 5) {
@@ -724,10 +736,10 @@ u32 PADRead(PADStatus* status) {
     }
 
     status[i].err = PAD_ERR_NONE;
-    if (g_keyboardBindings[i].m_mappingsSet) {
+    if (g_keyboardBindings[i].m_mappingsSet && SDL_GetKeyboardFocus() != nullptr) {
       std::ranges::for_each(
-          g_keyboardBindings[i].m_buttonMapping, [&kbState, &i, &status](const PADKeyButtonBinding& mapping) {
-            if (mapping.scancode > PAD_KEY_INVALID && kbState[mapping.scancode]) {
+          g_keyboardBindings[i].m_buttonMapping, [&kbState, &numKeys, &i, &status](const PADKeyButtonBinding& mapping) {
+            if (mapping.scancode > PAD_KEY_INVALID && mapping.scancode < numKeys && kbState[mapping.scancode]) {
               status[i].button |= mapping.padButton;
             } else if (is_mouse_scancode(mapping.scancode) && is_mouse_button_pressed(mapping.scancode)) {
               status[i].button |= mapping.padButton;
@@ -788,7 +800,7 @@ u32 PADRead(PADStatus* status) {
       status[i].triggerRight = static_cast<u8>(std::min(static_cast<int>(status[i].triggerRight) + tr, 255));
     }
 
-    if (controller) {
+    if (controller && !g_keyboardBindings[i].m_mappingsSet) {
       EnsureMappingLoaded(controller);
 
       // Wii U Pro Controller raw D-pad fallback. SDL's HIDAPI Wii driver posts
@@ -835,7 +847,7 @@ u32 PADRead(PADStatus* status) {
       bool rightTriggerSet = false;
       std::ranges::for_each(controller->m_buttonMapping, [&controller, &i, &status, &leftTriggerSet,
                                                           &rightTriggerSet](const auto& mapping) {
-        if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(mapping.nativeButton))) {
+        if (is_native_binding_pressed(controller->m_controller, mapping.nativeButton)) {
           status[i].button |= mapping.padButton;
         }
 
@@ -852,7 +864,7 @@ u32 PADRead(PADStatus* status) {
         if (mapping.nativeButton == PAD_NATIVE_BUTTON_INVALID) {
           return;
         }
-        if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(mapping.nativeButton))) {
+        if (is_native_binding_pressed(controller->m_controller, mapping.nativeButton)) {
           status[i].button |= mapping.padButton;
         }
 
@@ -946,6 +958,17 @@ u32 PADRead(PADStatus* status) {
       Sint16 tl = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_L));
       Sint16 tr = std::max(static_cast<Sint16>(0), _get_axis_value(controller, PAD_AXIS_TRIGGER_R));
 
+      // Games can read either the digital L/R bits or their analog pressure.
+      // An explicit button binding must drive both, otherwise the original
+      // L2/R2 axis still activates L/R even when it was rebound to L1/R1.
+      // Real GC pads retain independent analog travel and end-stop clicks.
+      if (!(controller->m_isGameCube ||
+            (SDL_GetGamepadType(controller->m_controller) == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO &&
+             controller->m_pid == 0x2073))) {
+        if (leftTriggerSet) tl = (status[i].button & PAD_TRIGGER_L) != 0 ? 32767 : 0;
+        if (rightTriggerSet) tr = (status[i].button & PAD_TRIGGER_R) != 0 ? 32767 : 0;
+      }
+
       if (controller->m_deadZones.emulateTriggers) {
         if (!leftTriggerSet && tl > controller->m_deadZones.leftTriggerActivationZone) {
           status[i].button |= PAD_TRIGGER_L;
@@ -990,12 +1013,13 @@ void PADControlMotor(const u32 chan, const u32 cmd) {
   }
 
   if (controller->m_isGameCube) {
-    if (cmd == PAD_MOTOR_STOP) {
-      aurora::input::controller_rumble(instance, 0, 1, 0);
+    if (cmd == PAD_MOTOR_STOP || cmd == PAD_MOTOR_STOP_HARD) {
+      // Use an unambiguous motor-off request. The (0, 1) coast encoding
+      // requires SDL's GameCube brake mode; other backends or an overridden
+      // hint interpret it as rumble and can leave the controller vibrating.
+      aurora::input::controller_rumble(instance, 0, 0, 0);
     } else if (cmd == PAD_MOTOR_RUMBLE) {
       aurora::input::controller_rumble(instance, 1, 1, 0);
-    } else if (cmd == PAD_MOTOR_STOP_HARD) {
-      aurora::input::controller_rumble(instance, 0, 0, 0);
     }
   } else {
     if (cmd == PAD_MOTOR_STOP) {
@@ -1278,6 +1302,11 @@ BOOL PADSetKeyButtonBindings(const u32 port, PADKeyButtonBinding bindings[PAD_BU
 }
 
 PADKeyButtonBinding* PADGetKeyButtonBindings(const u32 port, u32* buttonCount) {
+  PADInit();
+  if (!g_keyboardBindingsLoaded) {
+    g_keyboardBindingsLoaded = true;
+    load_keyboard_bindings();
+  }
   if (port >= PAD_MAX_CONTROLLERS || !g_keyboardBindings[port].m_mappingsSet) {
     return nullptr;
   }

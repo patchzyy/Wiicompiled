@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -186,6 +187,18 @@ void LimitResolutionForFrameRate() {
 
 using ControllerNames::FindNativeButton;
 
+uint32_t ConfiguredNativeButton(const NativeButtonItem& item, const std::string& token) {
+    if (!PADIsAxisButton(item.nativeButton)) return item.nativeButton;
+    const size_t separator = token.find('@');
+    if (separator == std::string::npos) return item.nativeButton;
+    uint32_t threshold = 0;
+    const char* end = token.data() + token.size();
+    const auto parsed = std::from_chars(token.data() + separator + 1, end, threshold);
+    if (parsed.ec != std::errc{} || parsed.ptr != end || threshold < 1 || threshold > 100)
+        return item.nativeButton;
+    return PADAxisButtonIdentity(item.nativeButton) | (threshold << 8);
+}
+
 struct ControllerBindingPair {
     std::string primary;
     std::string secondary;
@@ -203,6 +216,13 @@ ControllerBindingPair SplitControllerBinding(const std::string& value) {
 }
 
 using ControllerNames::NativeButtonForValue;
+
+std::string NativeBindingConfig(uint32_t binding) {
+    std::string value = NativeButtonForValue(binding).configName;
+    if (PADIsAxisButton(binding)) value += '@' + std::to_string(PADAxisButtonThreshold(binding));
+    return value;
+}
+
 
 void SetTopBarVisible(bool visible) {
     if (g_topBarVisible == visible) {
@@ -242,7 +262,7 @@ void ApplyConfiguredMappings() {
             }
             const ControllerBindingPair binding = SplitControllerBinding(*configured);
             if (const NativeButtonItem* native = FindNativeButton(binding.primary)) {
-                PADSetButtonMapping(port, PADButtonMapping{native->nativeButton, kControllerButtons[i].padButton});
+                PADSetButtonMapping(port, PADButtonMapping{ConfiguredNativeButton(*native, binding.primary), kControllerButtons[i].padButton});
             } else {
                 RT_LOG(RT_TAG_CONFIG) << "Unknown controller." << kControllerButtons[i].configKey
                           << " button '" << binding.primary << "'" << std::endl;
@@ -250,7 +270,7 @@ void ApplyConfiguredMappings() {
             uint32_t altNative = PAD_NATIVE_BUTTON_INVALID;
             if (!binding.secondary.empty()) {
                 if (const NativeButtonItem* native = FindNativeButton(binding.secondary)) {
-                    altNative = native->nativeButton;
+                    altNative = ConfiguredNativeButton(*native, binding.secondary);
                 } else {
                     RT_LOG(RT_TAG_CONFIG) << "Unknown controller." << kControllerButtons[i].configKey
                               << " secondary button '" << binding.secondary << "'" << std::endl;
@@ -395,6 +415,213 @@ void DrawWiiRemoteSettings(uint32_t selectedGamePort) {
     ImGui::EndMenu();
 }
 
+const char* KeyBindingName(int scancode) {
+    switch (scancode) {
+    case PAD_KEY_MOUSE_LEFT: return "Mouse left";
+    case PAD_KEY_MOUSE_RIGHT: return "Mouse right";
+    case PAD_KEY_MOUSE_MIDDLE: return "Mouse middle";
+    case PAD_KEY_MOUSE_X1: return "Mouse side 1";
+    case PAD_KEY_MOUSE_X2: return "Mouse side 2";
+    case PAD_KEY_INVALID: return "Unmapped";
+    default:
+        return scancode >= 0 && scancode < SDL_SCANCODE_COUNT
+            ? SDL_GetScancodeName(static_cast<SDL_Scancode>(scancode)) : "Unknown";
+    }
+}
+
+enum class RebindKind { KeyboardButton, KeyboardAxis, Controller };
+struct RebindState {
+    bool active = false;
+    bool openPopup = false;
+    RebindKind kind{};
+    uint32_t port = 0;
+    uint16_t target = 0;
+    bool secondary = false;
+    SDL_JoystickID instance = 0;
+    Clock::time_point deadline{};
+    std::string label;
+    std::array<bool, SDL_SCANCODE_COUNT> keys{};
+    uint32_t mouse = 0;
+    std::array<bool, SDL_GAMEPAD_BUTTON_COUNT> buttons{};
+    std::array<bool, SDL_GAMEPAD_AXIS_COUNT> axesReady{};
+} g_rebind;
+
+void BeginRebind(RebindKind kind, uint16_t target, const char* label, bool secondary = false) {
+    g_rebind = {};
+    g_rebind.active = true;
+    g_rebind.openPopup = true;
+    g_rebind.kind = kind;
+    g_rebind.port = static_cast<uint32_t>(g_controllerPort);
+    g_rebind.target = target;
+    g_rebind.secondary = secondary;
+    g_rebind.label = label;
+    g_rebind.deadline = Clock::now() + std::chrono::seconds(10);
+    int count = 0;
+    const bool* keys = SDL_GetKeyboardState(&count);
+    std::copy_n(keys, std::min(count, static_cast<int>(g_rebind.keys.size())), g_rebind.keys.begin());
+    g_rebind.mouse = SDL_GetMouseState(nullptr, nullptr);
+    const int index = PADGetIndexForPort(g_rebind.port);
+    if (kind == RebindKind::Controller && index >= 0) {
+        if (auto* pad = PADGetSDLGamepadForIndex(index)) {
+            g_rebind.instance = SDL_GetGamepadID(pad);
+            for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT; ++i)
+                g_rebind.buttons[i] = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+            for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT; ++i)
+                g_rebind.axesReady[i] = std::abs(static_cast<int>(SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i)))) < 8000;
+        }
+    }
+}
+
+void CompleteRebind(uint32_t value) {
+    const auto& capture = g_rebind;
+    if (capture.kind == RebindKind::Controller) {
+        const int index = PADGetIndexForPort(capture.port);
+        auto* pad = index >= 0 ? PADGetSDLGamepadForIndex(index) : nullptr;
+        if (pad == nullptr || SDL_GetGamepadID(pad) != capture.instance) {
+            g_rebind.active = false;
+            return;
+        }
+        if (capture.secondary) PADSetAltButtonMapping(capture.port, {value, capture.target});
+        else PADSetButtonMapping(capture.port, {value, capture.target});
+        uint32_t count = 0, altCount = 0;
+        auto* primary = PADGetButtonMappings(capture.port, &count);
+        auto* alternate = PADGetAltButtonMappings(capture.port, &altCount);
+        uint32_t primaryValue = PAD_NATIVE_BUTTON_INVALID, alternateValue = PAD_NATIVE_BUTTON_INVALID;
+        for (uint32_t i = 0; i < count; ++i)
+            if (primary[i].padButton == capture.target) primaryValue = primary[i].nativeButton;
+        for (uint32_t i = 0; i < altCount; ++i)
+            if (alternate[i].padButton == capture.target) alternateValue = alternate[i].nativeButton;
+        std::string config = NativeBindingConfig(primaryValue);
+        if (alternateValue != PAD_NATIVE_BUTTON_INVALID) config += ',' + NativeBindingConfig(alternateValue);
+        for (size_t i = 0; i < kControllerButtons.size(); ++i)
+            if (kControllerButtons[i].padButton == capture.target) RuntimeConfigFile::SetControllerButton(i, config);
+    } else if (capture.kind == RebindKind::KeyboardButton) {
+        PADSetKeyButtonBinding(capture.port, {static_cast<int32_t>(value), capture.target});
+    } else {
+        PADSetKeyAxisBinding(capture.port, {static_cast<int32_t>(value), capture.target, 1});
+    }
+    PADSerializeMappings();
+    g_rebind.active = false;
+}
+
+void DrawRebindPrompt() {
+    if (g_rebind.openPopup) {
+        ImGui::OpenPopup("Rebind input");
+        g_rebind.openPopup = false;
+    }
+    if (!ImGui::BeginPopupModal("Rebind input", &g_rebind.active, ImGuiWindowFlags_AlwaysAutoResize)) {
+        g_rebind.active = false;
+        return;
+    }
+    if (g_rebind.active) {
+        ImGui::Text("Rebind: %s", g_rebind.label.c_str());
+        ImGui::TextUnformatted(g_rebind.kind == RebindKind::Controller
+            ? "Press a controller button, pull a trigger, or move a stick."
+            : "Press a keyboard key or click a mouse button.");
+        ImGui::TextUnformatted("Release any held input first. Escape cancels. F10 is reserved for settings.");
+        const float remaining = std::chrono::duration<float>(g_rebind.deadline - Clock::now()).count();
+        ImGui::Text("Unmapped in %d seconds", std::max(0, static_cast<int>(std::ceil(remaining))));
+        if (remaining <= 0.0f) {
+            CompleteRebind(g_rebind.kind == RebindKind::Controller ? PAD_NATIVE_BUTTON_DISABLED
+                                                                  : static_cast<uint32_t>(PAD_KEY_INVALID));
+        } else if (SDL_GetKeyboardFocus() != nullptr && g_rebind.kind != RebindKind::Controller) {
+            int count = 0;
+            const bool* keys = SDL_GetKeyboardState(&count);
+            for (int i = 1; i < std::min(count, static_cast<int>(SDL_SCANCODE_COUNT)) && g_rebind.active; ++i) {
+                if (keys[i] && !g_rebind.keys[i] && i != SDL_SCANCODE_F10) CompleteRebind(i);
+                g_rebind.keys[i] = keys[i];
+            }
+            const uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
+            for (int i = 1; i <= 5 && g_rebind.active; ++i)
+                if ((mouse & ~g_rebind.mouse & (1u << (i - 1))) != 0) CompleteRebind(static_cast<uint32_t>(-i - 1));
+            g_rebind.mouse = mouse;
+        } else if (SDL_GetKeyboardFocus() != nullptr && g_rebind.kind == RebindKind::Controller) {
+            auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
+            if (pad != nullptr) {
+                for (int i = 0; i < SDL_GAMEPAD_BUTTON_COUNT && g_rebind.active; ++i) {
+                    const bool pressed = SDL_GetGamepadButton(pad, static_cast<SDL_GamepadButton>(i));
+                    if (pressed && !g_rebind.buttons[i]) CompleteRebind(i);
+                    g_rebind.buttons[i] = pressed;
+                }
+                for (int i = 0; i < SDL_GAMEPAD_AXIS_COUNT && g_rebind.active; ++i) {
+                    const int value = SDL_GetGamepadAxis(pad, static_cast<SDL_GamepadAxis>(i));
+                    if (std::abs(value) < 8000) g_rebind.axesReady[i] = true;
+                    if (g_rebind.axesReady[i] && std::abs(value) >= 16384)
+                        CompleteRebind(PADEncodeAxisButton(i, value < 0));
+                }
+            }
+        }
+    }
+    if (!g_rebind.active) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void DrawKeyBinding(const char* label, int scancode, RebindKind kind, uint16_t target) {
+    const std::string caption = std::string(KeyBindingName(scancode)) + "##binding";
+    if (ImGui::Button(caption.c_str(), ImVec2(220.0f, 0.0f))) BeginRebind(kind, target, label);
+    ImGui::SameLine();
+    ImGui::TextUnformatted(label);
+
+}
+
+bool DrawKeyboardSettings(uint32_t port) {
+    uint32_t count = 0;
+    auto* buttons = PADGetKeyButtonBindings(port, &count);
+    bool enabled = buttons != nullptr;
+    bool usePreset = false;
+    if (ImGui::Checkbox("Keyboard and mouse", &enabled)) {
+        PADSetKeyboardActive(port, enabled);
+        PADSerializeMappings();
+        buttons = PADGetKeyButtonBindings(port, &count);
+        usePreset = enabled && std::all_of(buttons, buttons + count, [](const auto& binding) {
+            return binding.scancode == PAD_KEY_INVALID;
+        });
+    }
+    if (!enabled) return false;
+    ImGui::TextDisabled("Replaces the gamepad on this port. F10 opens settings.");
+    if (ImGui::Button("Use WASD + mouse preset") || usePreset) {
+        const std::array<int, PAD_BUTTON_COUNT> keys = {
+            PAD_KEY_MOUSE_LEFT, SDL_SCANCODE_SPACE, SDL_SCANCODE_E, SDL_SCANCODE_Q,
+            SDL_SCANCODE_RETURN, PAD_KEY_MOUSE_MIDDLE, SDL_SCANCODE_LSHIFT, PAD_KEY_MOUSE_RIGHT,
+            SDL_SCANCODE_UP, SDL_SCANCODE_DOWN, SDL_SCANCODE_LEFT, SDL_SCANCODE_RIGHT,
+        };
+        for (size_t i = 0; i < keys.size(); ++i)
+            PADSetKeyButtonBinding(port, {keys[i], kControllerButtons[i].padButton});
+        const std::array<int, PAD_AXIS_COUNT> axes = {
+            SDL_SCANCODE_D, SDL_SCANCODE_A, SDL_SCANCODE_W, SDL_SCANCODE_S,
+            SDL_SCANCODE_L, SDL_SCANCODE_J, SDL_SCANCODE_I, SDL_SCANCODE_K,
+            SDL_SCANCODE_LSHIFT, PAD_KEY_MOUSE_RIGHT,
+        };
+        uint32_t axisCount = 0;
+        auto* mappings = PADGetKeyAxisBindings(port, &axisCount);
+        for (uint32_t i = 0; i < axisCount; ++i)
+            PADSetKeyAxisBinding(port, {axes[i], mappings[i].padAxis, 1});
+        PADSerializeMappings();
+    }
+    ImGui::SeparatorText("Button mapping");
+    for (uint32_t i = 0; i < count; ++i) {
+        int key = buttons[i].scancode;
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::SetNextItemWidth(220.0f);
+        DrawKeyBinding(PADGetButtonName(buttons[i].padButton), key, RebindKind::KeyboardButton, buttons[i].padButton);
+        ImGui::PopID();
+    }
+    ImGui::SeparatorText("Stick and trigger mapping");
+    uint32_t axisCount = 0;
+    auto* axes = PADGetKeyAxisBindings(port, &axisCount);
+    for (uint32_t i = 0; i < axisCount; ++i) {
+        int key = axes[i].scancode;
+        ImGui::PushID(static_cast<int>(count + i));
+        const char* direction = PADGetAxisDirectionLabel(axes[i].padAxis);
+        const std::string label = std::string(PADGetAxisName(axes[i].padAxis)) + " " +
+                                  (direction != nullptr ? direction : "");
+        ImGui::SetNextItemWidth(220.0f);
+        DrawKeyBinding(label.c_str(), key, RebindKind::KeyboardAxis, axes[i].padAxis);
+        ImGui::PopID();
+    }
+    return true;
+}
+
 // Controller settings menu: port selection, controller assignment and button mapping.
 int ExpressionResizeCallback(ImGuiInputTextCallbackData* data) {
     if (data->EventFlag == ImGuiInputTextFlags_CallbackResize) {
@@ -501,6 +728,10 @@ void DrawControllerSettings() {
 
     ImGui::Separator();
     const uint32_t selectedGamePort = static_cast<uint32_t>(g_controllerPort);
+    if (DrawKeyboardSettings(selectedGamePort)) {
+        return;
+    }
+    ImGui::Separator();
     const char* currentName = PADGetName(selectedGamePort);
     ImGui::Text("Assigned: %s", currentName != nullptr ? currentName : "None");
     if (ImGui::MenuItem("Unassign controller")) {
@@ -542,10 +773,10 @@ void DrawControllerSettings() {
         PADGetAltButtonMappings(static_cast<uint32_t>(g_controllerPort), &altMappingCount);
 
     const auto writeBinding = [](size_t index, uint32_t primaryNative, uint32_t altNative) {
-        std::string value = NativeButtonForValue(primaryNative).configName;
+        std::string value = NativeBindingConfig(primaryNative);
         if (altNative != PAD_NATIVE_BUTTON_INVALID) {
             value += ',';
-            value += NativeButtonForValue(altNative).configName;
+            value += NativeBindingConfig(altNative);
         }
         RuntimeConfigFile::SetControllerButton(index, value);
     };
@@ -603,6 +834,11 @@ void DrawControllerSettings() {
     }
 
     ImGui::SeparatorText("Button mapping");
+    ImGui::TextDisabled("LT / L2 = left trigger. RT / R2 = right trigger.");
+    ImGui::TextDisabled("LB / L1 = left shoulder. RB / R1 = right shoulder.");
+    ImGui::TextDisabled("Click a binding, then press an input. No input for 10 seconds clears it.");
+    const float bindingWidth = ImGui::CalcTextSize("Right shoulder (RB / R1)").x +
+                               ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f;
     for (size_t i = 0; i < kControllerButtons.size(); ++i) {
         auto mappingIt = std::find_if(mappings, mappings + mappingCount, [&](const PADButtonMapping& mapping) {
             return mapping.padButton == kControllerButtons[i].padButton;
@@ -622,30 +858,40 @@ void DrawControllerSettings() {
 
         const NativeButtonItem& current = NativeButtonForValue(mappingIt->nativeButton);
         ImGui::PushID(static_cast<int>(i));
-        ImGui::SetNextItemWidth(190.0f);
-        if (ImGui::BeginCombo("##primary", current.label)) {
-            for (const auto& candidate : kNativeButtons) {
-                const bool selected = candidate.nativeButton == mappingIt->nativeButton;
-                if (ImGui::Selectable(candidate.label, selected)) {
-                    const uint32_t port = static_cast<uint32_t>(g_controllerPort);
-                    PADSetButtonMapping(port, PADButtonMapping{candidate.nativeButton, kControllerButtons[i].padButton});
-                    writeBinding(i, candidate.nativeButton,
-                                 altIt != nullptr ? altIt->nativeButton : PAD_NATIVE_BUTTON_INVALID);
-                    PADSerializeMappings();
-                    mappings = PADGetButtonMappings(port, &mappingCount);
-                }
-                if (selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
+        const auto drawThreshold = [&](PADButtonMapping* mapping, bool secondary) {
+            if (!PADIsAxisButton(mapping->nativeButton)) return;
+            int threshold = static_cast<int>(PADAxisButtonThreshold(mapping->nativeButton));
+            ImGui::SetNextItemWidth(bindingWidth);
+            if (ImGui::SliderInt(secondary ? "##altThreshold" : "##primaryThreshold", &threshold,
+                                 1, 100, "Threshold: %d%%", ImGuiSliderFlags_AlwaysClamp)) {
+                const PADButtonMapping updated = {
+                    PADAxisButtonIdentity(mapping->nativeButton) | (static_cast<uint32_t>(threshold) << 8),
+                    mapping->padButton,
+                };
+                if (secondary) PADSetAltButtonMapping(selectedGamePort, updated);
+                else PADSetButtonMapping(selectedGamePort, updated);
             }
-            ImGui::EndCombo();
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                writeBinding(i, mappingIt->nativeButton,
+                             altIt != nullptr ? altIt->nativeButton : PAD_NATIVE_BUTTON_INVALID);
+                PADSerializeMappings();
+            }
+        };
+        ImGui::BeginGroup();
+        ImGui::SetNextItemWidth(bindingWidth);
+        const std::string primaryCaption = std::string(current.label) + "##primary";
+        if (ImGui::Button(primaryCaption.c_str(), ImVec2(bindingWidth, 0.0f))) {
+            BeginRebind(RebindKind::Controller, kControllerButtons[i].padButton, kControllerButtons[i].label);
         }
+        drawThreshold(mappingIt, false);
+        ImGui::EndGroup();
         if (altIt != nullptr) {
             const bool altBound = altIt->nativeButton != PAD_NATIVE_BUTTON_INVALID;
             if (!altBound && !altRowExpanded[i]) {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("+")) {
                     altRowExpanded[i] = true;
+                    BeginRebind(RebindKind::Controller, kControllerButtons[i].padButton, kControllerButtons[i].label, true);
                 }
                 if (ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Add a second binding; pressing either one works");
@@ -654,27 +900,15 @@ void DrawControllerSettings() {
                 ImGui::SameLine();
                 ImGui::TextUnformatted("or");
                 ImGui::SameLine();
+                ImGui::BeginGroup();
                 const char* altLabel = altBound ? NativeButtonForValue(altIt->nativeButton).label : "None";
-                ImGui::SetNextItemWidth(190.0f);
-                if (ImGui::BeginCombo("##alt", altLabel)) {
-                    for (const auto& candidate : kNativeButtons) {
-                        const bool isNone = candidate.nativeButton == PAD_NATIVE_BUTTON_INVALID;
-                        const bool selected = candidate.nativeButton == altIt->nativeButton;
-                        if (ImGui::Selectable(isNone ? "None" : candidate.label, selected)) {
-                            const uint32_t port = static_cast<uint32_t>(g_controllerPort);
-                            PADSetAltButtonMapping(
-                                port, PADButtonMapping{candidate.nativeButton, kControllerButtons[i].padButton});
-                            writeBinding(i, mappingIt->nativeButton, candidate.nativeButton);
-                            if (isNone) {
-                                altRowExpanded[i] = false;
-                            }
-                        }
-                        if (selected) {
-                            ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    ImGui::EndCombo();
+                ImGui::SetNextItemWidth(bindingWidth);
+                const std::string altCaption = std::string(altLabel) + "##alt";
+                if (ImGui::Button(altCaption.c_str(), ImVec2(bindingWidth, 0.0f))) {
+                    BeginRebind(RebindKind::Controller, kControllerButtons[i].padButton, kControllerButtons[i].label, true);
                 }
+                drawThreshold(altIt, true);
+                ImGui::EndGroup();
             }
         }
         ImGui::SameLine();
@@ -968,6 +1202,9 @@ void DrawTopBar() {
 
     if (ImGui::BeginMenu("Controller settings")) {
         DrawControllerSettings();
+        // Nest capture under this menu so opening/closing the modal preserves
+        // the settings popup and its current port and scroll position.
+        DrawRebindPrompt();
         ImGui::EndMenu();
     }
 
@@ -1074,7 +1311,10 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             continue;
         }
         controller_mapping_wizard::HandleSdlEvent(ev->sdl);
-        if (IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
+        if (g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_ESCAPE)) {
+            g_rebind.active = false;
+        }
+        if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
             SetTopBarVisible(!g_topBarVisible);
         }
         if (IsMouseActivity(ev->sdl)) {
@@ -1102,7 +1342,7 @@ void Draw() noexcept {
     DrawTopBar();
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game.
-    const bool inputBlocked = controller_mapping_wizard::IsActive();
+    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_topBarVisible || g_rebind.active;
     PADBlockInput(inputBlocked);
     InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();

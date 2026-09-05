@@ -171,6 +171,22 @@ typedef struct PADButtonMapping {
   PADButton padButton;
 } PADButtonMapping;
 
+// Explicitly disabled, unlike INVALID which permits default L/R trigger input.
+#define PAD_NATIVE_BUTTON_DISABLED 0xfffffffeu
+
+// Axis-to-button bindings share the persisted nativeButton field without
+// changing the binary layout of existing controller mapping files.
+constexpr u32 PADEncodeAxisButton(u32 axis, bool negative, u32 threshold = 50) {
+  return 0x10000u | axis | (negative ? 0x80u : 0u) | (threshold << 8);
+}
+constexpr bool PADIsAxisButton(u32 binding) { return (binding & 0xffff0000u) == 0x10000u; }
+constexpr u32 PADAxisButtonThreshold(u32 binding) { return (binding >> 8) & 0xffu; }
+constexpr u32 PADAxisButtonAxis(u32 binding) { return binding & 0x7fu; }
+constexpr bool PADAxisButtonNegative(u32 binding) { return (binding & 0x80u) != 0; }
+constexpr u32 PADAxisButtonIdentity(u32 binding) {
+  return PADIsAxisButton(binding) ? (binding & ~0xff00u) : binding;
+}
+
 typedef struct PADAxisMapping {
   PADSignedNativeAxis nativeAxis;
   s32 nativeButton;

@@ -48,8 +48,19 @@ struct NativeButtonItem {
     uint32_t nativeButton;
 };
 
-inline constexpr std::array<NativeButtonItem, SDL_GAMEPAD_BUTTON_COUNT + 1> kNativeButtons = {{
-    {"unmapped", "Unmapped / analog trigger", PAD_NATIVE_BUTTON_INVALID},
+inline constexpr auto kNativeButtons = std::to_array<NativeButtonItem>({
+    {"disabled", "Unmapped", PAD_NATIVE_BUTTON_DISABLED},
+    {"left_trigger", "Left trigger (LT / L2)", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_LEFT_TRIGGER, false)},
+    {"right_trigger", "Right trigger (RT / R2)", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, false)},
+    {"left_stick_left", "Left stick left", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_LEFTX, true)},
+    {"left_stick_right", "Left stick right", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_LEFTX, false)},
+    {"left_stick_up", "Left stick up", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_LEFTY, true)},
+    {"left_stick_down", "Left stick down", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_LEFTY, false)},
+    {"right_stick_left", "Right stick left", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_RIGHTX, true)},
+    {"right_stick_right", "Right stick right", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_RIGHTX, false)},
+    {"right_stick_up", "Right stick up", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_RIGHTY, true)},
+    {"right_stick_down", "Right stick down", PADEncodeAxisButton(SDL_GAMEPAD_AXIS_RIGHTY, false)},
+    {"unmapped", "Default", PAD_NATIVE_BUTTON_INVALID},
     {"south", "South (A / Cross)", SDL_GAMEPAD_BUTTON_SOUTH},
     {"east", "East (B / Circle)", SDL_GAMEPAD_BUTTON_EAST},
     {"west", "West (X / Square)", SDL_GAMEPAD_BUTTON_WEST},
@@ -76,7 +87,7 @@ inline constexpr std::array<NativeButtonItem, SDL_GAMEPAD_BUTTON_COUNT + 1> kNat
     {"misc4", "Misc 4 / GC R click", SDL_GAMEPAD_BUTTON_MISC4},
     {"misc5", "Misc 5", SDL_GAMEPAD_BUTTON_MISC5},
     {"misc6", "Misc 6", SDL_GAMEPAD_BUTTON_MISC6},
-}};
+});
 
 inline std::string TrimToken(std::string_view token) {
     const size_t begin = token.find_first_not_of(" \t");
@@ -88,7 +99,7 @@ inline std::string TrimToken(std::string_view token) {
 }
 
 inline const NativeButtonItem* FindNativeButton(std::string_view configName) {
-    const std::string name = TrimToken(configName);
+    const std::string name = TrimToken(configName.substr(0, configName.find('@')));
     const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(),
                                  [&](const NativeButtonItem& item) { return name == item.configName; });
     return it == kNativeButtons.end() ? nullptr : &*it;
@@ -97,8 +108,8 @@ inline const NativeButtonItem* FindNativeButton(std::string_view configName) {
 // Falls back to the "unmapped" entry so callers always have a label to draw.
 inline const NativeButtonItem& NativeButtonForValue(uint32_t nativeButton) {
     const auto it = std::find_if(kNativeButtons.begin(), kNativeButtons.end(),
-                                 [&](const NativeButtonItem& item) { return nativeButton == item.nativeButton; });
-    return it == kNativeButtons.end() ? kNativeButtons.front() : *it;
+                                 [&](const NativeButtonItem& item) { return PADAxisButtonIdentity(nativeButton) == PADAxisButtonIdentity(item.nativeButton); });
+    return it == kNativeButtons.end() ? *FindNativeButton("unmapped") : *it;
 }
 
 inline const GameCubeButtonItem* FindGameCubeButton(std::string_view configKey) {
