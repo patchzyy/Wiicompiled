@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -378,7 +378,7 @@ public sealed partial class CxxLinearCodeGenerator
                             instructionContinuationLabels.TryGetValue(trace.Address, out var continuationLabel))
                         {
                             RecordEmittedLocalLabel(continuationLabel);
-                            body.AppendLine($"{continuationLabel}:");
+                            body.AppendLine($"{continuationLabel}: ;");
                         }
                         var localFallthroughLr = TryGetLocalFallthroughLr(block.Instructions, i, nonReturningCallTargets, lrContinuationCallTargets);
                         // State-free bodies are cloned after register caching and lose their
