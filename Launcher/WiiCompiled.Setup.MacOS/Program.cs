@@ -24,7 +24,21 @@ internal static class MacSetup
     }
     internal static string Hash(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }
     static string StatePath(string install) => Path.Combine(install, "install-state.json");
-    static State? ReadState(string install) => File.Exists(StatePath(install)) ? JsonSerializer.Deserialize<State>(File.ReadAllText(StatePath(install)), Json) : null;
+    static State? ReadState(string install)
+{
+    if (!File.Exists(StatePath(install))) return null;
+
+    try
+    {
+        return JsonSerializer.Deserialize<State>(
+            File.ReadAllText(StatePath(install)),
+            Json);
+    }
+    catch (JsonException)
+    {
+        return null;
+    }
+}
 
     static void WriteJournal(string path, RuntimeConfigSnapshot snapshot)
     {
@@ -213,7 +227,7 @@ internal static class MacSetup
         // The installed helper owns its source and tools, so repair and launch work without the original download.
         await RunChecked("/usr/bin/ditto", [Resources, Path.Combine(staging, "Setup")]);
         var launcherScript = Path.Combine(staging, "WiiCompiled-Setup.run");
-        File.WriteAllText(launcherScript, "#!/bin/bash\\nexec \"$(cd \"$(dirname \"$0\")\" && pwd)/Setup/WiiCompiled.Setup.MacOS\" \"$@\"\\n");
+        File.WriteAllText(launcherScript, "#!/bin/bash\nexec \"$(cd \"$(dirname \"$0\")\" && pwd)/Setup/WiiCompiled.Setup.MacOS\" \"$@\"\n");
         if (!OperatingSystem.IsWindows())
         {
             File.SetUnixFileMode(launcherScript,
