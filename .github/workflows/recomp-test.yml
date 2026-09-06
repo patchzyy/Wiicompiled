@@ -1,0 +1,41 @@
+name: Synthetic recompilation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows runtime (synthetic DOL)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      # Cache downloads only. Preparation still validates pins, and every run
+      # compiles current Aurora, runtime, and generated sources from scratch.
+      - uses: actions/cache@v5
+        with:
+          path: Launcher/artifacts/downloads
+          key: windows-recomp-downloads-${{ hashFiles('Launcher/Prepare-PortableTools.ps1', 'Launcher/Prepare-Dependencies.ps1') }}
+
+      - name: Prepare the shipped Windows toolchain
+        shell: pwsh
+        run: ./Launcher/Prepare-PortableTools.ps1
+
+      - name: Prepare pinned native dependencies
+        shell: pwsh
+        run: ./Launcher/Prepare-Dependencies.ps1
+
+      - name: Translate, compile the full runtime, and link
+        shell: pwsh
+        run: ./Launcher/Test-Recompilation.ps1 -Parallel 3

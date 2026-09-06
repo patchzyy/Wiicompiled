@@ -7,7 +7,7 @@
     <AssemblyName>WiiCompiled.Setup</AssemblyName>
     <RootNamespace>WiiCompiled.Setup.Windows</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.28</Version>
+    <Version>0.2.29</Version>
     <Authors>patchzy</Authors>
     <Product>WiiCompiled</Product>
     <Description>Command-line installer and launcher for WiiCompiled</Description>

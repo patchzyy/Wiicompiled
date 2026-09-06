@@ -201,10 +201,10 @@ Ninja $ninja_version
   Apache License 2.0
 EOF
 
-echo "prepare-portable-tools.sh: smoke-testing the toolchain..."
-smoke_dir=$(mktemp -d)
-trap 'rm -rf "$smoke_dir"' EXIT
-cat > "$smoke_dir/t.cpp" <<'EOF'
+echo "prepare-portable-tools.sh: testing the toolchain..."
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT
+cat > "$test_dir/t.cpp" <<'EOF'
 #include <vector>
 #include <cstdio>
 int main() {
@@ -214,23 +214,23 @@ int main() {
     return sum == 6 ? 0 : 1;
 }
 EOF
-"$work/bin/clang++" -std=c++20 -fuse-ld=lld "$smoke_dir/t.cpp" -o "$smoke_dir/t"
-"$smoke_dir/t"
+"$work/bin/clang++" -std=c++20 -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t"
+"$test_dir/t"
 
 # Also exercised together through CMake+Ninja, exactly how local-build.sh drives them - a plain
 # clang++ invocation above would not catch a broken CMAKE_ROOT (Modules/Templates) or a Ninja that
 # can't find the compiler.
-cat > "$smoke_dir/CMakeLists.txt" <<'EOF'
+cat > "$test_dir/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.16)
-project(smoke CXX)
-add_executable(smoke t.cpp)
+project(test CXX)
+add_executable(test t.cpp)
 EOF
-"$work/bin/cmake" -S "$smoke_dir" -B "$smoke_dir/build" -G Ninja \
+"$work/bin/cmake" -S "$test_dir" -B "$test_dir/build" -G Ninja \
     -DCMAKE_MAKE_PROGRAM="$work/bin/ninja" -DCMAKE_CXX_COMPILER="$work/bin/clang++" >/dev/null
-"$work/bin/cmake" --build "$smoke_dir/build" >/dev/null
-"$smoke_dir/build/smoke"
+"$work/bin/cmake" --build "$test_dir/build" >/dev/null
+"$test_dir/build/test"
 
-rm -rf "$smoke_dir"
+rm -rf "$test_dir"
 trap - EXIT
 
 mv "$work" "$toolchain_dir"

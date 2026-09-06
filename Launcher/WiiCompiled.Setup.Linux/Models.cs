@@ -3,7 +3,7 @@ namespace WiiCompiled.Setup.Linux;
 internal static class ProductInfo
 {
     public const string Name = "WiiCompiled";
-    public const string Version = "0.2.28";
+    public const string Version = "0.2.29";
 }
 
 /// <summary>One installed product's record inside install-state.json.</summary>

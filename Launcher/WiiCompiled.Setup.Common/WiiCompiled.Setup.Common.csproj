@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <RootNamespace>WiiCompiled.Setup.Common</RootNamespace>
     <AssemblyName>WiiCompiled.Setup.Common</AssemblyName>
-    <Version>0.2.28</Version>
+    <Version>0.2.29</Version>
     <Authors>patchzy</Authors>
     <Product>WiiCompiled</Product>
     <Description>Shared nodtool/Retro-WFC-payload logic used by both the Windows and Linux installers</Description>
