@@ -9,6 +9,7 @@
 #include "hle/runtime_parse_helpers.h"
 #include "memory.h"
 #include "nand_path.h"
+#include "nand_save_probe.h"
 #include "hle/net/network.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -26,6 +27,7 @@
 #include <deque>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <vector>
 #include <filesystem>
 #include <string>
@@ -56,22 +58,10 @@ constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
 void LogNandError(const char* func, const char* fmt, ...);
 void LogNandWarning(const char* func, const char* fmt, ...);
 
-// The Mario Kart Wii system save (rksys.dat) and its ".nandsafe.tmp" write shadows.
-inline bool IsNandSystemSavePath(const std::filesystem::path& path) {
-    const std::string name = path.filename().string();
-    return name == "rksys.dat" || name.rfind("rksys.dat", 0) == 0;
-}
-
-// True when a system save exists on the host but holds no committed save yet: the game
-// zero-fills rksys.dat during its first-run "format save data" step and only writes the
-// real database (which always begins with the RKSD0006 header) once it actually saves.
-// An all-zero file therefore contains nothing worth loading; read it as absent so the
-// game recreates its save instead of entering the corrupt-save recovery loop.
-bool NandSystemSaveIsUninitialized(const std::filesystem::path& hostPath);
-
-// Read-open helper: logs and returns true when a read of this system save should see "no save".
-bool NandIgnoreUninitializedSaveRead(const char* who, const std::filesystem::path& hostPath,
-                                     int mode);
+// An empty optional means continue opening normally; otherwise return the
+// supplied NAND/IOS error without exposing a failed scan as a missing save.
+std::optional<int32_t> NandCheckSystemSaveRead(const char* who,
+    const std::filesystem::path& hostPath, int mode, bool ios = false);
 
 // ============================================================================
 // File Descriptor Management

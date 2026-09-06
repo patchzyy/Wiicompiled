@@ -411,37 +411,24 @@ bool IsFaceLibResourcePath(const char* path) {
     return std::strcmp(path, "/shared2/menu/FaceLib/RFL_Res.dat") == 0;
 }
 
-bool NandSystemSaveIsUninitialized(const std::filesystem::path& hostPath) {
-    if (!IsNandSystemSavePath(hostPath))
-        return false;
-
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(hostPath, ec) || ec)
-        return false;
-
-    std::ifstream in(hostPath, std::ios::binary);
-    if (!in)
-        return false;
-
-    char block[4096];
-    while (in) {
-        in.read(block, sizeof(block));
-        const std::streamsize got = in.gcount();
-
-        for (std::streamsize i = 0; i < got; ++i)
-            if (block[i] != 0)
-                return false;
+std::optional<int32_t> NandCheckSystemSaveRead(const char* who,
+    const std::filesystem::path& hostPath, int mode, bool ios) {
+    const auto action = RuntimeNandSave::CheckRead(hostPath, mode);
+    if (action == RuntimeNandSave::ReadAction::Proceed) return std::nullopt;
+    if (action == RuntimeNandSave::ReadAction::Missing) {
+        LogNandWarning(who, "treating empty or zero-filled system save '%s' as missing",
+                       HostPathText(hostPath).c_str());
+        return ios ? ISFS_ENOENT : NAND_RESULT_NOEXISTS;
     }
-    return true;
-}
-
-bool NandIgnoreUninitializedSaveRead(const char* who,
-                                     const std::filesystem::path& hostPath, int mode) {
-    if (mode != 1 || !NandSystemSaveIsUninitialized(hostPath))
-        return false;
-    LogNandWarning(who, "ignoring uninitialized system save '%s' (no save committed yet)",
-                   HostPathText(hostPath).c_str());
-    return true;
+    if (action == RuntimeNandSave::ReadAction::RecoveryNeeded) {
+        LogNandError(who, "system save '%s' is missing or blank but its .nandsafe.tmp contains data; "
+                         "back up both files before attempting recovery",
+                     HostPathText(hostPath).c_str());
+    } else {
+        LogNandError(who, "could not inspect system save '%s' or its write shadow; leaving data untouched",
+                     HostPathText(hostPath).c_str());
+    }
+    return ios ? ISFS_EIO : NAND_RESULT_UNKNOWN;
 }
 
 // Create directories recursively

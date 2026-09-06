@@ -93,8 +93,8 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
 
     const std::filesystem::path hostPath = TranslateNandPath(path);
 
-    if (NandIgnoreUninitializedSaveRead("NANDOpen", hostPath, mode))
-        return NAND_RESULT_NOEXISTS;
+    if (const auto result = NandCheckSystemSaveRead("NANDOpen", hostPath, mode))
+        return *result;
 
     // Existing-file write opens go through a shadow copy seeded from the original, so a
     // crash between NANDWrite and NANDClose cannot leave a torn file (the game patches

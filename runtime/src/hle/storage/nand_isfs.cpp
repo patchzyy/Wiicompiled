@@ -392,8 +392,8 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     // It's a NAND file path
     const std::filesystem::path hostPath = TranslateNandPath(path);
 
-    if (NandIgnoreUninitializedSaveRead("IOS_Open", hostPath, mode))
-        return ISFS_ENOENT;
+    if (const auto result = NandCheckSystemSaveRead("IOS_Open", hostPath, mode, true))
+        return *result;
     
     // Seed FaceLib resources before the existence check so every open mode can
     // still find them on a fresh managed NAND.
