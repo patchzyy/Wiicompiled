@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Translator.Core.Analysis.Representation;
 using Translator.Core.Analysis.Ssa;
 using Translator.Core.CodeGen;
@@ -153,4 +153,35 @@ public class EmittedOutputShapeTests
         Assert.Contains("f3.d = MemoryInline::FlatReadFloat32((r4 + 16));", code, StringComparison.Ordinal);
         Assert.Contains("f4.d = MemoryInline::FlatReadFloat64((r4 + 24));", code, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void ContinuationLabelAtBlockEndEmitsValidCxx17Statement()
+    {
+        var function = new IrFunction("continuation_at_block_end", "0x800E7798", new[]
+        {
+            new IrBasicBlock("0x800E7798", new IrInstruction[]
+            {
+                new IrCall(string.Empty, "0x8179B000", System.Array.Empty<IrValue>()),
+                new IrTracePpc(0x800E77A0u, "nop", "0x60000000"),
+                new IrJump("0x800E77A4")
+            }),
+            new IrBasicBlock("0x800E77A4", new IrInstruction[]
+            {
+                new IrReturn(null)
+            })
+        });
+
+        var types = new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>());
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x800E7798,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            types,
+            lrContinuationCallTargets: new HashSet<uint> { 0x8179B000u });
+
+        // In C++17, a label before a closing brace is invalid without an intervening statement.
+        Assert.Contains("loc_800E77A0: ;", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("loc_800E77A0:\n}", code.Replace("\r\n", "\n"), StringComparison.Ordinal);
+    }
 }
+
