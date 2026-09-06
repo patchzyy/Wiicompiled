@@ -1,4 +1,4 @@
-﻿# Public WiiCompiled product graph.
+# Public WiiCompiled product graph.
 #
 # The translator owns the translated build graph. Mario Kart's profile-neutral
 # functions are compiled once into mkw_base_shared; only callers whose direct
@@ -206,6 +206,8 @@ function(mkw_configure_product target)
     if(MKW_PLATFORM_MACOS)
         target_link_libraries(${target} PRIVATE
             "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}")
+        target_link_options(${target} PRIVATE
+            "LINKER:-U,_OBJC_CLASS_$_MTLLogStateDescriptor")
     endif()
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
