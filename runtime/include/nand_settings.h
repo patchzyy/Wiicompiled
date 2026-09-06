@@ -129,6 +129,20 @@ inline std::optional<std::array<uint8_t, 256>> EncodeNew(const std::string& seri
     return bytes; // The unused tail stays raw zero, as in Dolphin.
 }
 
+// Atomically claim our own scratch directory. A collision belongs to another
+// launch (or a previous crashed launch); leave it untouched and try another name.
+inline std::optional<std::filesystem::path> CreateScratchDirectory(
+    const std::filesystem::path& parent, const std::string& token, std::error_code& ec) {
+    for (unsigned attempt = 0; attempt < 128; ++attempt) {
+        const auto candidate = parent / (".setting-init-" + token + "-" + std::to_string(attempt));
+        ec.clear();
+        if (std::filesystem::create_directory(candidate, ec)) return candidate;
+        if (ec && ec != std::errc::file_exists) return std::nullopt;
+    }
+    ec = std::make_error_code(std::errc::file_exists);
+    return std::nullopt;
+}
+
 // Never replace an existing file, including an unreadable or damaged one.
 // Publish a complete file atomically so simultaneous launches use one identity.
 inline bool Ensure(const std::filesystem::path& root, std::string& error,
@@ -161,13 +175,20 @@ inline bool Ensure(const std::filesystem::path& root, std::string& error,
         return false;
     }
     static std::atomic<unsigned> sequence{0};
-    const auto scratch = path.parent_path() / (".setting-init-" + std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(sequence++));
-    if (!std::filesystem::create_directory(scratch, ec)) {
+#ifdef _WIN32
+    const auto processId = GetCurrentProcessId();
+#else
+    const auto processId = getpid();
+#endif
+    const auto scratch = CreateScratchDirectory(path.parent_path(),
+        std::to_string(processId) + "-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+            std::to_string(sequence++), ec);
+    if (!scratch) {
         error = "Cannot create temporary NAND settings directory: " + ec.message();
         return false;
     }
-    const auto temporary = scratch / "setting.txt";
+    const auto temporary = *scratch / "setting.txt";
     bool written = false;
     {
         std::ofstream output(temporary, std::ios::binary);
@@ -184,7 +205,7 @@ inline bool Ensure(const std::filesystem::path& root, std::string& error,
 #endif
     }
     std::filesystem::remove(temporary, ec);
-    std::filesystem::remove(scratch, ec);
+    std::filesystem::remove(*scratch, ec);
     // A competing launcher may have published its settings first. Always read
     // the winner from NAND rather than using our unpersisted candidate serial.
     const auto persisted = Read(root);

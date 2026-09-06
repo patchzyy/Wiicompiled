@@ -43,6 +43,38 @@ int main() {
         Require(!RuntimeNandSettings::Read(root));
         Require(!std::filesystem::exists(root));
         std::filesystem::create_directories(path.parent_path());
+        const auto scratchParent = root / "scratch-collisions";
+        std::filesystem::create_directories(scratchParent / ".setting-init-fixed-0");
+        const auto sentinel = scratchParent / ".setting-init-fixed-0" / "setting.txt";
+        { std::ofstream output(sentinel); output << "another launch owns this"; }
+        const auto occupiedFile = scratchParent / ".setting-init-fixed-1";
+        { std::ofstream output(occupiedFile); output << "leave this file alone"; }
+        std::error_code scratchError;
+        const auto claimed = CreateScratchDirectory(scratchParent, "fixed", scratchError);
+        Require(claimed && *claimed == scratchParent / ".setting-init-fixed-2" && !scratchError,
+                "Retry collisions with both existing directories and files");
+        Require(ReadBytes(sentinel) == "another launch owns this" &&
+                ReadBytes(occupiedFile) == "leave this file alone", "Never modify another launch's scratch data");
+        Require(!CreateScratchDirectory(occupiedFile / "not-a-directory", "fixed", scratchError) && scratchError,
+                "Real filesystem errors must fail rather than retry indefinitely");
+
+        // Force all claimants to use the same token; this deterministically
+        // exercises the collision path even when host clock precision is high.
+        std::array<std::optional<std::filesystem::path>, 16> claims;
+        std::vector<std::thread> claimants;
+        for (size_t i = 0; i < claims.size(); ++i) {
+            claimants.emplace_back([&, i] {
+                std::error_code ec;
+                claims[i] = CreateScratchDirectory(scratchParent, "shared", ec);
+            });
+        }
+        for (auto& claimant : claimants) claimant.join();
+        for (size_t i = 0; i < claims.size(); ++i) {
+            Require(claims[i].has_value(), "Every concurrent claimant must acquire a scratch directory");
+            for (size_t j = 0; j < i; ++j) {
+                Require(claims[i] != claims[j], "Concurrent claimants must own different scratch directories");
+            }
+        }
         const std::string plain = "AREA=USA\r\n\nCODE=LU\r\nSERNO=987654321\r\nGAME=US\r\n";
         std::array<uint8_t, 256> fixture{};
         for (size_t i = 0; i < fixture.size(); ++i) {
