@@ -83,6 +83,20 @@ public sealed class ContractTests : IDisposable
         Assert.Contains("\"schemaVersion\":1", serialized);
     }
     [Fact]
+    public void MalformedRecoveryJournalDoesNotCrashOrDeleteInstall()
+    {
+        PortableRoot.Create(root);
+        Directory.CreateDirectory(Install);
+        File.WriteAllText(Path.Combine(Install, "partial.txt"), "partial product");
+        File.WriteAllText(Install + ".config-backup", "{ malformed json");
+
+        MacSetup.Recover(Install);
+
+        Assert.True(File.Exists(Path.Combine(Install, "partial.txt")));
+        Assert.False(File.Exists(Install + ".config-backup"));
+    }
+
+    [Fact]
     public void InterruptedPublicationRestoresPreviousInstallAndConfiguration()
     {
         PortableRoot.Create(root);

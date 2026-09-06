@@ -53,15 +53,35 @@ public static class NodToolProvider
                 Architecture.X64 => "nodtool-windows-x86_64.exe",
                 Architecture.Arm64 => "nodtool-windows-arm64.exe",
                 Architecture.X86 => "nodtool-windows-x86.exe",
-                var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for Windows {other}"),
+                var other => throw new PlatformNotSupportedException(
+                    $"No prebuilt nodtool release for Windows {other}"),
             };
         }
-        return RuntimeInformation.OSArchitecture switch
+
+        if (OperatingSystem.IsMacOS())
         {
-            Architecture.X64 => "nodtool-linux-x86_64",
-            Architecture.Arm64 => "nodtool-linux-aarch64",
-            Architecture.X86 => "nodtool-linux-i686",
-            var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for Linux {other}"),
-        };
+            return RuntimeInformation.OSArchitecture switch
+            {
+                Architecture.X64 => "nodtool-macos-x86_64",
+                Architecture.Arm64 => "nodtool-macos-arm64",
+                var other => throw new PlatformNotSupportedException(
+                    $"No prebuilt nodtool release for macOS {other}"),
+            };
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            return RuntimeInformation.OSArchitecture switch
+            {
+                Architecture.X64 => "nodtool-linux-x86_64",
+                Architecture.Arm64 => "nodtool-linux-aarch64",
+                Architecture.X86 => "nodtool-linux-i686",
+                var other => throw new PlatformNotSupportedException(
+                    $"No prebuilt nodtool release for Linux {other}"),
+            };
+        }
+
+        throw new PlatformNotSupportedException("Unsupported operating system");
     }
+
 }

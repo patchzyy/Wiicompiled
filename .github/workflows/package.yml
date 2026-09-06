@@ -131,6 +131,7 @@ jobs:
           dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
             -c Release -r osx-arm64 --self-contained true \
             -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
             -o Launcher/artifacts/macos/translator
 
       - name: Download pinned portable CMake

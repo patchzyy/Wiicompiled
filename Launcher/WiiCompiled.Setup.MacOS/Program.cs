@@ -25,6 +25,13 @@ internal static class MacSetup
     internal static string Hash(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)); }
     static string StatePath(string install) => Path.Combine(install, "install-state.json");
     static State? ReadState(string install) => File.Exists(StatePath(install)) ? JsonSerializer.Deserialize<State>(File.ReadAllText(StatePath(install)), Json) : null;
+
+    static void WriteJournal(string path, RuntimeConfigSnapshot snapshot)
+    {
+        var temp = path + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(snapshot, Json));
+        File.Move(temp, path, true);
+    }
     static string Executable(string install, string product) => Path.Combine(install, product + ".app", "Contents", "MacOS", product);
 
     public static async Task<int> RunAsync(string[] args)
@@ -205,7 +212,15 @@ internal static class MacSetup
             throw new IOException("Retro Rewind changed during compilation. Retry after its update finishes.");
         // The installed helper owns its source and tools, so repair and launch work without the original download.
         await RunChecked("/usr/bin/ditto", [Resources, Path.Combine(staging, "Setup")]);
-        File.WriteAllText(Path.Combine(staging, "WiiCompiled-Setup.run"), "#!/bin/bash\nexec \"$(cd \"$(dirname \"$0\")\" && pwd)/Setup/WiiCompiled.Setup.MacOS\" \"$@\"\n");
+        var launcherScript = Path.Combine(staging, "WiiCompiled-Setup.run");
+        File.WriteAllText(launcherScript, "#!/bin/bash\\nexec \"$(cd \"$(dirname \"$0\")\" && pwd)/Setup/WiiCompiled.Setup.MacOS\" \"$@\"\\n");
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(launcherScript,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        }
         var state = new State { SchemaVersion = 1, SetupVersion = Version, InstallDir = install, GamePath = game,
             RetroRewindInstalled = retro is not null, RetroWfcPayloadMode = retro is null ? null : options.Skip ? "skipped" : "downloaded",
             RetroRoot = retro, CompileHash = inputs?.CompileInputsSha256, ToolkitHash = ToolkitHash(), BaseHash = HashTree(Path.Combine(staging, "WiiCompiled.app")),
@@ -216,7 +231,7 @@ internal static class MacSetup
         var config = RuntimeConfiguration.ResolveConfigPath(install);
         var oldConfig = RuntimeConfiguration.Capture(config);
         // Store the config snapshot before moving anything, allowing the next invocation to recover after a killed process.
-        File.WriteAllText(install + ".config-backup", JsonSerializer.Serialize(oldConfig, Json));
+        WriteJournal(install + ".config-backup", oldConfig);
         var backup = install + ".previous";
         try
         {
@@ -235,19 +250,47 @@ internal static class MacSetup
     {
         var journal = install + ".config-backup";
         var backup = install + ".previous";
+
         if (File.Exists(journal))
         {
-            var snapshot = JsonSerializer.Deserialize<RuntimeConfigSnapshot>(File.ReadAllText(journal), Json)!;
-            RuntimeConfiguration.Restore(RuntimeConfiguration.ResolveConfigPath(install), snapshot);
+            RuntimeConfigSnapshot? snapshot;
+
+            try
+            {
+                snapshot = JsonSerializer.Deserialize<RuntimeConfigSnapshot>(
+                    File.ReadAllText(journal), Json);
+            }
+            catch (JsonException)
+            {
+                snapshot = null;
+            }
+
+            if (snapshot is not null)
+            {
+                RuntimeConfiguration.Restore(
+                    RuntimeConfiguration.ResolveConfigPath(install), snapshot);
+            }
+
             if (Directory.Exists(backup))
             {
-                if (Directory.Exists(install)) Directory.Delete(install, true);
+                if (Directory.Exists(install))
+                    Directory.Delete(install, true);
+
                 Directory.Move(backup, install);
             }
-            else if (Directory.Exists(install) && !Directory.Exists(install + ".staging")) Directory.Delete(install, true);
+            else if (snapshot is not null &&
+                     Directory.Exists(install) &&
+                     !Directory.Exists(install + ".staging"))
+            {
+                Directory.Delete(install, true);
+            }
+
             File.Delete(journal);
         }
-        else if (Directory.Exists(backup)) Directory.Delete(backup, true);
+        else if (Directory.Exists(backup))
+        {
+            Directory.Delete(backup, true);
+        }
     }
 
     static async Task RunChecked(string executable, IEnumerable<string> arguments)
