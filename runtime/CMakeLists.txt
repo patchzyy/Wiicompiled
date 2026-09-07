@@ -282,6 +282,11 @@ target_include_directories(mkw_nand_save_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR
 target_compile_features(mkw_nand_save_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_nand_save_tests COMMAND mkw_nand_save_tests)
 
+add_executable(mkw_nand_move_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_move_tests.cpp")
+target_include_directories(mkw_nand_move_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(mkw_nand_move_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_nand_move_tests COMMAND mkw_nand_move_tests)
+
 add_executable(mkw_nand_settings_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_settings_tests.cpp")
 find_package(Threads REQUIRED)
 target_link_libraries(mkw_nand_settings_tests PRIVATE Threads::Threads)

@@ -3,6 +3,7 @@
 // Shared state and helpers live in nand_internal.h.
 
 #include "nand_internal.h"
+#include "nand_move.h"
 
 // ============================================================================
 // Local helpers
@@ -378,7 +379,7 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
     }
 
     std::error_code ec;
-    std::filesystem::rename(srcHost, dstHost, ec);
+    RuntimeNandMove::Move(srcHost, dstHost, ec);
     if (!ec) {
         return NAND_RESULT_OK;
     }
