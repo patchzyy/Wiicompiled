@@ -384,6 +384,10 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         return NAND_RESULT_OK;
     }
 
+    if (ec == std::errc::file_exists) {
+        return NAND_RESULT_EXISTS;
+    }
+
     LogNandError("NANDMove", "FAILED error=%d message='%s'", ec.value(), ec.message().c_str());
     return NAND_RESULT_UNKNOWN;
 }
