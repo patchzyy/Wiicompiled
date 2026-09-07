@@ -47,8 +47,8 @@ jobs:
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
 
-  nand:
-    name: NAND regression tests (${{ matrix.os }})
+  cpp:
+    name: C++ runtime tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -59,17 +59,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Compile and run NAND tests
-        shell: bash
-        run: |
-          flags=(-std=c++17 -Wall -Wextra -Werror)
-          if [[ "$RUNNER_OS" != Windows ]]; then flags+=(-pthread); fi
-          clang++ "${flags[@]}" -Iruntime/src/hle/storage \
-            runtime/tests/nand_move_tests.cpp runtime/src/hle/storage/nand_file_ops.cpp \
-            -o "$RUNNER_TEMP/nand_move_tests.exe"
-          "$RUNNER_TEMP/nand_move_tests.exe"
-          for test in nand_save nand_settings; do
-            clang++ "${flags[@]}" -Iruntime/include "runtime/tests/${test}_tests.cpp" \
-              -o "$RUNNER_TEMP/${test}_tests.exe"
-            "$RUNNER_TEMP/${test}_tests.exe"
-          done
+      - name: Configure
+        run: cmake -S runtime/tests -B build/tests -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/tests --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build/tests -C Release --output-on-failure --no-tests=error
