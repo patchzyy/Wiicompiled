@@ -9,10 +9,23 @@
 #include <unordered_map>
 
 namespace InputExpr {
+#ifdef MKW_INPUT_EXPR_TEST_CLOCK
+// Only the standalone test target supplies this clock; runtime builds use the
+// steady clock directly, with no mutable override or extra runtime state.
+std::chrono::steady_clock::time_point TestClockNow();
+#endif
 namespace {
 
 using Clock = std::chrono::steady_clock;
 using FSec = std::chrono::duration<double>;
+
+static Clock::time_point Now() {
+#ifdef MKW_INPUT_EXPR_TEST_CLOCK
+    return TestClockNow();
+#else
+    return Clock::now();
+#endif
+}
 
 enum class Kind {
     Literal, Input, Not, Add, Sub, Mul, Div, And, Or, Xor,
@@ -56,7 +69,7 @@ struct Node {
     mutable bool state = false;
     mutable unsigned taps = 0;
     mutable double value = 0.0;
-    mutable Clock::time_point mark = Clock::now();
+    mutable Clock::time_point mark = Now();
     mutable bool marked = false;
 };
 
@@ -400,7 +413,7 @@ double Eval(const Node& node, const InputSource& source) {
         return std::copysign(std::max(0.0, std::abs(v) - dz) / (1.0 - dz), v);
     }
     case Kind::FnTimer: {
-        const auto now = Clock::now();
+        const auto now = Now();
         if (!node.marked) {
             node.mark = now;
             node.marked = true;
@@ -431,7 +444,7 @@ double Eval(const Node& node, const InputSource& source) {
         return node.state ? 1.0 : 0.0;
     }
     case Kind::FnHold: {
-        const auto now = Clock::now();
+        const auto now = Now();
         if (!node.marked) {
             node.mark = now;
             node.marked = true;
@@ -448,7 +461,7 @@ double Eval(const Node& node, const InputSource& source) {
         return node.state ? 1.0 : 0.0;
     }
     case Kind::FnTap: {
-        const auto now = Clock::now();
+        const auto now = Now();
         if (!node.marked) {
             node.mark = now;
             node.marked = true;
@@ -480,7 +493,7 @@ double Eval(const Node& node, const InputSource& source) {
         return desired == node.taps ? 1.0 : 0.0;
     }
     case Kind::FnPulse: {
-        const auto now = Clock::now();
+        const auto now = Now();
         const double input = Arg(node, 0, source);
         if (input < kConditionThreshold) {
             node.released = true;
@@ -502,7 +515,7 @@ double Eval(const Node& node, const InputSource& source) {
         return node.state ? 1.0 : 0.0;
     }
     case Kind::FnSmooth: {
-        const auto now = Clock::now();
+        const auto now = Now();
         if (!node.marked) {
             node.mark = now;
             node.marked = true;

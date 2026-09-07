@@ -36,6 +36,7 @@ target_include_directories(mkw_nand_move_tests PRIVATE "${runtime_root}/src/hle/
 mkw_add_test(mkw_nand_settings_tests nand_settings_tests.cpp)
 mkw_add_test(mkw_sc_serial_tests sc_serial_tests.cpp)
 mkw_add_test(mkw_input_expr_tests test_expr.cpp "${runtime_root}/src/input_expr.cpp")
+target_compile_definitions(mkw_input_expr_tests PRIVATE MKW_INPUT_EXPR_TEST_CLOCK)
 
 if(WIN32)
     mkw_add_test(mkw_windows_host_context_tests host_context_tests.cpp

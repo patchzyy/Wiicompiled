@@ -8,7 +8,14 @@
 #include <cstdio>
 #include <map>
 #include <string>
-#include <thread>
+#ifndef MKW_INPUT_EXPR_TEST_CLOCK
+#error "Build this test through CMake so the deterministic clock is enabled"
+#endif
+
+static std::chrono::steady_clock::time_point g_now{};
+namespace InputExpr {
+std::chrono::steady_clock::time_point TestClockNow() { return g_now; }
+}
 
 static int g_failures = 0;
 static std::map<std::string, double> g_inputs;
@@ -41,7 +48,7 @@ static bool Pressed(const InputExpr::Expression& e) {
     return e.Evaluate(Source()) > InputExpr::kConditionThreshold;
 }
 
-static void Sleep(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
+static void AdvanceTime(int ms) { g_now += std::chrono::milliseconds(ms); }
 
 int main() {
     std::printf("Dolphin expression engine\n");
@@ -82,7 +89,7 @@ int main() {
     auto hold = Compile("hold(`H`, 0.05)");
     g_inputs["H"] = 1.0;
     Check(!Pressed(hold), "hold not satisfied immediately");
-    Sleep(70);
+    AdvanceTime(70);
     Check(Pressed(hold), "hold satisfied after the interval");
     g_inputs["H"] = 0.0;
     Check(!Pressed(hold), "hold clears on release");
@@ -93,7 +100,7 @@ int main() {
     pulse.Evaluate(Source());
     g_inputs["P"] = 1.0;
     Check(Pressed(pulse), "pulse fires on rising edge");
-    Sleep(80);
+    AdvanceTime(80);
     Check(!Pressed(pulse), "pulse expires");
 
     // The timing-window idiom seen in shared Dolphin configs.
@@ -102,9 +109,9 @@ int main() {
     window.Evaluate(Source());
     g_inputs["W"] = 1.0;
     Check(!Pressed(window), "window closed before its start");
-    Sleep(90);
+    AdvanceTime(90);
     Check(Pressed(window), "window open between the two pulses");
-    Sleep(90);
+    AdvanceTime(90);
     Check(!Pressed(window), "window closed after its end");
 
     // timer ramps 0..1 and wraps, so a threshold turns it into a square wave.
@@ -114,7 +121,7 @@ int main() {
     int low = 0;
     for (int i = 0; i < 40; ++i) {
         (Pressed(timer) ? high : low)++;
-        Sleep(5);
+        AdvanceTime(5);
     }
     Check(high > 5 && low > 5, "timer alternates high and low");
 
@@ -130,7 +137,7 @@ int main() {
     high = low = 0;
     for (int i = 0; i < 60; ++i) {
         (Pressed(dolphinLine) ? high : low)++;
-        Sleep(2);
+        AdvanceTime(2);
     }
     Check(high > 5 && low > 5, "LB alternates via timer(0.01)");
 
@@ -192,7 +199,7 @@ int main() {
         auto sm = Compile("smooth(`A`, 0)");
         g_inputs["A"] = 1.0;
         sm.Evaluate(Source());
-        Sleep(5);
+        AdvanceTime(5);
         Check(std::isfinite(sm.Evaluate(Source())), "smooth with a zero rate stays finite");
     }
 
