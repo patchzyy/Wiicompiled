@@ -117,12 +117,13 @@ function Get-MkwProjectPins([string]$ProjectFile) {
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Description,
-    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '') {
+    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '', [bool]$WaitForProcessTree = $true) {
     <#
-    Runs a build tool and turns a non-zero exit code into a described failure. Start-Process -Wait
-    is deliberate: it waits for the whole process tree, since a .NET single-file bundle host may
-    hand off to an extracted child that PowerShell's call operator would not wait for. Start-Process
-    doesn't publish $LASTEXITCODE, so this sets it manually for callers that check it.
+    Runs a build tool and turns a non-zero exit code into a described failure. By default,
+    Start-Process -Wait waits for the whole process tree, since a .NET single-file bundle host may
+    hand off to an extracted child that PowerShell's call operator would not wait for. Callers that
+    need to avoid waiting on unrelated descendants can opt into the call-operator path.
+    Start-Process doesn't publish $LASTEXITCODE, so this sets it manually for callers that check it.
     -StepId emits the machine-readable form the installer's progress bar consumes (BuildStepIds in
     WiiCompiled.Setup/InstallProgress.cs); the human sentence stays on the same log line.
     #>
@@ -132,9 +133,14 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
         if ($_.Contains('"')) { throw "A native build argument contains an unsupported quote: $_" }
         '"' + $_ + '"'
     })
-    $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `
-        -NoNewWindow -Wait -PassThru
-    $exitCode = $process.ExitCode
+    if ($WaitForProcessTree) {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `
+            -NoNewWindow -Wait -PassThru
+        $exitCode = $process.ExitCode
+    } else {
+        & $FilePath @Arguments
+        $exitCode = $LASTEXITCODE
+    }
     $global:LASTEXITCODE = $exitCode
     if ($exitCode -ne 0) { throw "$Description failed with exit code $exitCode." }
 }

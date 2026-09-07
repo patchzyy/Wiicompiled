@@ -136,9 +136,11 @@ try {
         -CxxCompiler (Join-Path $compilerBin 'x86_64-w64-mingw32-clang++.exe') `
         -ResourceCompiler (Join-Path $compilerBin 'x86_64-w64-mingw32-windres.exe') `
         -DependenciesDirectory $dependencies -AdditionalArguments @('-DMKW_BUILD_PRODUCTS=ON')
-    Invoke-Checked $cmake $configure 'Configuring the production Windows runtime'
+    Invoke-Checked $cmake $configure 'Configuring the production Windows runtime' `
+        -WaitForProcessTree $false
     Invoke-Checked $cmake @('--build', $nativeBuild, '--target', 'WiiCompiled', '--parallel', "$Parallel") `
-        'Compiling and linking the synthetic product with the full runtime'
+        'Compiling and linking the synthetic product with the full runtime' `
+        -WaitForProcessTree $false
     Assert-File (Join-Path $nativeBuild 'WiiCompiled.exe') 'Linked synthetic product'
 } finally {
     $env:PATH = $oldPath

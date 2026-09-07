@@ -28,6 +28,19 @@ jobs:
           path: Launcher/artifacts/downloads
           key: windows-recomp-downloads-${{ hashFiles('Launcher/Prepare-PortableTools.ps1', 'Launcher/Prepare-Dependencies.ps1') }}
 
+      # Install sccache.
+      - name: Run sccache-action
+        uses: mozilla/sccache-action@v0.0.11
+
+      # Tell CMake to use sccache and use GitHub's API.
+      - name: Configure sccache environment
+        shell: pwsh
+        run: |
+          "SCCACHE_GHA_ENABLED=true" | Add-Content -Path $env:GITHUB_ENV
+          "ACTIONS_CACHE_SERVICE_V2=on" | Add-Content -Path $env:GITHUB_ENV
+          "CMAKE_C_COMPILER_LAUNCHER=$env:SCCACHE_PATH" | Add-Content -Path $env:GITHUB_ENV
+          "CMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH" | Add-Content -Path $env:GITHUB_ENV
+
       - name: Prepare the shipped Windows toolchain
         shell: pwsh
         run: ./Launcher/Prepare-PortableTools.ps1
@@ -36,6 +49,13 @@ jobs:
         shell: pwsh
         run: ./Launcher/Prepare-Dependencies.ps1
 
+      # Expose cache token context to the build script.
       - name: Translate, compile the full runtime, and link
         shell: pwsh
-        run: ./Launcher/Test-Recompilation.ps1 -Parallel 3
+        run: ./Launcher/Test-Recompilation.ps1 -Parallel 4
+
+      # Print cache results (even if the build fails)
+      - name: Show sccache stats
+        if: always()
+        shell: pwsh
+        run: sccache --show-stats

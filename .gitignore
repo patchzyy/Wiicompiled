@@ -72,3 +72,5 @@ project.lock.json
 *.log
 output.txt
 
+# Operating System
+.DS_Store

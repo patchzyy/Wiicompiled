@@ -30,6 +30,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('translator/Translator.sln', '**/*.csproj', '**/*.props', '**/*.targets', '**/packages.lock.json', 'global.json', 'NuGet.config', 'nuget.config') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
       - name: Restore
         run: dotnet restore translator/Translator.sln
 
