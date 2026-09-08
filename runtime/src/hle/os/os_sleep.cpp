@@ -78,22 +78,38 @@ bool ProcessSleepTimers(CpuContext* cpu)
 {
     using Clock = std::chrono::steady_clock;
 
-    std::vector<SleepTimerEntry> dueTimers;
+    // Pop and process ONE due timer at a time, straight from the shared table. Resuming a
+    // sleeper re-enters the scheduler (OSResumeThread -> SelectThread) and can switch fibers
+    // away from this call. Timers that had already been popped into a private list would then
+    // sit on the suspended fiber's stack with their threads parked and no entry in the table:
+    // exactly the "park-shaped with no pending wake timer" strand the reconciler below heals
+    // 100ms late, followed by a "sleep-timer stale" drop when this fiber finally resumes.
+    // Leaving unprocessed timers in the table keeps them visible to every other pump (idle
+    // loop, other threads' SelectThread) while this one is switched away.
+    bool processedAny = false;
+    constexpr size_t kMaxTimersPerCall = 64;
+    size_t processedCount = 0;
     const auto now = Clock::now();
-    {
-        std::lock_guard<std::mutex> lock(gSleepTimerMutex);
-        auto it = gSleepTimers.begin();
-        while (it != gSleepTimers.end()) {
-            if (it->deadline > now) {
-                ++it;
-                continue;
+    while (processedCount < kMaxTimersPerCall) {
+        SleepTimerEntry timer{0, {}};
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> lock(gSleepTimerMutex);
+            for (auto it = gSleepTimers.begin(); it != gSleepTimers.end(); ++it) {
+                if (it->deadline <= now) {
+                    timer = *it;
+                    gSleepTimers.erase(it);
+                    found = true;
+                    break;
+                }
             }
-            dueTimers.push_back(*it);
-            it = gSleepTimers.erase(it);
         }
-    }
+        if (!found) {
+            break;
+        }
+        ++processedCount;
+        processedAny = true;
 
-    for (const SleepTimerEntry& timer : dueTimers) {
         const uint32_t threadPtr = timer.threadPtr;
         if (threadPtr == 0 ||
             !Memory::Contains(threadPtr + kThreadSuspendOffset, sizeof(uint32_t))) {
@@ -219,7 +235,7 @@ bool ProcessSleepTimers(CpuContext* cpu)
         }
     }
 
-    return !dueTimers.empty();
+    return processedAny;
 }
 } // namespace OsHleInternal
 
