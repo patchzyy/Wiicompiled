@@ -2,7 +2,7 @@
   description = "Wiicompiled: native Mario Kart Wii recompilation";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.zst";
   };
 
   outputs = {
