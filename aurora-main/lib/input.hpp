@@ -17,6 +17,7 @@ extern Module Log;
 struct GameController {
   SDL_Gamepad* m_controller = nullptr;
   bool m_isGameCube = false;
+  bool m_gameCubeUseOrdinaryStop = false;
   Sint32 m_index = -1;
   Sint32 m_playerIndex = -1;
   bool m_hasRumble = false;

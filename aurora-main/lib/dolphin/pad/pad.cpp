@@ -6,10 +6,10 @@
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_joystick.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <sys/stat.h>
-#include <ranges>
 
 namespace {
 constexpr int32_t k_mappingsFileVersion = 3;
@@ -342,7 +342,7 @@ BOOL PADInit() {
   }
   g_initialized = true;
 
-  std::ranges::for_each(g_keyboardBindings, [](auto& state) {
+  std::for_each(g_keyboardBindings.begin(), g_keyboardBindings.end(), [](auto& state) {
     state.m_buttonMapping = g_defaultKeys;
     state.m_axisMapping = g_defaultKeyAxis;
   });
@@ -634,8 +634,8 @@ static void EnsureMappingLoaded(aurora::input::GameController* controller) {
 
 static Sint16 _get_axis_value(const aurora::input::GameController* controller, //  NOLINT(*-reserved-identifier)
                               PADAxis axis) {
-  const auto iter =
-      std::ranges::find_if(controller->m_axisMapping, [axis](const auto& pair) { return pair.padAxis == axis; });
+  const auto iter = std::find_if(controller->m_axisMapping.begin(), controller->m_axisMapping.end(),
+                                 [axis](const auto& pair) { return pair.padAxis == axis; });
   if (iter == controller->m_axisMapping.end()) {
     return 0;
   }
@@ -725,8 +725,8 @@ u32 PADRead(PADStatus* status) {
 
     status[i].err = PAD_ERR_NONE;
     if (g_keyboardBindings[i].m_mappingsSet) {
-      std::ranges::for_each(
-          g_keyboardBindings[i].m_buttonMapping, [&kbState, &i, &status](const PADKeyButtonBinding& mapping) {
+      std::for_each(g_keyboardBindings[i].m_buttonMapping.begin(), g_keyboardBindings[i].m_buttonMapping.end(),
+                    [&kbState, &i, &status](const PADKeyButtonBinding& mapping) {
             if (mapping.scancode > PAD_KEY_INVALID && kbState[mapping.scancode]) {
               status[i].button |= mapping.padButton;
             } else if (is_mouse_scancode(mapping.scancode) && is_mouse_button_pressed(mapping.scancode)) {
@@ -833,8 +833,8 @@ u32 PADRead(PADStatus* status) {
 
       bool leftTriggerSet = false;
       bool rightTriggerSet = false;
-      std::ranges::for_each(controller->m_buttonMapping, [&controller, &i, &status, &leftTriggerSet,
-                                                          &rightTriggerSet](const auto& mapping) {
+      std::for_each(controller->m_buttonMapping.begin(), controller->m_buttonMapping.end(),
+                    [&controller, &i, &status, &leftTriggerSet, &rightTriggerSet](const auto& mapping) {
         if (SDL_GetGamepadButton(controller->m_controller, static_cast<SDL_GamepadButton>(mapping.nativeButton))) {
           status[i].button |= mapping.padButton;
         }
@@ -847,8 +847,8 @@ u32 PADRead(PADStatus* status) {
         }
       });
 
-      std::ranges::for_each(controller->m_altButtonMapping, [&controller, &i, &status, &leftTriggerSet,
-                                                             &rightTriggerSet](const auto& mapping) {
+      std::for_each(controller->m_altButtonMapping.begin(), controller->m_altButtonMapping.end(),
+                    [&controller, &i, &status, &leftTriggerSet, &rightTriggerSet](const auto& mapping) {
         if (mapping.nativeButton == PAD_NATIVE_BUTTON_INVALID) {
           return;
         }
@@ -1165,8 +1165,8 @@ void PADSetButtonMapping(const u32 port, const PADButtonMapping mapping) {
     return;
   }
 
-  const auto iter = std::ranges::find_if(controller->m_buttonMapping,
-                                         [mapping](const auto& pair) { return mapping.padButton == pair.padButton; });
+  const auto iter = std::find_if(controller->m_buttonMapping.begin(), controller->m_buttonMapping.end(),
+                                 [mapping](const auto& pair) { return mapping.padButton == pair.padButton; });
   if (iter == controller->m_buttonMapping.end()) {
     return;
   }
@@ -1199,8 +1199,8 @@ void PADSetAltButtonMapping(const u32 port, const PADButtonMapping mapping) {
     return;
   }
 
-  const auto iter = std::ranges::find_if(controller->m_altButtonMapping,
-                                         [mapping](const auto& pair) { return mapping.padButton == pair.padButton; });
+  const auto iter = std::find_if(controller->m_altButtonMapping.begin(), controller->m_altButtonMapping.end(),
+                                 [mapping](const auto& pair) { return mapping.padButton == pair.padButton; });
   if (iter == controller->m_altButtonMapping.end()) {
     return;
   }
@@ -1226,8 +1226,8 @@ void PADSetAxisMapping(const u32 port, const PADAxisMapping mapping) {
     return;
   }
 
-  const auto iter = std::ranges::find_if(controller->m_axisMapping,
-                                         [mapping](const auto& pair) { return mapping.padAxis == pair.padAxis; });
+  const auto iter = std::find_if(controller->m_axisMapping.begin(), controller->m_axisMapping.end(),
+                                 [mapping](const auto& pair) { return mapping.padAxis == pair.padAxis; });
   if (iter == controller->m_axisMapping.end()) {
     return;
   }
@@ -1396,9 +1396,10 @@ static void load_keyboard_bindings() {
 
     if (mappingsSet) {
       const bool anyBound =
-          std::ranges::any_of(buttonMapping,
-                              [](const PADKeyButtonBinding& b) { return b.scancode != PAD_KEY_INVALID; }) ||
-          std::ranges::any_of(axisMapping, [](const PADKeyAxisBinding& b) { return b.scancode != PAD_KEY_INVALID; });
+          std::any_of(buttonMapping.begin(), buttonMapping.end(),
+                      [](const PADKeyButtonBinding& b) { return b.scancode != PAD_KEY_INVALID; }) ||
+          std::any_of(axisMapping.begin(), axisMapping.end(),
+                      [](const PADKeyAxisBinding& b) { return b.scancode != PAD_KEY_INVALID; });
       if (!anyBound) {
         mappingsSet = false;
       }
@@ -1543,8 +1544,8 @@ static constexpr std::array<std::pair<PADButton, std::string_view>, PAD_AXIS_COU
 
 const char* PADGetButtonName(const PADButton button) {
 
-  if (const auto iter =
-          std::ranges::find_if(skButtonNames, [&button](const auto& pair) { return button == pair.first; });
+  if (const auto iter = std::find_if(skButtonNames.begin(), skButtonNames.end(),
+                                     [&button](const auto& pair) { return button == pair.first; });
       iter != skButtonNames.end()) {
     return iter->second.data();
   }
@@ -1557,7 +1558,8 @@ const char* PADGetNativeButtonName(u32 button) {
 }
 
 const char* PADGetAxisName(const PADAxis axis) {
-  if (const auto it = std::ranges::find_if(skAxisNames, [&axis](const auto& pair) { return axis == pair.first; });
+  if (const auto it = std::find_if(skAxisNames.begin(), skAxisNames.end(),
+                                   [&axis](const auto& pair) { return axis == pair.first; });
       it != skAxisNames.end()) {
     return it->second.data();
   }
@@ -1566,7 +1568,8 @@ const char* PADGetAxisName(const PADAxis axis) {
 }
 
 const char* PADGetAxisDirectionLabel(const PADAxis axis) {
-  if (const auto it = std::ranges::find_if(skAxisDirLabels, [&axis](const auto& pair) { return axis == pair.first; });
+  if (const auto it = std::find_if(skAxisDirLabels.begin(), skAxisDirLabels.end(),
+                                   [&axis](const auto& pair) { return axis == pair.first; });
       it != skAxisDirLabels.end()) {
     return it->second.data();
   }

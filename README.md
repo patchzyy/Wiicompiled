@@ -89,8 +89,8 @@ Known limitations of the Wii Remote path:
 - GPU: GTX 1650 / RX 6400 / Arc A310 or higher
 - CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
-- macOS 14 (Sonoma) or later on Apple Silicon
-- On macOS, Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
+- macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
+- On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
 - A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 

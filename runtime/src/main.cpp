@@ -44,9 +44,14 @@
 #include <signal.h>
 #if defined(__x86_64__)
 // Only the x86 POSIX fault path inspects ucontext_t to recover the page-fault
-// write bit. macOS deprecates ucontext and requires _XOPEN_SOURCE just to
-// include the header, while the arm64 handler does not use it at all.
+// write bit. macOS exposes the signal-handler context through sys/ucontext.h;
+// avoid ucontext.h itself because its deprecated user-context APIs require
+// _XOPEN_SOURCE. The arm64 handler does not inspect a host context at all.
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #endif
 #include <unistd.h>
 #endif
@@ -1128,7 +1133,11 @@ void PosixMemoryFaultHandler(int sig, siginfo_t* info, void* ucontextVoid) {
     // error code x86 pushes on a page fault records whether it was a write.
     if (ucontextVoid != nullptr) {
         auto* uc = static_cast<ucontext_t*>(ucontextVoid);
+#if defined(__APPLE__)
+        isWrite = uc->uc_mcontext != nullptr && (uc->uc_mcontext->__es.__err & 0x2) != 0;
+#else
         isWrite = (uc->uc_mcontext.gregs[REG_ERR] & 0x2) != 0;
+#endif
     }
 #endif
 

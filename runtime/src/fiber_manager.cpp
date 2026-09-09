@@ -256,8 +256,12 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     gf.cpuContext.srr0 = entryPoint;
     
     // The host stack models only translated host calls; the guest stack starts
-    // at stackBase in the CPU context above.
-    constexpr size_t kHostStackSize = 64 * 1024;
+    // at stackBase in the CPU context above. 64 KiB is too small for deep
+    // translated/HLE call chains (notably NW4R's sound worker), and on macOS
+    // it can exhaust the guarded coroutine stack as unrelated host work (such
+    // as a window resize) adds a little more nesting. Keep enough headroom for
+    // those chains while the guest stack remains separately bounded.
+    constexpr size_t kHostStackSize = 1024 * 1024;
     gf.fiber = HostContext::Create(kHostStackSize, FiberProc,
                                    reinterpret_cast<void*>(static_cast<uintptr_t>(guestThreadAddr)));
     

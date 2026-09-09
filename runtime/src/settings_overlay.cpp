@@ -483,11 +483,6 @@ void DrawRumbleSettings() {
                 PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD,
             };
             PADControlAllMotors(stopAll.data());
-#if defined(_WIN32)
-            for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
-                Wup028Adapter::SetRumble(port, false);
-            }
-#endif
         }
     }
     if (ImGui::IsItemHovered()) {

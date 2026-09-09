@@ -16,8 +16,58 @@ function(aurora_find_package_global)
   set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ${_PREV_FIND_PACKAGE_TARGETS_GLOBAL})
 endfunction()
 
+# A macOS build for another architecture must not discover Homebrew packages
+# built for its physical host. CMAKE_CROSSCOMPILING is not sufficient here:
+# Apple Clang can target another architecture through CMAKE_OSX_ARCHITECTURES
+# without CMake considering the configure a cross-build.
+set(_AURORA_EXCLUDE_HOST_HOMEBREW FALSE)
+if (APPLE AND CMAKE_OSX_ARCHITECTURES)
+  list(LENGTH CMAKE_OSX_ARCHITECTURES _AURORA_OSX_ARCH_COUNT)
+  if (_AURORA_OSX_ARCH_COUNT EQUAL 1)
+    list(GET CMAKE_OSX_ARCHITECTURES 0 _AURORA_TARGET_ARCH)
+    string(TOLOWER "${_AURORA_TARGET_ARCH}" _AURORA_TARGET_ARCH)
+    # hw.optional.arm64 identifies Apple Silicon even when CMake itself runs
+    # through Rosetta, where CMAKE_HOST_SYSTEM_PROCESSOR reports x86_64.
+    execute_process(
+      COMMAND /usr/sbin/sysctl -n hw.optional.arm64
+      RESULT_VARIABLE _AURORA_ARM64_PROBE_RESULT
+      OUTPUT_VARIABLE _AURORA_ARM64_PROBE
+      ERROR_QUIET
+      OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if (_AURORA_ARM64_PROBE_RESULT EQUAL 0 AND _AURORA_ARM64_PROBE STREQUAL "1")
+      set(_AURORA_HOST_ARCH arm64)
+    else ()
+      execute_process(
+        COMMAND /usr/bin/uname -m
+        OUTPUT_VARIABLE _AURORA_HOST_ARCH
+        OUTPUT_STRIP_TRAILING_WHITESPACE)
+      string(TOLOWER "${_AURORA_HOST_ARCH}" _AURORA_HOST_ARCH)
+    endif ()
+    if (_AURORA_TARGET_ARCH STREQUAL "x86_64" AND _AURORA_HOST_ARCH MATCHES "^(arm64|aarch64)$")
+      list(APPEND CMAKE_IGNORE_PREFIX_PATH "/opt/homebrew")
+      set(_AURORA_EXCLUDE_HOST_HOMEBREW TRUE)
+    elseif (_AURORA_TARGET_ARCH MATCHES "^(arm64|aarch64)$" AND _AURORA_HOST_ARCH MATCHES "^(x86_64|amd64)$")
+      list(APPEND CMAKE_IGNORE_PREFIX_PATH "/usr/local")
+      set(_AURORA_EXCLUDE_HOST_HOMEBREW TRUE)
+    endif ()
+  endif ()
+endif ()
+
+if (_AURORA_EXCLUDE_HOST_HOMEBREW)
+  list(REMOVE_DUPLICATES CMAKE_IGNORE_PREFIX_PATH)
+  message(STATUS "aurora: cross-architecture macOS build; ignoring host Homebrew prefixes")
+endif ()
+
 if (AURORA_ENABLE_GX)
   include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/AuroraDawnProvider.cmake)
+endif ()
+
+# SDL's pkg-config probe can bypass CMake's prefix exclusion. macOS does not
+# need libusb for the supported SDL input paths, so keep that host-only library
+# out of a cross-architecture configure.
+if (_AURORA_EXCLUDE_HOST_HOMEBREW)
+  set(SDL_HIDAPI_LIBUSB OFF CACHE BOOL "" FORCE)
+  set(SDL_HIDAPI_LIBUSB_SHARED OFF CACHE BOOL "" FORCE)
 endif ()
 
 # Abseil is needed for core libraries. It normally comes via Dawn's vendor build.

@@ -25,7 +25,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/.." && pwd)
 
-llvm_version=23.1.0
+llvm_version=22.1.8
 cmake_version=4.3.3
 ninja_version=1.13.2
 destination="$script_dir/artifacts/portable-tools"
@@ -52,13 +52,13 @@ done
 
 case "$arch" in
     x86_64) llvm_release_arch=X64; target_triple=x86_64-unknown-linux-gnu
-            llvm_release_sha256=18da30f77f475688a18f7704d23f9f155ae007ed9922dbed6850a9419d9fec8c
+            llvm_release_sha256=df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384
             cmake_release_arch=x86_64
             cmake_sha256=927b2368a946c37269c3a66225ab00544e756459cdd0b5d0da438694fb9ff802
             ninja_asset=ninja-linux.zip
             ninja_sha256=5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6 ;;
     aarch64) llvm_release_arch=ARM64; target_triple=aarch64-unknown-linux-gnu
-            llvm_release_sha256=cfb31bfc713ef453248bf5bd026312f838ad6c52c25623e987cb6a340f3050d4
+            llvm_release_sha256=805efad2bb91cb4967fa569e0881d10c0f69c04461cf671cccbae19f547acc34
             cmake_release_arch=aarch64
             cmake_sha256=9ea38356dbd3e32e51029a3e09a0f2f8e117ef4fbcaad7a21ffb36409bbd5cb4
             ninja_asset=ninja-linux-aarch64.zip
@@ -120,9 +120,9 @@ echo "prepare-portable-tools.sh: pruning to the minimal compile+link toolchain..
 
 # clang: the real driver executable plus the clang/clang++ symlinks CMake/local-build.sh invoke.
 # Stripped: debug symbols are dead weight for a bundled compiler nobody will debug.
-cp -a "$src/bin/clang-23" "$work/bin/"
-strip "$work/bin/clang-23"
-ln -s clang-23 "$work/bin/clang"
+cp -a "$src/bin/clang-22" "$work/bin/"
+strip "$work/bin/clang-22"
+ln -s clang-22 "$work/bin/clang"
 ln -s clang "$work/bin/clang++"
 
 # lld: linked via -fuse-ld=lld, which clang resolves by looking for ld.lld next to itself first -
@@ -201,10 +201,10 @@ Ninja $ninja_version
   Apache License 2.0
 EOF
 
-echo "prepare-portable-tools.sh: smoke-testing the toolchain..."
-smoke_dir=$(mktemp -d)
-trap 'rm -rf "$smoke_dir"' EXIT
-cat > "$smoke_dir/t.cpp" <<'EOF'
+echo "prepare-portable-tools.sh: testing the toolchain..."
+test_dir=$(mktemp -d)
+trap 'rm -rf "$test_dir"' EXIT
+cat > "$test_dir/t.cpp" <<'EOF'
 #include <vector>
 #include <cstdio>
 int main() {
@@ -214,23 +214,23 @@ int main() {
     return sum == 6 ? 0 : 1;
 }
 EOF
-"$work/bin/clang++" -std=c++20 -fuse-ld=lld "$smoke_dir/t.cpp" -o "$smoke_dir/t"
-"$smoke_dir/t"
+"$work/bin/clang++" -std=c++20 -fuse-ld=lld "$test_dir/t.cpp" -o "$test_dir/t"
+"$test_dir/t"
 
 # Also exercised together through CMake+Ninja, exactly how local-build.sh drives them - a plain
 # clang++ invocation above would not catch a broken CMAKE_ROOT (Modules/Templates) or a Ninja that
 # can't find the compiler.
-cat > "$smoke_dir/CMakeLists.txt" <<'EOF'
+cat > "$test_dir/CMakeLists.txt" <<'EOF'
 cmake_minimum_required(VERSION 3.16)
-project(smoke CXX)
-add_executable(smoke t.cpp)
+project(test CXX)
+add_executable(test t.cpp)
 EOF
-"$work/bin/cmake" -S "$smoke_dir" -B "$smoke_dir/build" -G Ninja \
+"$work/bin/cmake" -S "$test_dir" -B "$test_dir/build" -G Ninja \
     -DCMAKE_MAKE_PROGRAM="$work/bin/ninja" -DCMAKE_CXX_COMPILER="$work/bin/clang++" >/dev/null
-"$work/bin/cmake" --build "$smoke_dir/build" >/dev/null
-"$smoke_dir/build/smoke"
+"$work/bin/cmake" --build "$test_dir/build" >/dev/null
+"$test_dir/build/test"
 
-rm -rf "$smoke_dir"
+rm -rf "$test_dir"
 trap - EXIT
 
 mv "$work" "$toolchain_dir"

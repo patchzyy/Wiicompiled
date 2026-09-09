@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime_config.h"
+#include "nand_settings.h"
 #include "runtime_log.h"
 #include "system_bridge.h"
 
@@ -163,7 +164,7 @@ inline std::filesystem::path CreateManagedNandRoot() {
     return root;
 }
 
-inline std::filesystem::path DiscoverNandRootPath() {
+inline std::filesystem::path ResolveNandRootPath() {
     const std::string configPath = RuntimeConfigFile::NandRoot();
     if (!configPath.empty()) {
         const auto path = ResolveConfiguredPath(configPath);
@@ -177,6 +178,18 @@ inline std::filesystem::path DiscoverNandRootPath() {
         FailNandRoot("Configured NAND root is not an existing directory", path);
     }
     return CreateManagedNandRoot();
+}
+
+inline std::filesystem::path DiscoverNandRootPath() {
+    static const auto root = [] {
+        const auto resolved = ResolveNandRootPath();
+        std::string error;
+        if (!RuntimeNandSettings::Ensure(resolved, error)) {
+            FailNandRoot(error.c_str(), RuntimeNandSettings::FilePath(resolved));
+        }
+        return resolved;
+    }();
+    return root;
 }
 
 } // namespace RuntimeNandPath

@@ -26,6 +26,8 @@ Code.pul
 /build/
 /build-*/
 /native-build/
+/native-build-macos/
+/local-products/
 /dist/
 /out/
 [Bb]in/
