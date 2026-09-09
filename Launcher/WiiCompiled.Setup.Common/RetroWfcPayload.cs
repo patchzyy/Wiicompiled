@@ -24,7 +24,7 @@ public static class RetroWfcPayload
     private static readonly TimeSpan RetroWfcDownloadTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RetroWfcRetryDelay = TimeSpan.FromSeconds(1);
 
-    public const string CurrentRetroWfcPayloadUri = "http://nas.play.rwfc.net/payload?g=RMCPD00";
+    public const string CurrentRetroWfcPayloadUri = "https://rwfc.net/api/wfc/payload?g=RMCPD00";
     private static readonly string RetroWfcOfflinePayloadFile =
         Path.Combine("binary", "payload.RMCPD00.bin");
 
