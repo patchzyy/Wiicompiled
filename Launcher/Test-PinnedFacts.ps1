@@ -1,6 +1,6 @@
 # Fails the release build when a fact duplicated across the repo stops agreeing with the copy
 # that owns it (recomp.yml). Scripts read pinned facts through Get-MkwProjectPins, but three
-# consumers can't read YAML (the C++ runtime header, the C# constants, hand-written lists on
+# consumers can't read YAML (the C++ runtime header, the C# constants, shell scripts, and hand-written lists on
 # both sides of the C#/PowerShell boundary), so those are checked here instead.
 [CmdletBinding()]
 param([string]$RepositoryRoot)
@@ -57,6 +57,12 @@ $hostUri = Get-CapturedValue $retroWfcPayload 'CurrentRetroWfcPayloadUri\s*=\s*"
     'The host Retro-WFC endpoint constant'
 if ($hostUri -cne $pins.RetroWfcPayloadUri) {
     Add-Failure "InputValidation.CurrentRetroWfcPayloadUri is '$hostUri' but recomp.yml pins '$($pins.RetroWfcPayloadUri)'."
+}
+$macosSetup = Read-SourceFile (Join-Path $launcher 'macos\setup.command') 'macOS setup.command'
+$macosUri = Get-CapturedValue $macosSetup "'([^']*/api/wfc/payload\?g=RMCPD00)'" `
+    'The macOS Retro-WFC endpoint'
+if ($macosUri -cne $pins.RetroWfcPayloadUri) {
+    Add-Failure "macOS setup.command downloads '$macosUri' but recomp.yml pins '$($pins.RetroWfcPayloadUri)'."
 }
 
 # --- The game identity: the manifest carries it, but the host also compiles a fallback for a

@@ -58,7 +58,7 @@ profiles:
     module_link_base: 0x803992E0
     output: build/mods/retro_rewind_full_cpp
     enable_retro_wfc: true
-    retro_wfc_payload: http://nas.play.rwfc.net/payload?g=RMCPD00
+    retro_wfc_payload: https://rwfc.net/api/wfc/payload?g=RMCPD00
     retro_wfc_legacy_bootstrap_hook: 0x800ED6E8
     riivolution:
       xml: xml/RetroRewind6.xml

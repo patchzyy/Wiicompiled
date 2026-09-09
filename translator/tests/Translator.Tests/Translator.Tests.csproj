@@ -26,6 +26,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Translator.Core\Translator.Core.csproj" />
     <ProjectReference Include="..\..\src\Translator.Cli\Translator.Cli.csproj" />
+    <ProjectReference Include="..\..\..\Launcher\WiiCompiled.Setup.Common\WiiCompiled.Setup.Common.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="TestAssets\RetroWfcPayload\binary\payload.RMCPD00.bin" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!--

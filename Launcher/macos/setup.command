@@ -90,7 +90,7 @@ if [[ -n "$retro_dir" ]]; then
         trap 'rm -rf "$payload_stage"' EXIT
         /usr/bin/curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
             --retry 1 --output "$temporary_payload" \
-            'http://nas.play.rwfc.net/payload?g=RMCPD00' || fail 'could not download the Retro-WFC payload needed for online play'
+            'https://rwfc.net/api/wfc/payload?g=RMCPD00' || fail 'could not download the Retro-WFC payload needed for online play'
         "$translator" validate-retro-wfc-payload --directory "$payload_stage" || \
             fail 'downloaded Retro-WFC payload failed signature validation'
         mkdir -p "$retro_wfc_dir/binary"
