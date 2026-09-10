@@ -1367,7 +1367,7 @@ void Draw() noexcept {
     DrawTopBar();
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game.
-    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_topBarVisible || g_rebind.active;
+    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_rebind.active;
     PADBlockInput(inputBlocked);
     InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();
