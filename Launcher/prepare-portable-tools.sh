@@ -52,13 +52,13 @@ done
 
 case "$arch" in
     x86_64) llvm_release_arch=X64; target_triple=x86_64-unknown-linux-gnu
-            llvm_release_sha256=df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384
+            llvm_release_sha256=fccecb1906e7ddf5ec040aec5b646b650e2daaafa4423b41341c4717db5bdec0
             cmake_release_arch=x86_64
             cmake_sha256=927b2368a946c37269c3a66225ab00544e756459cdd0b5d0da438694fb9ff802
             ninja_asset=ninja-linux.zip
             ninja_sha256=5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6 ;;
     aarch64) llvm_release_arch=ARM64; target_triple=aarch64-unknown-linux-gnu
-            llvm_release_sha256=805efad2bb91cb4967fa569e0881d10c0f69c04461cf671cccbae19f547acc34
+            llvm_release_sha256=d431eff9f064c86ee7c4c94af570a8f74fcccd1f74c6f0da3af32ce34a1e1b05
             cmake_release_arch=aarch64
             cmake_sha256=9ea38356dbd3e32e51029a3e09a0f2f8e117ef4fbcaad7a21ffb36409bbd5cb4
             ninja_asset=ninja-linux-aarch64.zip
@@ -101,11 +101,14 @@ rm -rf "$work"
 mkdir -p "$work/bin" "$work/lib/$target_triple" "$work/include/$target_triple/c++/v1"
 
 # --- clang/lld/llvm-ar, pruned from the official LLVM release ---
-
-llvm_archive_name="LLVM-$llvm_version-Linux-$llvm_release_arch.tar.xz"
+# built from PR https://github.com/llvm/llvm-project/pull/222821 on official LLVM Github Actions Runner
+# only switch to an official stable LLVM release again once:
+# - this PR has merged https://github.com/llvm/llvm-project/pull/221365 and been backported to LLVM stable branch
+# - this bug has been fixed with a workaround in the Wiicompiled translator https://github.com/patchzyy/Wiicompiled/issues/208 or in LLVM and been backported to LLVM stable branch
+llvm_archive_name="LLVM-PR222821-5ae1c7c43a11b4cdc5ce4dd483c28357bab7dae2-Linux-$llvm_release_arch.tar.xz"
 llvm_archive="$downloads/$llvm_archive_name"
 download_verified "$llvm_archive" \
-    "https://github.com/llvm/llvm-project/releases/download/llvmorg-$llvm_version/$llvm_archive_name" \
+    "https://github.com/theofficialgman/llvm-project/releases/download/llvmorg-22.1.8-patched/$llvm_archive_name" \
     "$llvm_release_sha256"
 
 extract_root="$script_dir/artifacts/.extract-clang-$arch"
