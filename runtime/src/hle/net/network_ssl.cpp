@@ -1,4 +1,20 @@
 #include "network_internal.h"
+#include "runtime_config.h"
+#include "runtime_log.h"
+
+#ifndef _WIN32
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/entropy.h>
+#include <mbedtls/error.h>
+#include <mbedtls/net_sockets.h>
+#include <mbedtls/ssl.h>
+#include <mbedtls/x509_crt.h>
+
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <optional>
+#endif
 
 namespace NetworkHle {
 
@@ -56,6 +72,11 @@ struct SslSession {
     CredHandle cred{};
     CtxtHandle context{};
     SecPkgContext_StreamSizes sizes{};
+#else
+    bool haveSsl = false;
+    mbedtls_ssl_context sslContext{};
+    mbedtls_ssl_config sslConfig{};
+    mbedtls_net_context netContext{};
 #endif
 };
 
@@ -539,20 +560,251 @@ static int32_t SslRead(SslSession& ssl, uint8_t* out, uint32_t size) {
     return copied == 0 ? SSL_ERR_ZERO : static_cast<int32_t>(copied);
 }
 #else
+// Windows gets TLS for free from the OS (Schannel, above) - mbed TLS is this project's own
+// vendored equivalent for everywhere else (runtime/third_party/mbedtls, see runtime/CMakeLists.txt
+// for why mbed TLS specifically). The CA chain and RNG are expensive to set up (parsing ~150 root
+// certificates, seeding entropy) and read-only once built, so they're shared process-wide instead
+// of being redone per SSL session.
+static bool g_mbedtlsCaLoaded = false;
+static mbedtls_x509_crt g_mbedtlsCaChain;
+static mbedtls_entropy_context g_mbedtlsEntropy;
+static mbedtls_ctr_drbg_context g_mbedtlsCtrDrbg;
+
+// Mirrors ax_mix.cpp's FindDspCoefficientRom exactly - same three places a bundled asset can live
+// depending on platform and how the binary was launched (next to the desktop executable, the
+// Android app's own data directory, or a source-tree checkout during development).
+static std::optional<std::filesystem::path> FindCaCertificateBundle() {
+    if (const auto executableDirectory = RuntimeConfigFile::ExecutableDirectory()) {
+        const auto adjacent = *executableDirectory / "cacert.pem";
+        if (std::filesystem::is_regular_file(adjacent)) {
+            return adjacent;
+        }
+    }
+
+#if defined(__ANDROID__)
+    const auto androidAsset = RuntimeConfigFile::ApplicationDataDirectory() / "cacert.pem";
+    if (std::filesystem::is_regular_file(androidAsset)) {
+        return androidAsset;
+    }
+#endif
+
+    for (auto base = std::filesystem::current_path(); !base.empty();) {
+        const auto sourceTreeAsset = base / "runtime" / "assets" / "certs" / "cacert.pem";
+        if (std::filesystem::is_regular_file(sourceTreeAsset)) {
+            return sourceTreeAsset;
+        }
+        const auto parent = base.parent_path();
+        if (parent == base) {
+            break;
+        }
+        base = parent;
+    }
+    return std::nullopt;
+}
+
+// Lazy, once-per-process: the first real SSL use pays for parsing the CA bundle and seeding the
+// RNG, every session after that reuses the result. Returns false (logging once) if the bundle is
+// missing or unparseable - callers treat that as a normal handshake failure, not a crash, since a
+// missing TLS root store shouldn't take down gameplay that never touches the network.
+static bool EnsureMbedtlsGlobalsInitialized() {
+    static const bool initialized = [] {
+        mbedtls_x509_crt_init(&g_mbedtlsCaChain);
+        mbedtls_entropy_init(&g_mbedtlsEntropy);
+        mbedtls_ctr_drbg_init(&g_mbedtlsCtrDrbg);
+
+        const char* personalization = "wiicompiled_ssl";
+        if (mbedtls_ctr_drbg_seed(&g_mbedtlsCtrDrbg, mbedtls_entropy_func, &g_mbedtlsEntropy,
+                                  reinterpret_cast<const unsigned char*>(personalization),
+                                  std::strlen(personalization)) != 0) {
+            NetFail("ssl: failed to seed TLS random number generator");
+            return false;
+        }
+
+        const auto bundle = FindCaCertificateBundle();
+        if (!bundle) {
+            NetFail("ssl: missing TLS root CA bundle (cacert.pem) - HTTPS connections will fail");
+            return false;
+        }
+        const int parseRet = mbedtls_x509_crt_parse_file(&g_mbedtlsCaChain, bundle->string().c_str());
+        if (parseRet < 0) {
+            char errorBuffer[256];
+            mbedtls_strerror(parseRet, errorBuffer, sizeof(errorBuffer));
+            NetFail("ssl: failed to parse CA bundle %s: %s", bundle->string().c_str(), errorBuffer);
+            return false;
+        }
+        return true;
+    }();
+    g_mbedtlsCaLoaded = initialized;
+    return initialized;
+}
+
+// Builds this session's mbed TLS handshake state exactly once - a second call (e.g. the handshake
+// re-running after DOHANDSHAKE was already satisfied) is a no-op via ssl.haveSsl.
+static int32_t EnsureMbedtlsSession(SslSession& ssl) {
+    if (ssl.haveSsl) {
+        return SSL_OK;
+    }
+    if (!EnsureMbedtlsGlobalsInitialized()) {
+        return SSL_ERR_FAILED;
+    }
+
+    mbedtls_ssl_init(&ssl.sslContext);
+    mbedtls_ssl_config_init(&ssl.sslConfig);
+    if (mbedtls_ssl_config_defaults(&ssl.sslConfig, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                     MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+        return SSL_ERR_FAILED;
+    }
+    // Real certificate validation, matching Schannel's SCH_CRED_AUTO_CRED_VALIDATION on the
+    // Windows side above - a self-signed or wrong-hostname certificate must fail the handshake,
+    // not just get logged.
+    mbedtls_ssl_conf_authmode(&ssl.sslConfig, MBEDTLS_SSL_VERIFY_REQUIRED);
+    mbedtls_ssl_conf_ca_chain(&ssl.sslConfig, &g_mbedtlsCaChain, nullptr);
+    mbedtls_ssl_conf_rng(&ssl.sslConfig, mbedtls_ctr_drbg_random, &g_mbedtlsCtrDrbg);
+    if (mbedtls_ssl_setup(&ssl.sslContext, &ssl.sslConfig) != 0) {
+        return SSL_ERR_FAILED;
+    }
+    // The hostname drives both SNI (which certificate the server presents) and the CN/SAN check
+    // mbedtls_ssl_conf_authmode enforces above - required, not optional, same reasoning as the
+    // Windows path's own "refuse an empty hostname" check just above SslHandshakeImpl.
+    mbedtls_ssl_set_hostname(&ssl.sslContext, ssl.hostname.c_str());
+
+    // ssl.native is already a connected, blocking POSIX socket by the time DOHANDSHAKE runs (see
+    // IOCTLV_NET_SSL_CONNECT) - wrapping it in mbed TLS's own net_context and using its own
+    // send/recv callbacks reuses a well-tested implementation instead of hand-rolling one.
+    ssl.netContext.fd = static_cast<int>(ssl.native);
+    mbedtls_ssl_set_bio(&ssl.sslContext, &ssl.netContext, mbedtls_net_send, mbedtls_net_recv, nullptr);
+
+    ssl.haveSsl = true;
+    return SSL_OK;
+}
+
 static void ClearSslSession(SslSession& ssl) {
+    if (ssl.haveSsl) {
+        mbedtls_ssl_free(&ssl.sslContext);
+        mbedtls_ssl_config_free(&ssl.sslConfig);
+    }
     ssl = {};
 }
 
-static int32_t SslHandshakeImpl(SslSession&) {
-    return SSL_ERR_FAILED;
+static int32_t SslHandshakeImpl(SslSession& ssl) {
+    if (ssl.plaintextWfc) {
+        ssl.handshaked = true;
+        return SSL_OK;
+    }
+    if (ssl.handshaked) {
+        return SSL_OK;
+    }
+    if (ssl.native == kInvalidSocket) {
+        return SSL_ERR_SYSCALL;
+    }
+    // mbed TLS can authenticate a certificate chain without authenticating a server identity when
+    // no hostname is set - refuse that ambiguous mode, matching the Windows path's own check.
+    if (ssl.hostname.empty()) {
+        return SSL_ERR_VCOMMONNAME;
+    }
+
+    const int32_t setupRet = EnsureMbedtlsSession(ssl);
+    if (setupRet != SSL_OK) {
+        return setupRet;
+    }
+
+    // The connect-time SO_RCVTIMEO/SO_SNDTIMEO bound a single blocking send()/recv(), but mbed
+    // TLS's net_sockets layer maps a timed-out recv() to MBEDTLS_ERR_SSL_WANT_READ - the same
+    // code used for "try again" - so without a deadline here this loop would just retry forever,
+    // one 15s block at a time, instead of ever giving up on a peer that never sends TLS data.
+    const auto handshakeDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    int handshakeRet;
+    while ((handshakeRet = mbedtls_ssl_handshake(&ssl.sslContext)) != 0) {
+        if (handshakeRet == MBEDTLS_ERR_SSL_WANT_READ || handshakeRet == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            if (std::chrono::steady_clock::now() >= handshakeDeadline) {
+                NetFail("ssl handshake TIMED OUT host=%s", ssl.hostname.c_str());
+                return SSL_ERR_FAILED;
+            }
+            // The socket is set blocking before the handshake ever starts (IOCTLV_NET_SSL_CONNECT),
+            // so mbed TLS's own send/recv callbacks either return real data or a real error - a
+            // WANT_READ/WANT_WRITE here means retry the same call immediately, not "come back
+            // later" the way it would for a nonblocking socket.
+            continue;
+        }
+        char errorBuffer[256];
+        mbedtls_strerror(handshakeRet, errorBuffer, sizeof(errorBuffer));
+        NetFail("ssl handshake FAILED host=%s mbedtls_err=%s", ssl.hostname.c_str(), errorBuffer);
+        return handshakeRet == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED ? SSL_ERR_VCOMMONNAME : SSL_ERR_FAILED;
+    }
+    ssl.handshaked = true;
+    return SSL_OK;
 }
 
-static int32_t SslWrite(SslSession&, const uint8_t*, uint32_t) {
-    return SSL_ERR_FAILED;
+static int32_t SslWrite(SslSession& ssl, const uint8_t* data, uint32_t size) {
+    if (!data || size == 0) {
+        return SSL_ERR_ZERO;
+    }
+    const int32_t handshakeRet = SslHandshake(ssl);
+    if (handshakeRet != SSL_OK) {
+        return handshakeRet;
+    }
+
+    if (ssl.plaintextWfc) {
+        uint32_t total = 0;
+        while (total < size) {
+            const ssize_t sent = send(ssl.native, data + total, size - total, 0);
+            if (sent <= 0) {
+                return SSL_ERR_SYSCALL;
+            }
+            total += static_cast<uint32_t>(sent);
+        }
+        return static_cast<int32_t>(total);
+    }
+
+    // mbed TLS is allowed to write fewer bytes than requested in one call (e.g. when size exceeds
+    // one TLS record) - the caller must resend the remainder starting from where it left off, so
+    // loop here until every byte is actually written rather than returning the first partial count.
+    uint32_t totalWritten = 0;
+    while (totalWritten < size) {
+        const int ret = mbedtls_ssl_write(&ssl.sslContext, data + totalWritten, size - totalWritten);
+        if (ret > 0) {
+            totalWritten += static_cast<uint32_t>(ret);
+            continue;
+        }
+        if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            continue;
+        }
+        return SSL_ERR_FAILED;
+    }
+    return static_cast<int32_t>(totalWritten);
 }
 
-static int32_t SslRead(SslSession&, uint8_t*, uint32_t) {
-    return SSL_ERR_FAILED;
+static int32_t SslRead(SslSession& ssl, uint8_t* out, uint32_t size) {
+    if (!out || size == 0) {
+        return SSL_ERR_ZERO;
+    }
+    const int32_t handshakeRet = SslHandshake(ssl);
+    if (handshakeRet != SSL_OK) {
+        return handshakeRet;
+    }
+
+    if (ssl.plaintextWfc) {
+        const ssize_t ret = recv(ssl.native, out, size, 0);
+        if (ret == 0) {
+            return SSL_ERR_ZERO;
+        }
+        if (ret < 0) {
+            return SSL_ERR_RAGAIN;
+        }
+        return static_cast<int32_t>(ret);
+    }
+
+    const int ret = mbedtls_ssl_read(&ssl.sslContext, out, size);
+    if (ret == 0 || ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
+        return SSL_ERR_ZERO;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return SSL_ERR_RAGAIN;
+    }
+    if (ret < 0) {
+        return SSL_ERR_FAILED;
+    }
+    return ret;
 }
 #endif
 
@@ -640,6 +892,14 @@ int32_t HandleSslIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const std
         const int timeoutMs = 15000;
         setsockopt(socket->native, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
         setsockopt(socket->native, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+#else
+        // Match the Windows 15s timeout so a peer that accepts the TCP connection but stalls
+        // during the TLS handshake or a later read/write can't hang this thread forever. POSIX
+        // takes a struct timeval here, not a plain millisecond count like Windows does.
+        struct timeval timeout {};
+        timeout.tv_sec = 15;
+        setsockopt(socket->native, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(socket->native, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif
         WriteSslReturn(in, SSL_OK);
         return 0;
