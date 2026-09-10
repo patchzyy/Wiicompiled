@@ -1,6 +1,7 @@
 #include "hle_stubs.h"
 
 #include "console_identity.h"
+#include "sc_serial_contract.h"
 #include <cstdlib>
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +13,25 @@
 
 namespace {
 
-constexpr uint32_t kPalProductRegion = 2;
+// Use the SDK's own value tables, including its unknown-region result.
+uint32_t LookupProductRegion(uint32_t table, uint32_t stride, uint32_t count,
+                             const std::string& value) {
+    for (uint32_t index = 0; index < count; ++index) {
+        const uint32_t entry = table + index * stride;
+        if (!Memory::Contains(entry, stride)) {
+            break;
+        }
+        const auto* bytes = static_cast<const uint8_t*>(Memory::GetPointer(entry, stride));
+        if (bytes[0] == 0xFF) {
+            break;
+        }
+        if (value.size() < stride - 1 &&
+            std::memcmp(bytes + 1, value.c_str(), value.size() + 1) == 0) {
+            return bytes[0];
+        }
+    }
+    return 0xFFFFFFFFu;
+}
 
 } // namespace
 
@@ -50,16 +69,12 @@ extern "C" uint32_t SCGetEuRgb60Mode_HLE()
 
 PPC_NATIVE_OVERRIDE(801B1CAC, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 
-// The managed NAND intentionally starts without a console-owned setting.txt.
-// DWC nevertheless requires the Wii product code and serial number so it can
-// include csnum in NAS authentication. Expose one stable virtual-console
-// identity without requiring or mutating a user's real NAND.
+// Expose the selected emulated NAND identity through the SDK SC APIs.
 
 extern "C" uint32_t SCGetProductArea_HLE()
 {
-    // The PAL setting.txt AREA value is "EUR". The SDK's lookup table at
-    // 0x8029CEB0 maps JPN=0, USA=1, EUR=2.
-    return kPalProductRegion;
+    return LookupProductRegion(0x8029CEB0u, 5, 13,
+                               RuntimeConsoleIdentity::Current().area);
 }
 
 PPC_NATIVE_OVERRIDE(801B23A0, SCGetProductArea_HLE, uint32_t, (), ());
@@ -68,12 +83,13 @@ extern "C" uint32_t SCGetProductCode_HLE()
 {
     // Original PAL SC storage for the six-byte CODE value.
     constexpr uint32_t kProductCodeAddress = 0x803869E0u;
-    static constexpr char kProductCode[] = "LEH";
-    if (!Memory::Contains(kProductCodeAddress, sizeof(kProductCode))) {
+    const std::string& productCode = RuntimeConsoleIdentity::Current().productCode;
+    const size_t size = productCode.size() + 1;
+    if (!Memory::Contains(kProductCodeAddress, size)) {
         return 0;
     }
-    std::memcpy(Memory::GetPointer(kProductCodeAddress, sizeof(kProductCode)),
-                kProductCode, sizeof(kProductCode));
+    std::memcpy(Memory::GetPointer(kProductCodeAddress, size),
+                productCode.c_str(), size);
     return kProductCodeAddress;
 }
 
@@ -82,21 +98,17 @@ PPC_NATIVE_OVERRIDE(801B2424, SCGetProductCode_HLE, uint32_t, (), ());
 extern "C" uint32_t SCGetProductSN_HLE(uint32_t serialAddress)
 {
     const std::string& serial = RuntimeConsoleIdentity::Current().serial;
-    if (!serialAddress || !Memory::Contains(serialAddress, serial.size() + 1)) {
-        return 0;
-    }
-    std::memcpy(Memory::GetPointer(serialAddress, serial.size() + 1),
-                serial.c_str(), serial.size() + 1);
-    return 1;
+    return RuntimeScSerial::Write(serial, serialAddress,
+        [](uint32_t address, size_t size) { return Memory::Contains(address, size); },
+        [](uint32_t address, uint32_t value) { Memory::Write32(address, value); });
 }
 
 PPC_NATIVE_OVERRIDE(801B2460, SCGetProductSN_HLE, uint32_t, (uint32_t serialAddress), (serialAddress));
 
 extern "C" uint32_t SCGetProductGameRegion_HLE()
 {
-    // The PAL setting.txt GAME value is "EU". The SDK's own lookup table at
-    // 0x8029CEF8 maps JP=0, US=1, EU=2.
-    return kPalProductRegion;
+    return LookupProductRegion(0x8029CEF8u, 4, 4,
+                               RuntimeConsoleIdentity::Current().gameRegion);
 }
 
 PPC_NATIVE_OVERRIDE(801B24C8, SCGetProductGameRegion_HLE, uint32_t, (), ());

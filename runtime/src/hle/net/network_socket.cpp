@@ -499,7 +499,7 @@ int32_t HandleIpTopIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const s
         // Nonblocking sockets get -SO_EAGAIN immediately (Dolphin's retry predicate
         // short-circuits on nonBlock/forceNonBlock, IOS/Network/Socket.cpp:715-718);
         // waiting here anyway stalled the whole emulation thread on every empty read.
-        constexpr int kStreamRecvWaitMs = 250;
+        constexpr int kStreamRecvWaitMs = 1000;
         const int streamWaitMs = (forceNonBlock || s->nonblocking) ? 0 : kStreamRecvWaitMs;
         const bool waited = ret < 0 && !fromPtr && s->type == SOCK_STREAM &&
             IsWouldBlockError(nativeErr) && WaitForReadable(s->native, streamWaitMs);

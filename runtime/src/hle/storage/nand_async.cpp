@@ -411,6 +411,8 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     if (mode == 1) {
         // Read-only safe open reads the original in place; the library builds no scratch
         // copy for this case.
+        if (const auto result = NandCheckSystemSaveRead("NANDSafeOpen", hostPath, mode))
+            return *result;
         FILE* file = NandFopen(hostPath, "rb");
         if (!file && IsFaceLibResourcePath(path) && SeedFaceLibResource(hostPath)) {
             file = NandFopen(hostPath, "rb");

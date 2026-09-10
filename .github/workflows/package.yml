@@ -25,6 +25,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  recompilation:
+    name: Recompilation test
+    uses: ./.github/workflows/recomp-test.yml
+
   linux-appimage:
     name: Linux (AppImage, ${{ matrix.arch }})
     strategy:
@@ -162,6 +166,23 @@ jobs:
             --output Launcher/dist/WiiCompiled-Setup.pkg \
             --version "$package_version"
 
+      - name: Build WheelWizard setup asset
+        env:
+          PACKAGE_VERSION: ${{ inputs.version }}
+          TAG_VERSION: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          package_version="${PACKAGE_VERSION:-${TAG_VERSION#v}}"
+          mkdir -p Launcher/artifacts/wheelwizard-tools
+          cp Launcher/artifacts/macos/nodtool Launcher/artifacts/wheelwizard-tools/
+          cp Launcher/artifacts/macos/translator/Translator.Cli Launcher/artifacts/wheelwizard-tools/
+          cp "$(command -v ninja)" Launcher/artifacts/wheelwizard-tools/ninja
+          ditto Launcher/artifacts/macos/cmake Launcher/artifacts/wheelwizard-tools/cmake
+          Launcher/macos/build-wheelwizard-setup.command \
+            --tools-root Launcher/artifacts/wheelwizard-tools \
+            --version "$package_version" \
+            --output Launcher/dist/WiiCompiled-Setup-macos-arm64.run
+
       - name: Verify package boundary
         shell: bash
         run: |
@@ -172,9 +193,10 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: WiiCompiled-Setup-macos-arm64
-          path: Launcher/dist/WiiCompiled-Setup.pkg
+          path: |
+            Launcher/dist/WiiCompiled-Setup.pkg
+            Launcher/dist/WiiCompiled-Setup-macos-arm64.run
           if-no-files-found: error
-          archive: false
 
   # Publishes the packaged installers as a GitHub Release whenever a v* tag is pushed. Wheel Wizard
   # discovers updates from these releases, so the contract it relies on is enforced here: a full
@@ -183,7 +205,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, windows-installer, macos-setup-package]
+    needs: [linux-appimage, windows-installer, macos-setup-package, recompilation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -229,7 +251,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg WiiCompiled-Setup-macos-arm64.run; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")

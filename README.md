@@ -59,12 +59,12 @@ Mappings are positional (`south`, `east`, `west`, `north`) rather than Xbox-labe
 same config makes sense on Xbox, PlayStation, Nintendo and generic SDL pads alike, and extra
 inputs like paddles, touchpads and share buttons show up when the hardware reports them.
 
-**Dolphin-compatible input expressions.** 
+**Dolphin-compatible input expressions.**
 Each GameCube control can carry an expression in Dolphin's input syntax, with the same operators
 and the same functions.
 A Dolphin `GCPadNew.ini` can be imported directly from the F10 bar.
 
-**Vibration toggle.** 
+**Vibration toggle.**
 Force feedback can be turned off for every port at once.
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
