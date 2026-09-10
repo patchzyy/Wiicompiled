@@ -113,7 +113,7 @@ rm -rf "$extract_root"
 mkdir -p "$extract_root"
 echo "prepare-portable-tools.sh: extracting $llvm_archive_name (this is the full ~1.9 GiB release; only a fraction is kept)..."
 tar -xf "$llvm_archive" -C "$extract_root"
-src="$extract_root/LLVM-$llvm_version-Linux-$llvm_release_arch"
+src="$extract_root/${llvm_archive_name%.tar.xz}"
 [[ -d "$src" ]] || { echo "prepare-portable-tools.sh: unexpected archive layout, expected $src" >&2; exit 1; }
 
 echo "prepare-portable-tools.sh: pruning to the minimal compile+link toolchain..."
@@ -165,7 +165,8 @@ rm -rf "$cmake_extract_root"
 mkdir -p "$cmake_extract_root"
 echo "prepare-portable-tools.sh: extracting $cmake_archive_name..."
 tar -xzf "$cmake_archive" -C "$cmake_extract_root"
-cmake_src="$cmake_extract_root/cmake-$cmake_version-linux-$cmake_release_arch"
+
+cmake_src="$cmake_extract_root/${cmake_archive_name%.tar.gz}"
 [[ -d "$cmake_src" ]] || { echo "prepare-portable-tools.sh: unexpected archive layout, expected $cmake_src" >&2; exit 1; }
 
 mkdir -p "$work/share/cmake-$cmake_share_version"
