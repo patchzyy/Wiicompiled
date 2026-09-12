@@ -2304,7 +2304,18 @@ int EmitModCpp(
             var discovery = modTranslator.Discover(
                 target,
                 new TranslationOptions(KnownFunctionEntryPoints: knownFunctionEntryPoints));
-            exhibitsSkipReturn = ContinuationPlanner.DiscoverLrRelativeIndirectJumpOffsets(discovery.Instructions).Any();
+            var stateCapExceeded = false;
+            exhibitsSkipReturn = ContinuationPlanner
+                .DiscoverLrRelativeIndirectJumpOffsets(discovery.Instructions, () => stateCapExceeded = true)
+                .Any();
+            if (!exhibitsSkipReturn && stateCapExceeded)
+            {
+                // The path-sensitive search hit its per-instruction state cap somewhere
+                // before it could rule out every path, so "no offsets found" here is
+                // inconclusive rather than a verified negative - a dropped state's own
+                // bctr/return could never have contributed to the result. Fail safe.
+                exhibitsSkipReturn = true;
+            }
         }
         catch (Exception ex) when (ex is InvalidOperationException or ArgumentException
                                       or IndexOutOfRangeException or NotSupportedException
