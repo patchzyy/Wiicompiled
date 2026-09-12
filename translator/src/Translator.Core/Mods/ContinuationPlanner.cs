@@ -275,7 +275,20 @@ public static class ContinuationPlanner
         AddSigned
     }
 
-    public static IEnumerable<int> DiscoverLrRelativeIndirectJumpOffsets(IReadOnlyList<PpcInstruction> instructions)
+    /// <summary>
+    /// Per-instruction cap on distinct explored path states. Raised well past what any
+    /// observed function needs (a handful of states per branch/loop join) so the cap is a
+    /// backstop against pathological blowup, not a limit routine code is expected to hit -
+    /// callers that need a trustworthy "no offsets" result should still treat an
+    /// onStateCapExceeded callback as "this run could not prove that" (see EmitModCpp's
+    /// TargetExhibitsLrSkipReturn), since a state dropped here can never contribute its
+    /// bctr/return offset to the result.
+    /// </summary>
+    private const int MaxStatesPerInstruction = 512;
+
+    public static IEnumerable<int> DiscoverLrRelativeIndirectJumpOffsets(
+        IReadOnlyList<PpcInstruction> instructions,
+        Action? onStateCapExceeded = null)
     {
         if (instructions.Count == 0)
         {
@@ -296,7 +309,6 @@ public static class ContinuationPlanner
 
         var seenOffsets = new HashSet<int>();
         var worklist = new Queue<(int Index, PathState State)>();
-        const int MaxStatesPerInstruction = 16;
 
         void Enqueue(int targetIndex, PathState stateToEnqueue)
         {
@@ -325,6 +337,7 @@ public static class ContinuationPlanner
 
             if (visited[idx].Count > MaxStatesPerInstruction)
             {
+                onStateCapExceeded?.Invoke();
                 continue;
             }
 

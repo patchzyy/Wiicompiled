@@ -2282,9 +2282,63 @@ int EmitModCpp(
                 .Where(h => h.TargetAddress.HasValue && RetroWfcHookSetsLinkRegister(h))
                 .Select(h => (h.TargetAddress!.Value, h.ContinuationAddress)));
     }
+    // An ordinary bl patch returns normally like any call and needs none of the
+    // conservative LR-continuation codegen below (forced register reload, disabled
+    // resident-call fast paths, local dispatch tables) - only a target that actually
+    // manipulates LR to resume somewhere other than the call's own return address
+    // does. Without this check every bl patch target would qualify, which is far
+    // broader than the skip-return hooks this plumbing exists for and bloats
+    // unrelated callers that merely call into a patched function (see the Retro
+    // Rewind mod-size regression this was found to cause).
+    var lrSkipReturnTargetCache = new Dictionary<uint, bool>();
+    bool TargetExhibitsLrSkipReturn(uint target)
+    {
+        if (lrSkipReturnTargetCache.TryGetValue(target, out var cached))
+        {
+            return cached;
+        }
+
+        bool exhibitsSkipReturn;
+        try
+        {
+            var discovery = modTranslator.Discover(
+                target,
+                new TranslationOptions(KnownFunctionEntryPoints: knownFunctionEntryPoints));
+            var stateCapExceeded = false;
+            exhibitsSkipReturn = ContinuationPlanner
+                .DiscoverLrRelativeIndirectJumpOffsets(discovery.Instructions, () => stateCapExceeded = true)
+                .Any();
+            if (!exhibitsSkipReturn && stateCapExceeded)
+            {
+                // The path-sensitive search hit its per-instruction state cap somewhere
+                // before it could rule out every path, so "no offsets found" here is
+                // inconclusive rather than a verified negative - a dropped state's own
+                // bctr/return could never have contributed to the result. Fail safe.
+                exhibitsSkipReturn = true;
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException
+                                      or IndexOutOfRangeException or NotSupportedException
+                                      or OverflowException)
+        {
+            // Could not statically analyze this target - fail safe and keep the
+            // conservative handling rather than risk silently reintroducing a
+            // skip-return crash for a target this check could not examine.
+            exhibitsSkipReturn = true;
+        }
+
+        lrSkipReturnTargetCache[target] = exhibitsSkipReturn;
+        return exhibitsSkipReturn;
+    }
+
     foreach (var patch in patchPlan.ExecutablePatches.Where(p => p.CommandId == KamekCommandId.BranchLink && p.Arguments.Count > 0))
     {
         var target = KamekAddress.Resolve(patch.Arguments[0], patchPlan.ModuleGuestBase);
+        if (!TargetExhibitsLrSkipReturn(target))
+        {
+            continue;
+        }
+
         hookLrBases.Add((target, checked(patch.CommandAddress + 4u)));
     }
 
