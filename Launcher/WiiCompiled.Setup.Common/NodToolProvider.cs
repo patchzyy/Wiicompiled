@@ -10,7 +10,7 @@ namespace WiiCompiled.Setup.Common;
 ///
 /// Shared by: WiiCompiled.Setup.Linux/DiscTool.cs (falls back to this at end-user install time on
 /// a plain git checkout), and WiiCompiled.Setup.Common.Cli (invoked once at packaging time by both
-/// build-appimage.sh and Build-Installer.ps1 to acquire the copy each bundles).
+/// build-flatpak.sh and Build-Installer.ps1 to acquire the copy each bundles).
 /// </summary>
 public static class NodToolProvider
 {

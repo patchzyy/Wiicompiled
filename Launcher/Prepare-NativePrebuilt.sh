@@ -42,7 +42,7 @@ Usage: Prepare-NativePrebuilt.sh --arch {x86_64|aarch64} [options]
   --print-fingerprint-only  Print the four provenance inputs (compiler_sha256, flag_fingerprint,
                           aurora_fingerprint, third_party_fingerprint) as "key=value" lines and
                           exit, without configuring/building/harvesting anything - lets a caller
-                          (build-appimage.sh) decide whether an existing package is still current
+                          (build-flatpak.sh) decide whether an existing package is still current
                           without paying for a full aurora rebuild just to find out.
 EOF
 }
@@ -144,7 +144,7 @@ fixed_configure_flags=(
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
 # extern/ is excluded because the payload ships that tree separately (aurora-main/extern is bundled
-# whole by build-appimage.sh); build/ is a plain developer build directory.
+# whole by build-flatpak.sh); build/ is a plain developer build directory.
 aurora_fingerprint=$(fingerprint_tree "$aurora_source" extern build)
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
