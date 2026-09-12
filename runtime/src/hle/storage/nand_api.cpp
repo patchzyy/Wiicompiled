@@ -457,8 +457,13 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
                 publishEc = std::make_error_code(std::errc::file_exists);
             }
             if (!publishEc) {
-                std::filesystem::copy(tempHost, dstHost,
-                                      std::filesystem::copy_options::recursive, publishEc);
+                for (const auto& entry : std::filesystem::directory_iterator(tempHost, publishEc)) {
+                    if (publishEc) {
+                        break;
+                    }
+                    std::filesystem::copy(entry.path(), dstHost / entry.path().filename(),
+                                          std::filesystem::copy_options::recursive, publishEc);
+                }
             }
         } else {
             // link(2) and CreateHardLink do not replace an existing destination,
