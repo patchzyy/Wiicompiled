@@ -451,9 +451,10 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         }
 
         // Keep the source as the authoritative copy when cleanup fails. The
-        // destination was published atomically on its own mount, so remove it
-        // to avoid presenting two entries to a later NAND scan. Cross-mount
-        // moves cannot provide crash-atomicity, so this is best effort.
+        // destination was published atomically on its own mount; regular files
+        // are rolled back below, while directories keep the complete copy when
+        // their source removal was only partial. Cross-mount moves cannot
+        // provide crash-atomicity, so this is best effort.
         LogNandError("NANDMove", "copy succeeded but source removal failed: %s",
                      removeEc.message().c_str());
         if (sourceIsDirectory) {
