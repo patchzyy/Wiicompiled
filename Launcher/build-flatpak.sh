@@ -1,31 +1,21 @@
 #!/usr/bin/env bash
-# Packages Launcher/WiiCompiled.Setup.Linux as a self-contained Flatpak bundle for local install:
-# a single .flatpak file anyone can `flatpak install` with no git clone, no `dotnet` install, and
-# no host build prerequisites of any kind. It is the Linux distribution path.
+# Builds the self-hosted WiiCompiled Flatpak bundle (single-file .flatpak asset).
 #
-# The bundle carries the self-contained installer and translator binaries, bundled nodtool, the
-# pruned clang/lld/cmake/ninja toolchain (prepare-portable-tools.sh), the precompiled aurora +
-# third-party package (Prepare-NativePrebuilt.sh), and a workspace snapshot, laid out under a
-# Flatpak /app and running on the org.freedesktop.Sdk runtime. The *why* of the SDK-as-runtime:
-# a Flatpak only sees what its runtime + bundle provide, and local-build.sh compiles the
-# translated game at install time. The sandbox has no host distro, so the SDK runtime fills
-# exactly that role (its /usr/include, crt objects, libz.so and libstdc++-devel are what the
-# build resolves against). /app is read-only and stable across runs, so the entrypoint below
-# copies the workspace snapshot out to a writable cache and references the toolchain/native-
-# prebuilt at their stable /app paths directly, with no symlink indirection needed to keep
-# CMake/Ninja's baked command lines stable.
+# Everything the old versions staged by hand on the host - the dotnet publishes, the portable
+# toolchain prune, the workspace snapshot, the icon/desktop/entrypoint - is now real module
+# build-commands inside Launcher/flatpak/io.github.TeamWheelWizard.Wiicompiled.yml.in. What
+# remains as host-side preparation is only what the manifest cannot reasonably build itself:
 #
-# The sandbox's game-compile needs are what set the permissions: --filesystem=home so the user's
-# game dump ISO and any --install-dir/--retro-dir paths resolve, --share=network for the
-# Retro-WFC payload download, and the socket/device grants for launching the compiled game.
+#   * the source tree staging: flatpak-builder's `dir` source has no exclude list, so a slim
+#     copy of the repo (no .git/artifacts/bin/obj/build trees) is made for the module sources,
+#   * the native-prebuilt harvest: compiled once per pinned toolchain/flag set by
+#     Prepare-NativePrebuilt.sh and imported by the native-prebuilt module (fingerprint-guarded),
+#   * the .bundle-version stamp the workspace-snapshot module injects.
 #
-# The flatpak-builder manifest (Launcher/flatpak/io.github.TeamWheelWizard.Wiicompiled.yml.in) is the
-# declarative source of truth for the runtime version, command and finish-args; this script
-# renders it per build and lets flatpak-builder write the app metadata and export the repo, then
-# build-bundles the single-file asset. The SDK-as-runtime choice and the self-hosted distribution
-# route are deliberate - see the manifest header. On hosts where nested bwrap cannot run (e.g. a
-# container), run --staged-only inside the container and --skip-stage on the host so the
-# flatpak-builder/export steps run where bwrap works.
+# The app then builds from real, pinned-archive sources against org.freedesktop.Platform with the
+# compile dev files bundled under /app/usr (see the dev-files module and the manifest header). On
+# hosts where nested bwrap cannot run (e.g. inside a container), run it there with
+# `--flatpak-builder`/`--flatpak` disabled - flatpak-builder itself always runs where bwrap works.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -36,20 +26,18 @@ runtime_branch="25.08"
 output_dir="$workspace/Launcher/dist"
 flatpak_override=""
 flatpak_builder_cmd="flatpak-builder"
-mode=full
+arch_override=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output-dir) output_dir=$2; shift 2 ;;
         --app-id) app_id=$2; shift 2 ;;
         --runtime-branch) runtime_branch=$2; shift 2 ;;
+        --arch) arch_override=$2; shift 2 ;;
         --flatpak) flatpak_override=$2; shift 2 ;;
         --flatpak-builder) flatpak_builder_cmd=$2; shift 2 ;;
-        --staged-only) mode=staged-only; shift ;;
-        --skip-stage) mode=skip-stage; shift ;;
         -h|--help)
-            echo "Usage: build-flatpak.sh [--output-dir DIR] [--app-id ID] [--runtime-branch BRANCH] [--flatpak PATH]" >&2
-            echo "Modes: full (default); --staged-only stops after publishing/staging; --skip-stage runs flatpak-builder+bundle on an existing stage" >&2
+            echo "Usage: build-flatpak.sh [--output-dir DIR] [--app-id ID] [--runtime-branch BRANCH] [--arch ARCH] [--flatpak PATH] [--flatpak-builder PATH]" >&2
             exit 0
             ;;
         *) echo "build-flatpak.sh: unknown argument: $1" >&2; exit 1 ;;
@@ -57,109 +45,89 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ELF-header userspace-architecture detection (the kernel's `uname -m` can disagree with the
-# actual userspace, e.g. an aarch64 kernel running 32-bit armhf userland) - the dotnet RID must
-# match the binaries that will actually run inside the sandbox.
-elf_exe=$(readlink -f "/proc/$$/exe")
-elf_class=$(od -An -t u1 -j 4 -N 1 "$elf_exe" | tr -d ' ')
-elf_machine_lo=$(od -An -t u1 -j 18 -N 1 "$elf_exe" | tr -d ' ')
-elf_machine_hi=$(od -An -t u1 -j 19 -N 1 "$elf_exe" | tr -d ' ')
-elf_machine=$(( elf_machine_hi * 256 + elf_machine_lo ))
+# actual userspace, e.g. an aarch64 kernel running 32-bit armhf userland).
+if [[ -n "$arch_override" ]]; then
+    bundle_arch=$arch_override
+else
+    elf_exe=$(readlink -f "/proc/$$/exe")
+    elf_class=$(od -An -t u1 -j 4 -N 1 "$elf_exe" | tr -d ' ')
+    elf_machine=$(( $(od -An -t u1 -j 19 -N 1 "$elf_exe" | tr -d ' ') * 256 + $(od -An -t u1 -j 18 -N 1 "$elf_exe" | tr -d ' ') ))
+    case "$elf_class:$elf_machine" in
+        2:62) bundle_arch=x86_64 ;;
+        2:183) bundle_arch=aarch64 ;;
+        *) echo "build-flatpak.sh: unsupported userspace architecture (ELF class $elf_class, machine $elf_machine) - WiiCompiled requires a 64-bit x86_64 or aarch64 userland" >&2; exit 1 ;;
+    esac
+fi
+[[ "$bundle_arch" == "x86_64" || "$bundle_arch" == "aarch64" ]] || { echo "build-flatpak.sh: --arch must be x86_64 or aarch64" >&2; exit 1; }
 
-case "$elf_class:$elf_machine" in
-    2:62)
-        dotnet_rid=linux-x64
-        bundle_arch=x86_64
-        ;;
-    2:183)
-        dotnet_rid=linux-arm64
-        bundle_arch=aarch64
-        ;;
-    *)
-        echo "build-flatpak.sh: unsupported userspace architecture (ELF class $elf_class, machine $elf_machine) - WiiCompiled requires a 64-bit x86_64 or aarch64 userland" >&2
-        exit 1
-        ;;
-esac
-
-runtime_ref="org.freedesktop.Sdk//$runtime_branch"
 flatpak_bin=${flatpak_override:-flatpak}
 
-if ! "$flatpak_bin" info "$runtime_ref" >/dev/null 2>&1; then
-    echo "build-flatpak.sh: $runtime_ref is not installed. Install it with:" >&2
-    echo "  flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo" >&2
-    echo "  flatpak install --user -y flathub $runtime_ref" >&2
-    exit 1
+# The provenance freshness check (and a fresh native-prebuilt harvest) needs python3. On hosts
+# that lack it, fall back to what nix provides.
+PYTHON3=""
+if command -v python3 >/dev/null 2>&1; then
+    PYTHON3=$(command -v python3)
+elif command -v nix >/dev/null 2>&1; then
+    echo "build-flatpak.sh: python3 not on PATH; using nix-shell to provide it..."
+    PYTHON3=$(nix shell nixpkgs#python3 --command python3 -c 'import sys; print(sys.executable)')
 fi
+[[ -n "$PYTHON3" ]] || { echo "build-flatpak.sh: python3 is required for the native-prebuilt provenance check" >&2; exit 1; }
 
-# Publishing and staging fill the staged /app tree; --skip-stage jumps past this to rebuild the
-# bundle from an already-staged tree (e.g. staged inside a container that cannot run bwrap).
-stagedir="$workspace/Launcher/artifacts/flatpak-build/$bundle_arch"
-if [[ "$mode" != "skip-stage" ]]; then
-rm -rf "$stagedir"
-mkdir -p "$stagedir/app/bin" "$stagedir/app/libexec" "$stagedir/app/workspace/Launcher" \
-    "$stagedir/app/usr" "$stagedir/app/share/applications" \
-    "$stagedir/app/share/icons/hicolor/512x512/apps"
-
-echo "Publishing the installer (self-contained $dotnet_rid)..."
-publish_tmp="$workspace/Launcher/artifacts/flatpak-build/publish-$bundle_arch"
-rm -rf "$publish_tmp"
-dotnet publish "$workspace/Launcher/WiiCompiled.Setup.Linux" -c Release -r "$dotnet_rid" \
-    --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
-    -o "$publish_tmp"
-cp "$publish_tmp/WiiCompiled.Setup.Linux" "$stagedir/app/libexec/wiicompiled-setup"
-chmod +x "$stagedir/app/libexec/wiicompiled-setup"
-
-echo "Publishing the translator (self-contained $dotnet_rid)..."
-translator_publish_tmp="$workspace/Launcher/artifacts/flatpak-build/publish-translator-$bundle_arch"
-rm -rf "$translator_publish_tmp"
-dotnet publish "$workspace/translator/src/Translator.Cli" -c Release -r "$dotnet_rid" \
-    --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
-    -o "$translator_publish_tmp"
-cp "$translator_publish_tmp/Translator.Cli" "$stagedir/app/libexec/translator-cli"
-chmod +x "$stagedir/app/libexec/translator-cli"
-
-echo "Resolving nodtool..."
-nodtool_path=$(dotnet run --project "$workspace/Launcher/WiiCompiled.Setup.Common.Cli" -c Release -- \
-    --workspace "$workspace" | tail -n1)
-cp "$nodtool_path" "$stagedir/app/libexec/nodtool"
-chmod +x "$stagedir/app/libexec/nodtool"
-
-echo "Preparing the portable clang/lld/cmake/ninja toolchain ($bundle_arch)..."
-bash "$script_dir/prepare-portable-tools.sh" --arch "$bundle_arch"
-toolchain_dir="$workspace/Launcher/artifacts/portable-tools/toolchain-$bundle_arch"
-mkdir -p "$stagedir/app/usr/toolchain"
-cp -a "$toolchain_dir"/. "$stagedir/app/usr/toolchain/"
-
-# The official LLVM release's lld links three system host libs - libxml2, libicuuc, libicudata -
-# whose SONAMEs the sandbox runtime does not provide (it ships libxml2 only as libxml2.so.16 and
-# no ICU at all), so the bundle carries the copies the build host resolves and exposes them through
-# LD_LIBRARY_PATH in the entrypoint.
-lld_libs=$(ldd "$toolchain_dir/bin/lld" 2>/dev/null)
-if printf '%s\n' "$lld_libs" | grep -q 'not found'; then
-    echo "build-flatpak.sh: lld has dependencies the build host cannot resolve:" >&2
-    printf '%s\n' "$lld_libs" | grep 'not found' >&2
-    exit 1
-fi
-mkdir -p "$stagedir/app/usr/toolchain/lib"
-while read -r soname libpath; do
-    case "$soname" in
-        libxml2.so.*|libicuuc.so.*|libicudata.so.*)
-            cp -p "$libpath" "$stagedir/app/usr/toolchain/lib/$soname"
-            ;;
-    esac
-done < <(printf '%s\n' "$lld_libs" | awk '$2 == "=>" { print $1, $3 }')
-for libglob in "$stagedir/app/usr/toolchain/lib"/libxml2.so.* "$stagedir/app/usr/toolchain/lib"/libicuuc.so.* "$stagedir/app/usr/toolchain/lib"/libicudata.so.*; do
-    if [[ ! -e "$libglob" ]]; then
-        echo "build-flatpak.sh: expected bundled lld dependency missing: $libglob" >&2
+# The build needs the SDK (build sandbox), the Platform runtime (what the bundle installs on),
+# and the dotnet8 sdk-extension (the dotnet-apps module's compiler). Require all three up front
+# with one actionable message; flatpak-builder also auto-installs them if a remote is configured.
+for ref in \
+    "org.freedesktop.Platform//$runtime_branch" \
+    "org.freedesktop.Sdk//$runtime_branch" \
+    "org.freedesktop.Sdk.Extension.dotnet8//$runtime_branch"; do
+    if ! "$flatpak_bin" info "$ref" >/dev/null 2>&1; then
+        echo "build-flatpak.sh: $ref is not installed. Install it with:" >&2
+        echo "  flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo" >&2
+        echo "  flatpak install --user -y flathub $ref" >&2
         exit 1
     fi
 done
 
+artifacts="$workspace/Launcher/artifacts/flatpak-build"
+mkdir -p "$artifacts"
+
+# --- source tree staging (slim copy for the `dir` module sources) -----------------------------
+
+source_tree="$artifacts/source-tree"
+echo "Staging the slim source tree (excluding .git, artifacts, bin/obj, build trees)..."
+rm -rf "$source_tree"
+mkdir -p "$source_tree"
+tar -C "$workspace" \
+    --exclude .git \
+    --exclude .flatpak-builder \
+    --exclude 'Launcher/artifacts' \
+    --exclude 'Launcher/dist' \
+    --exclude 'Launcher/bin' \
+    --exclude 'Launcher/obj' \
+    --exclude '*/bin' --exclude '*/obj' \
+    --exclude '*/build' --exclude 'aurora-main/extern' \
+    -cf - . | tar -C "$source_tree" -xf -
+
+# --- bundle-version stamp ----------------------------------------------------------------------
+# Changes whenever the bundled paths did; the entrypoint re-syncs the sandbox workspace only on a
+# change. Injected into the workspace-snapshot module's build commands at render time.
+version=""
+if git -C "$workspace" rev-parse HEAD >/dev/null 2>&1; then
+    version=$(git -C "$workspace" rev-parse HEAD)
+    if [[ -n "$(git -C "$workspace" status --porcelain 2>/dev/null)" ]]; then
+        version="$version-dirty-$(date -u +%s)"
+    fi
+else
+    version=$(date -u +%s)
+fi
+
+# --- native-prebuilt harvest -------------------------------------------------------------------
 native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$bundle_arch"
 echo "Checking whether the precompiled aurora + third-party package ($bundle_arch) is current..."
 current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$bundle_arch" --print-fingerprint-only)
 package_current=0
 if [[ -f "$native_prebuilt_dir/provenance.json" ]]; then
-    package_current=$(CURRENT_FINGERPRINT="$current_fingerprint" python3 - "$native_prebuilt_dir/provenance.json" <<'PY'
+    package_current=$(CURRENT_FINGERPRINT="$current_fingerprint" "$PYTHON3" - "$native_prebuilt_dir/provenance.json" <<'PY'
 import json
 import os
 import sys
@@ -179,124 +147,72 @@ fi
 if [[ "$package_current" == "1" ]]; then
     echo "Native prebuilt package is current; reusing $native_prebuilt_dir"
 else
-    echo "Native prebuilt package is missing or stale; harvesting a fresh one (compiles aurora once, can take a while)..."
+    echo "Native prebuilt package is missing or stale; harvesting a fresh one (compiles aurora/third-party once, can take a while)..."
     bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$bundle_arch"
 fi
-mkdir -p "$stagedir/app/native-prebuilt"
-cp -a "$native_prebuilt_dir/." "$stagedir/app/native-prebuilt/"
 
-echo "Staging the bundled workspace snapshot..."
-for dir in runtime aurora-main projects; do
-    cp -r "$workspace/$dir" "$stagedir/app/workspace/$dir"
-done
-find "$stagedir/app/workspace/aurora-main/extern" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
-rm -rf "$stagedir/app/workspace/runtime/build"
-cp "$workspace/Launcher/local-build.sh" "$stagedir/app/workspace/Launcher/local-build.sh"
+# --- per-arch source pins ----------------------------------------------------------------------
+llvm_release_arch=""; llvm_sha256=""
+cmake_release_arch=""; cmake_sha256=""
+ninja_asset=""; ninja_sha256=""
+lld_deb_icu_url=""; lld_deb_icu_sha256=""
+lld_deb_xml_url=""; lld_deb_xml_sha256=""
+nodtool_url=""; nodtool_sha256=""
+case "$bundle_arch" in
+    x86_64)
+        llvm_release_arch=X64
+        llvm_sha256=df0e1ecf16caf3489a272a5eea4eec9b0d82878f6477fa309504f918a0006384
+        cmake_release_arch=x86_64
+        cmake_sha256=927b2368a946c37269c3a66225ab00544e756459cdd0b5d0da438694fb9ff802
+        ninja_asset=ninja-linux.zip
+        ninja_sha256=5749cbc4e668273514150a80e387a957f933c6ed3f5f11e03fb30955e2bbead6
+        nodtool_url=https://github.com/encounter/nod/releases/download/v2.0.0-alpha.10/nodtool-linux-x86_64
+        nodtool_sha256=f853b83268b9542faf0d28815bc3a23c090ae28ebf397e46f99cbb08122c8307
+        lld_deb_icu_url=https://launchpad.net/ubuntu/+archive/primary/+files/libicu70_70.1-2_amd64.deb
+        lld_deb_icu_sha256=58a154f6307289813da2276f900498ef536ae7c0522d2cf31a3c3c5cf62dfd9a
+        lld_deb_xml_url=https://launchpad.net/ubuntu/+archive/primary/+files/libxml2_2.9.13+dfsg-1build1_amd64.deb
+        lld_deb_xml_sha256=4831826d0e320f6715722716d9737c7e57a052d20e55dd03ff7444c6e502a3ff
+        ;;
+    aarch64)
+        llvm_release_arch=ARM64
+        llvm_sha256=805efad2bb91cb4967fa569e0881d10c0f69c04461cf671cccbae19f547acc34
+        cmake_release_arch=aarch64
+        cmake_sha256=9ea38356dbd3e32e51029a3e09a0f2f8e117ef4fbcaad7a21ffb36409bbd5cb4
+        ninja_asset=ninja-linux-aarch64.zip
+        ninja_sha256=fd2cacc8050a7f12a16a2e48f9e06fca5c14fc4c2bee2babb67b58be17a607fc
+        nodtool_url=https://github.com/encounter/nod/releases/download/v2.0.0-alpha.10/nodtool-linux-aarch64
+        nodtool_sha256=b0d94617ed2393334845669cc1f74f1e4fce0d6acb24e8be28c479689a1b907b
+        lld_deb_icu_url=https://launchpad.net/ubuntu/+archive/primary/+files/libicu70_70.1-2_arm64.deb
+        lld_deb_icu_sha256=ac68372cf4a976e6a206858fd9b28c68e49d37d650b9b8653270038a6e7bc174
+        lld_deb_xml_url=https://launchpad.net/ubuntu/+archive/primary/+files/libxml2_2.9.13+dfsg-1build1_arm64.deb
+        lld_deb_xml_sha256=85ec6ee7d1169c825beba2a30bbb3b37974b286d0284c69882de12b4eeb6c99b
+        ;;
+esac
 
-# Bundle-version stamping: the entrypoint re-syncs the workspace into the writable cache only
-# when this changes, so it must change whenever the bundled paths did.
-if git -C "$workspace" rev-parse HEAD >/dev/null 2>&1; then
-    version=$(git -C "$workspace" rev-parse HEAD)
-    if [[ -n "$(git -C "$workspace" status --porcelain 2>/dev/null)" ]]; then
-        version="$version-dirty-$(date -u +%s)"
-    fi
-    echo "$version" > "$stagedir/app/workspace/.bundle-version"
-else
-    date -u +%s > "$stagedir/app/workspace/.bundle-version"
-fi
-
-echo "Writing the Flatpak entrypoint..."
-cat > "$stagedir/app/bin/wiicompiled-setup" <<'ENTRYPOINT'
-#!/bin/bash
-set -euo pipefail
-APP=/app
-# lld in the bundled toolchain links host libs (libxml2, ICU) the sandbox runtime can't provide;
-# expose the copies bundled at build time.
-export LD_LIBRARY_PATH="$APP/usr/toolchain/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# /app is read-only and the workspace snapshot must be writable (local-build.sh writes
-# generated/, native-build/, Assets/, ...), so it is copied out to the sandbox's writable data
-# dir on first run and only re-synced when the bundled snapshot's version stamp changes.
-CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
-mkdir -p "$CACHE"
-if [ ! -f "$CACHE/.bundle-version" ] || \
-   [ "$(cat "$APP/workspace/.bundle-version")" != "$(cat "$CACHE/.bundle-version")" ]; then
-    mkdir -p "$CACHE/Launcher"
-    for dir in runtime aurora-main projects; do
-        rm -rf "$CACHE/$dir"
-        cp -r "$APP/workspace/$dir" "$CACHE/$dir"
-    done
-    cp "$APP/workspace/Launcher/local-build.sh" "$CACHE/Launcher/local-build.sh"
-    cp "$APP/workspace/.bundle-version" "$CACHE/.bundle-version"
-fi
-# toolchain/ and native-prebuilt/ are NOT copied into the cache (they're large - ~500 MiB /
-# ~90 MiB - and local-build.sh only ever reads from them). A Flatpak's /app path is fixed for the
-# lifetime of the installed bundle, so these are referenced directly here and the paths CMake
-# records never change across runs.
-exec "$APP/libexec/wiicompiled-setup" --workspace "$CACHE" \
-    --translator-bin "$APP/libexec/translator-cli" \
-    --disc-tool-bin "$APP/libexec/nodtool" \
-    --cc "$APP/usr/toolchain/bin/clang" \
-    --cxx "$APP/usr/toolchain/bin/clang++" \
-    --fuse-ld lld \
-    --cmake "$APP/usr/toolchain/bin/cmake" \
-    --ninja "$APP/usr/toolchain/bin/ninja" \
-    --native-prebuilt-dir "$APP/native-prebuilt" "$@"
-ENTRYPOINT
-chmod +x "$stagedir/app/bin/wiicompiled-setup"
-
-echo "Writing desktop entry and icon..."
-cat > "$stagedir/app/share/applications/$app_id.desktop" <<DESKTOP
-[Desktop Entry]
-Type=Application
-Name=WiiCompiled Setup
-Comment=Translate, compile, and launch Mario Kart Wii natively on Linux
-Exec=wiicompiled-setup
-Icon=$app_id
-Categories=Game;
-Terminal=true
-DESKTOP
-
-python3 - "$stagedir/app/share/icons/hicolor/512x512/apps/$app_id.png" <<'PY'
-import struct
-import sys
-import zlib
-
-path = sys.argv[1]
-
-
-def chunk(tag: bytes, data: bytes) -> bytes:
-    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
-
-
-width = height = 512
-row = b"\x00" + bytes([0x3A, 0x5F, 0x8F, 0xFF]) * width  # filter byte + opaque blue-grey pixels
-raw = row * height
-ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-idat = zlib.compress(raw, 9)
-
-with open(path, "wb") as handle:
-    handle.write(b"\x89PNG\r\n\x1a\n")
-    handle.write(chunk(b"IHDR", ihdr))
-    handle.write(chunk(b"IDAT", idat))
-    handle.write(chunk(b"IEND", b""))
-PY
-fi
-
-echo "Rendering the Flatpak manifest..."
+# --- manifest render + build -------------------------------------------------------------------
 manifest_template="$script_dir/flatpak/io.github.TeamWheelWizard.Wiicompiled.yml.in"
-manifest_path="$workspace/Launcher/artifacts/flatpak-build/wiicompiled-$bundle_arch.yml"
-mkdir -p "$workspace/Launcher/artifacts/flatpak-build"
+manifest_path="$artifacts/wiicompiled-$bundle_arch.yml"
 sed -e "s|@RUNTIME_BRANCH@|$runtime_branch|g" \
-    -e "s|@STAGED_APP_DIR@|$stagedir/app|g" \
+    -e "s|@APP_ID@|$app_id|g" \
+    -e "s|@SOURCE_TREE@|$source_tree|g" \
+    -e "s|@BUNDLE_VERSION@|$version|g" \
+    -e "s|@NATIVE_PREBUILT_DIR@|$native_prebuilt_dir|g" \
+    -e "s|@LLVM_RELEASE_ARCH@|$llvm_release_arch|g" \
+    -e "s|@LLVM_SHA256@|$llvm_sha256|g" \
+    -e "s|@CMAKE_RELEASE_ARCH@|$cmake_release_arch|g" \
+    -e "s|@CMAKE_SHA256@|$cmake_sha256|g" \
+    -e "s|@NINJA_ASSET@|$ninja_asset|g" \
+    -e "s|@NINJA_SHA256@|$ninja_sha256|g" \
+    -e "s|@LLD_DEB_ICU_URL@|$lld_deb_icu_url|g" \
+    -e "s|@LLD_DEB_ICU_SHA@|$lld_deb_icu_sha256|g" \
+    -e "s|@LLD_DEB_XML_URL@|$lld_deb_xml_url|g" \
+    -e "s|@LLD_DEB_XML_SHA@|$lld_deb_xml_sha256|g" \
+    -e "s|@NODTOOL_URL@|$nodtool_url|g" \
+    -e "s|@NODTOOL_SHA256@|$nodtool_sha256|g" \
     "$manifest_template" > "$manifest_path"
 
-if [[ "$mode" == "staged-only" ]]; then
-    echo "Staging complete (--staged-only); run flatpak-builder on the host with --skip-stage."
-    exit 0
-fi
-
-build_dir="$workspace/Launcher/artifacts/flatpak-build/.build-$bundle_arch"
-repo_dir="$workspace/Launcher/artifacts/flatpak-build/repo-$bundle_arch"
+build_dir="$artifacts/.build-$bundle_arch"
+repo_dir="$artifacts/repo-$bundle_arch"
 rm -rf "$build_dir" "$repo_dir"
 
 echo "Building $build_dir from the rendered manifest and exporting to the local repo..."

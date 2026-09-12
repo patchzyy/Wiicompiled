@@ -89,7 +89,7 @@ Usage: local-build.sh --output-dir DIR [options]
   --native-prebuilt-dir DIR       Precompiled aurora/third-party package (see Prepare-NativePrebuilt.sh);
                                    skips compiling aurora-main from source entirely
   --sysroot PATH                   Passed to CMake as -DCMAKE_SYSROOT: where the compiler resolves
-                                   standard headers/startup files
+                                   standard headers/startup files (the Flatpak's /app devroot)
 EOF
 }
 
@@ -362,10 +362,12 @@ if [[ -f "$build/CMakeCache.txt" ]]; then
         # and their per-language *_AR/*_RANLIB variants) only once, the first time a language's
         # compiler is checked - unlike CMAKE_C_COMPILER/CMAKE_CXX_COMPILER, which get overwritten by
         # the -D flags below on every configure, these are never refreshed on a plain reconfigure.
-        # The Flatpak entrypoint keeps --cc/--cxx/--cmake/--ninja pointed at stable /app paths
-        # (see build-flatpak.sh), so the *path string* CMake caches never actually changes run to
-        # run - but this check stays as a general fallback for any tool path that goes stale some
-        # other way (a moved/removed system toolchain, a relocated portable-tools directory, etc):
+        # AppImage's AppRun keeps --cc/--cxx/--cmake/--ninja pointed at a stable symlink it re-targets
+        # at the current mount every launch (see build-appimage.sh), and the Flatpak entrypoint keeps
+        # them at stable /app paths (see build-flatpak.sh) - so the *path string* CMake caches never
+        # actually changes run to run - but this check stays as a general fallback for any tool path
+        # that goes stale some other way (a moved/removed system toolchain, a relocated portable-tools
+        # directory, etc):
         # any :FILEPATH= cache entry whose recorded path no longer exists means this cache belongs
         # to a toolchain location that's gone - not just a workspace/path mismatch.
         while IFS= read -r tool_path; do
@@ -395,8 +397,9 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
     -DCMAKE_MAKE_PROGRAM="$ninja_bin"
     -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs")
 # CMAKE_C_COMPILER/CXX_COMPILER stay stable across runs on their own (they're exactly
-# what's passed via -D above, and the Flatpak entrypoint points --cc/--cxx at stable /app paths that
-# never move - see build-flatpak.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT
+# what's passed via -D above; AppImage's AppRun points --cc/--cxx at a symlink it re-targets at the
+# current mount every launch, and the Flatpak entrypoint at stable /app paths - see
+# build-appimage.sh/build-flatpak.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT
 # inherit that stability just because $cc_bin does: verified directly that even with a stable
 # --cc symlink, CMake's own auto-detection of these still resolved to the *real*, ephemeral mount
 # path underneath (clang's own driver locates its sibling llvm-ar/ld.lld tools by resolving its own

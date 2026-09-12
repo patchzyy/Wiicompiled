@@ -50,9 +50,9 @@ internal static class BuildRunner
         {
             startInfo.ArgumentList.Add("--translator-bin"); startInfo.ArgumentList.Add(translatorBin);
         }
-        // Forwarded by the sandbox entrypoint so the Flatpak's bundled clang/lld (see
-        // prepare-portable-tools.sh) is used instead of local-build.sh's own default of whatever
-        // clang is on $PATH.
+        // Forwarded by AppRun (build-appimage.sh) / the sandbox entrypoint (build-flatpak.sh) so the
+        // bundled clang/lld (see prepare-portable-tools.sh) is used instead of local-build.sh's
+        // own default of whatever clang is on $PATH.
         if (!string.IsNullOrEmpty(ccBin))
         {
             startInfo.ArgumentList.Add("--cc"); startInfo.ArgumentList.Add(ccBin);
@@ -73,13 +73,15 @@ internal static class BuildRunner
         {
             startInfo.ArgumentList.Add("--ninja"); startInfo.ArgumentList.Add(ninjaBin);
         }
-        // Forwarded by the sandbox entrypoint so the Flatpak's bundled precompiled aurora/third-party
-        // package (see Prepare-NativePrebuilt.sh) is used instead of local-build.sh compiling
-        // aurora-main itself.
+        // Forwarded by AppRun (build-appimage.sh) / the sandbox entrypoint (build-flatpak.sh) so the
+        // bundled precompiled aurora/third-party package (see Prepare-NativePrebuilt.sh) is used
+        // instead of local-build.sh compiling aurora-main itself.
         if (!string.IsNullOrEmpty(nativePrebuiltDir))
         {
             startInfo.ArgumentList.Add("--native-prebuilt-dir"); startInfo.ArgumentList.Add(nativePrebuiltDir);
         }
+        // Forwarded by the sandbox entrypoint so the bundled clang/lld compile-dev files
+        // bundled at /app/usr are used as the sysroot (see build-flatpak.sh, dev-files module).
         if (!string.IsNullOrEmpty(sysroot))
         {
             startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);

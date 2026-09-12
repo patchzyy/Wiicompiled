@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=WiiCompiled Setup
+Comment=Translate, compile, and launch Mario Kart Wii natively on Linux
+Exec=wiicompiled-setup
+Icon=io.github.TeamWheelWizard.Wiicompiled
+Categories=Game;
+Terminal=true

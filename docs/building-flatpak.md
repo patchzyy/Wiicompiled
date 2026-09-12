@@ -33,8 +33,9 @@ the toolchain is pointed at them with `--sysroot=/app` (see the sandbox entrypoi
 3. **native-prebuilt** — copies the verified precompiled aurora + third-party package harvested
    up front by `Launcher/Prepare-NativePrebuilt.sh` (an immutable, fingerprint-pinned artifact)
    into `/app/native-prebuilt`.
-4. **dotnet-apps** — publishes the installer/translator against an offline NuGet feeds
-   (a bundled YamlDotNet package plus the dotnet8 SDK extension's own offline feed).
+4. **dotnet-apps** — publishes the installer/translator against offline NuGet feeds
+   (a pinned YamlDotNet package fetched up front from NuGet.org plus the dotnet8 SDK
+   extension's own offline feed).
 5. **dev-files** — copies the SDK's `/usr/include`, multiarch headers, gcc crt objects and the
    libc/libm linker scripts into `/app/usr`.
 6. **workspace-snapshot** — copies the `runtime`/`aurora-main`/`projects` sources plus
@@ -132,7 +133,8 @@ flatpak run --command=bash io.github.TeamWheelWizard.Wiicompiled -c '
   original absolute `/usr/...` members: lld prepends `--sysroot` itself. The only member outside
   the mirrored libdir (`/lib64/ld-linux-x86-64.so.2`) is mirrored by `dev-files` into `/app/lib64`.
 - **`NU1301`/`NU1101` restore errors** — the build sandbox has no network; the dotnet-apps.module
-  resolves everything from the bundled YamlDotNet feed + the dotnet8 extension's offline feed.
+  resolves everything from the pinned YamlDotNet feed (fetched by flatpak-builder before the
+  offline build starts) + the dotnet8 extension's offline feed.
 - **Disk space** — each failed run can leave a multi-GB `.flatpak-builder/build/` tree; clean the
   build dir before a rerun (`rm -rf Launcher/artifacts/flatpak-build/.build-*`). Downloaded
   archives stay cached under `.flatpak-builder/downloads`.
