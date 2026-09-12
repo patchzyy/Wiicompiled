@@ -383,6 +383,33 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         return NAND_RESULT_OK;
     }
 
+    // Flatpak can expose the managed NAND and an external Riivolution save
+    // directory as separate mounts. Linux cannot rename across mounts, but
+    // nandMove must still work for files such as banner.bin. Preserve the
+    // operation's semantics with a copy followed by source removal.
+    if (ec == std::make_error_code(std::errc::cross_device_link)) {
+        std::error_code copyEc;
+        if (IsDirectory(srcHost)) {
+            std::filesystem::copy(srcHost, dstHost,
+                                  std::filesystem::copy_options::recursive, copyEc);
+        } else {
+            std::filesystem::copy_file(srcHost, dstHost, copyEc);
+        }
+
+        if (!copyEc) {
+            std::error_code removeEc;
+            std::filesystem::remove_all(srcHost, removeEc);
+            if (!removeEc) {
+                LogNandWarning("NANDMove", "used copy/remove fallback across mounts");
+                return NAND_RESULT_OK;
+            }
+            LogNandError("NANDMove", "copy succeeded but source removal failed: %s",
+                         removeEc.message().c_str());
+        } else {
+            LogNandError("NANDMove", "cross-mount copy failed: %s", copyEc.message().c_str());
+        }
+    }
+
     LogNandError("NANDMove", "FAILED error=%d message='%s'", ec.value(), ec.message().c_str());
     return NAND_RESULT_UNKNOWN;
 }
