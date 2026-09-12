@@ -95,7 +95,7 @@ jobs:
       - name: Install dependencies (flatpak + SDL3 build)
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak dbus build-essential libxml2 libicu70 git make \
+          sudo apt-get install -y flatpak flatpak-builder dbus build-essential libxml2 libicu70 git make \
             pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
             libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
             libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
@@ -115,12 +115,18 @@ jobs:
         run: bash Launcher/build-flatpak.sh
 
       # The bundle is the release contract, so install it and smoke-test inside the sandbox rather
-      # than trusting that the artifact merely exists.
+      # than trusting that the artifact merely exists. The controller grant is part of that
+      # contract: assert the exported permissions carry devices=input + session-bus and that
+      # /dev/input is exposed inside the sandbox.
       - name: Smoke test the bundle
         run: |
           dbus-run-session -- flatpak install --user --noninteractive -y \
             ./Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.flatpak
           dbus-run-session -- flatpak run io.github.skiletro.Wiicompiled --version
+          flatpak info --show-permissions io.github.skiletro.Wiicompiled \
+            | grep -E '^(devices=.*input|sockets=.*session-bus)'
+          dbus-run-session -- flatpak run --command=sh io.github.skiletro.Wiicompiled \
+            -c 'test -d /dev/input && echo gamepad-devices-present'
 
       - uses: actions/upload-artifact@v7
         with:

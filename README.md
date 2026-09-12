@@ -167,6 +167,9 @@ flatpak run io.github.skiletro.Wiicompiled launch-retro
 
 Run `flatpak run io.github.skiletro.Wiicompiled --help` for all commands and options.
 
+Game controllers work out of the box: the sandbox is granted access to `/dev/input` (joypads with
+rumble/hotplug) plus the session bus (Steam/BT controllers that prefer D-Bus).
+
 ### Linux: AppImage (alternative)
 
 Prefer a single self-contained file over Flatpak? `WiiCompiled-Setup-<arch>.AppImage` from the

@@ -23,6 +23,14 @@
 # The sandbox's game-compile needs are what set the permissions: --filesystem=home so the user's
 # game dump ISO and any --install-dir/--retro-dir paths resolve, --share=network for the
 # Retro-WFC payload download, and the socket/device grants for launching the compiled game.
+#
+# The flatpak-builder manifest (Launcher/flatpak/io.github.skiletro.Wiicompiled.yml.in) is the
+# declarative source of truth for the runtime version, command and finish-args; this script
+# renders it per build and lets flatpak-builder write the app metadata and export the repo, then
+# build-bundles the single-file asset. The SDK-as-runtime choice and the self-hosted distribution
+# route are deliberate - see the manifest header. On hosts where nested bwrap cannot run (e.g. a
+# container), run --staged-only inside the container and --skip-stage on the host so the
+# flatpak-builder/export steps run where bwrap works.
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -32,6 +40,8 @@ app_id="io.github.skiletro.Wiicompiled"
 runtime_branch="25.08"
 output_dir="$workspace/Launcher/dist"
 flatpak_override=""
+flatpak_builder_cmd="flatpak-builder"
+mode=full
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,8 +49,12 @@ while [[ $# -gt 0 ]]; do
         --app-id) app_id=$2; shift 2 ;;
         --runtime-branch) runtime_branch=$2; shift 2 ;;
         --flatpak) flatpak_override=$2; shift 2 ;;
+        --flatpak-builder) flatpak_builder_cmd=$2; shift 2 ;;
+        --staged-only) mode=staged-only; shift ;;
+        --skip-stage) mode=skip-stage; shift ;;
         -h|--help)
-            echo "Usage: build-flatpak.sh [--output-dir DIR] [--app-id ID] [--runtime-branch BRANCH] [--flatpak PATH]"
+            echo "Usage: build-flatpak.sh [--output-dir DIR] [--app-id ID] [--runtime-branch BRANCH] [--flatpak PATH]" >&2
+            echo "Modes: full (default); --staged-only stops after publishing/staging; --skip-stage runs flatpak-builder+bundle on an existing stage" >&2
             exit 0
             ;;
         *) echo "build-flatpak.sh: unknown argument: $1" >&2; exit 1 ;;
@@ -81,7 +95,10 @@ if ! "$flatpak_bin" info "$runtime_ref" >/dev/null 2>&1; then
     exit 1
 fi
 
+# Publishing and staging fill the staged /app tree; --skip-stage jumps past this to rebuild the
+# bundle from an already-staged tree (e.g. staged inside a container that cannot run bwrap).
 stagedir="$workspace/Launcher/artifacts/flatpak-build/$bundle_arch"
+if [[ "$mode" != "skip-stage" ]]; then
 rm -rf "$stagedir"
 mkdir -p "$stagedir/app/bin" "$stagedir/app/libexec" "$stagedir/app/workspace/Launcher" \
     "$stagedir/app/usr" "$stagedir/app/share/applications" \
@@ -271,30 +288,37 @@ with open(path, "wb") as handle:
     handle.write(chunk(b"IDAT", idat))
     handle.write(chunk(b"IEND", b""))
 PY
+fi
+
+echo "Rendering the Flatpak manifest..."
+manifest_template="$script_dir/flatpak/io.github.skiletro.Wiicompiled.yml.in"
+manifest_path="$workspace/Launcher/artifacts/flatpak-build/wiicompiled-$bundle_arch.yml"
+mkdir -p "$workspace/Launcher/artifacts/flatpak-build"
+sed -e "s|@RUNTIME_BRANCH@|$runtime_branch|g" \
+    -e "s|@STAGED_APP_DIR@|$stagedir/app|g" \
+    "$manifest_template" > "$manifest_path"
+
+if [[ "$mode" == "staged-only" ]]; then
+    echo "Staging complete (--staged-only); run flatpak-builder on the host with --skip-stage."
+    exit 0
+fi
 
 build_dir="$workspace/Launcher/artifacts/flatpak-build/.build-$bundle_arch"
 repo_dir="$workspace/Launcher/artifacts/flatpak-build/repo-$bundle_arch"
 rm -rf "$build_dir" "$repo_dir"
 
-echo "Initializing the Flatpak build dir on $runtime_ref..."
-"$flatpak_bin" build-init "$build_dir" "$app_id" "$runtime_ref" "$runtime_ref" stable
-cp -a "$stagedir/app/." "$build_dir/files/"
-
-echo "Finalizing sandbox metadata..."
-"$flatpak_bin" build-finish \
-    --command=/app/bin/wiicompiled-setup \
-    --filesystem=home \
-    --share=network \
-    --socket=wayland \
-    --socket=x11 \
-    --socket=pulseaudio \
-    --device=dri \
-    "$build_dir"
+echo "Building $build_dir from the rendered manifest and exporting to the local repo..."
+# --default-branch=stable: flatpak-builder otherwise exports the app on the
+# 'master' branch, but build-bundle below looks up the ref on 'stable'.
+# --disable-rofiles-fuse: keeps the build off FUSE (the file size heuristics that
+# decide which files go through the rofiles store are irrelevant for the payload).
+"$flatpak_builder_cmd" --repo="$repo_dir" --force-clean --arch="$bundle_arch" \
+    --default-branch=stable --disable-rofiles-fuse \
+    "$build_dir" "$manifest_path"
 
 mkdir -p "$output_dir"
 output_name="WiiCompiled-Setup-$bundle_arch.flatpak"
-echo "Exporting to the local ostree repo and bundling..."
-"$flatpak_bin" build-export --no-update-summary "$repo_dir" "$build_dir" stable
+echo "Bundling the single-file asset from the exported repo..."
 "$flatpak_bin" build-bundle --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo \
     "$repo_dir" "$output_dir/$output_name" "$app_id" stable
 echo "Built: $output_dir/$output_name"
