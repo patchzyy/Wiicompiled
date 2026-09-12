@@ -102,13 +102,17 @@ jobs:
             libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev libthai-dev libusb-1.0-0-dev \
             libpipewire-0.3-dev libwayland-dev libdecor-0-dev liburing-dev
 
-      # build-flatpak.sh runs on the org.freedesktop.Sdk runtime (the app's base and the source of
-      # the glibc/libstdc++/zlib dev files its bundled clang needs at compile time - see the
-      # script's header). Pulling the SDK also installs the matching Platform as its dependency.
-      - name: Install the freedesktop SDK runtime
+      # The build sandbox is org.freedesktop.Sdk//25.08 (the app installs on Platform 25.08, and
+      # the same SDK subtree is the source of the dev files its bundled clang needs at compile
+      # time - see the manifest header). The dotnet8 sdk-extension provides the dotnet-apps
+      # module's compiler. build-flatpak.sh requires all three up front; install them explicitly
+      # rather than relying on flatpak-builder auto-installing them.
+      - name: Install the freedesktop SDK runtime + dotnet8 extension
         run: |
           flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          dbus-run-session -- flatpak install --user --noninteractive -y flathub org.freedesktop.Sdk//25.08
+          dbus-run-session -- flatpak install --user --noninteractive -y flathub \
+            org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.dotnet8//25.08
 
       - name: Build Flatpak bundle
         run: bash Launcher/build-flatpak.sh
@@ -126,6 +130,25 @@ jobs:
             | grep -E '^(devices=.*input|sockets=.*session-bus)'
           dbus-run-session -- flatpak run --command=sh io.github.TeamWheelWizard.Wiicompiled \
             -c 'test -d /dev/input && echo gamepad-devices-present'
+
+      # The bundled clang/lld is the release contract too: the sandbox compiles the user's game
+      # at install time, so verify the devroot (headers, crt objects, libc.so GROUP members)
+      # actually links under --sysroot=/app before shipping the bundle.
+      - name: Compile smoke test inside the sandbox
+        run: |
+          dbus-run-session -- flatpak run --command=bash io.github.TeamWheelWizard.Wiicompiled \
+            -c '
+              export APP=/app
+              case "$(uname -m)" in
+                x86_64) libdir=x86_64-linux-gnu ;;
+                aarch64) libdir=aarch64-linux-gnu ;;
+              esac
+              export LIBRARY_PATH="$APP/usr/lib/$libdir"
+              export LD_LIBRARY_PATH="$APP/usr/toolchain/lib"
+              printf "#include <vector>\n#include <cstdio>\nint main(){std::printf(\"devroot link ok\\n\");}\n" > /tmp/probe.cpp
+              "$APP/usr/toolchain/bin/clang++" --sysroot="$APP" -fuse-ld=lld -std=c++20 /tmp/probe.cpp -o /tmp/probe
+              /tmp/probe
+            '
 
       - uses: actions/upload-artifact@v7
         with:

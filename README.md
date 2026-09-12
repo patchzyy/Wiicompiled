@@ -138,7 +138,7 @@ image under Settings, turn on **WiiCompiled (beta)**, and hit install from the H
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
-### Linux
+### Linux: Flatpak (recommended)
 
 Grab `WiiCompiled-Setup-<arch>.flatpak` from the
 [Releases](https://github.com/patchzyy/Wiicompiled/releases) page (`x86_64` or `aarch64`, matching
@@ -148,8 +148,8 @@ your userspace) and install it with Flatpak:
 flatpak install --user ./WiiCompiled-Setup-x86_64.flatpak
 ```
 
-The first install pulls the FreeDesktop SDK runtime from Flathub (a large one-time download — the
-compile toolchain runs inside the sandbox). Then translate and build the game from your own PAL
+The first install pulls the FreeDesktop Platform runtime from Flathub (a moderate one-time download —
+the compile toolchain runs inside the sandbox). Then translate and build the game from your own PAL
 `RMCP01` dump and launch it, all through the same CLI:
 
 ```bash
@@ -218,6 +218,8 @@ For everything beyond that, feeding in your own `main.dol`/`StaticR.rel`, runnin
 translation, generating the manifest and build graph, and compiling, see [`translator/README.md`](translator/README.md).
 
 For a step-by-step guide on compiling both WiiCompiled and Retro Rewind from source on macOS (Apple Silicon), see the [macOS Build Guide](docs/building-macos.md).
+
+For building the Linux Flatpak bundle (`Launcher/dist/WiiCompiled-Setup-<arch>.flatpak`), see the [Flatpak Build Guide](docs/building-flatpak.md).
 
 ## FAQ
 
