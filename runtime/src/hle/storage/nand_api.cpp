@@ -348,6 +348,11 @@ extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t a
 PPC_NATIVE_OVERRIDE(8019BBE0, NANDCreateDir_HLE, int32_t, (uint32_t pathPtr, uint32_t perm, uint32_t attr), (pathPtr, perm, attr));
 
 extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
+    // A cross-mount move is implemented as several host operations. Keep two
+    // guest moves from interleaving those operations and corrupting recovery.
+    static std::mutex moveMutex;
+    std::lock_guard<std::mutex> lock(moveMutex);
+
     const char* srcPath = srcPathPtr ? (const char*)Memory::GetPointer(srcPathPtr) : nullptr;
     const char* dstPath = dstPathPtr ? (const char*)Memory::GetPointer(dstPathPtr) : nullptr;
     
@@ -387,27 +392,76 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
     // directory as separate mounts. Linux cannot rename across mounts, but
     // nandMove must still work for files such as banner.bin. Preserve the
     // operation's semantics with a copy followed by source removal.
-    if (ec == std::make_error_code(std::errc::cross_device_link)) {
-        std::error_code copyEc;
-        if (IsDirectory(srcHost)) {
-            std::filesystem::copy(srcHost, dstHost,
-                                  std::filesystem::copy_options::recursive, copyEc);
-        } else {
-            std::filesystem::copy_file(srcHost, dstHost, copyEc);
+    if (ec == std::errc::cross_device_link) {
+        std::filesystem::path tempHost = dstHost;
+        tempHost += ".nandmove.tmp";
+        if (PathExists(tempHost)) {
+            // The source is still authoritative after an interrupted copy, so
+            // a stale temporary destination can be safely discarded.
+            std::error_code staleEc;
+            std::filesystem::remove_all(tempHost, staleEc);
+            if (staleEc) {
+                LogNandError("NANDMove", "failed to remove stale temporary path '%s': %s",
+                             HostPathText(tempHost).c_str(), staleEc.message().c_str());
+                return NAND_RESULT_UNKNOWN;
+            }
+            LogNandWarning("NANDMove", "discarded stale cross-mount temporary path '%s'",
+                           HostPathText(tempHost).c_str());
         }
 
-        if (!copyEc) {
-            std::error_code removeEc;
-            std::filesystem::remove_all(srcHost, removeEc);
-            if (!removeEc) {
-                LogNandWarning("NANDMove", "used copy/remove fallback across mounts");
-                return NAND_RESULT_OK;
-            }
-            LogNandError("NANDMove", "copy succeeded but source removal failed: %s",
-                         removeEc.message().c_str());
+        std::error_code copyEc;
+        if (IsDirectory(srcHost)) {
+            std::filesystem::copy(srcHost, tempHost,
+                                  std::filesystem::copy_options::recursive, copyEc);
         } else {
-            LogNandError("NANDMove", "cross-mount copy failed: %s", copyEc.message().c_str());
+            std::filesystem::copy_file(srcHost, tempHost, copyEc);
         }
+
+        if (copyEc) {
+            std::error_code cleanupEc;
+            std::filesystem::remove_all(tempHost, cleanupEc);
+            LogNandError("NANDMove", "cross-mount copy failed: %s", copyEc.message().c_str());
+            if (cleanupEc) {
+                LogNandError("NANDMove", "failed to clean up temporary path '%s': %s",
+                             HostPathText(tempHost).c_str(), cleanupEc.message().c_str());
+            }
+            return NAND_RESULT_UNKNOWN;
+        }
+
+        std::error_code publishEc;
+        std::filesystem::rename(tempHost, dstHost, publishEc);
+        if (publishEc) {
+            std::error_code cleanupEc;
+            std::filesystem::remove_all(tempHost, cleanupEc);
+            LogNandError("NANDMove", "failed to publish cross-mount copy: %s",
+                         publishEc.message().c_str());
+            if (cleanupEc) {
+                LogNandError("NANDMove", "failed to clean up temporary path '%s': %s",
+                             HostPathText(tempHost).c_str(), cleanupEc.message().c_str());
+            }
+            return NAND_RESULT_UNKNOWN;
+        }
+
+        std::error_code removeEc;
+        std::filesystem::remove_all(srcHost, removeEc);
+        if (!removeEc) {
+            LogNandWarning("NANDMove", "used copy/remove fallback across mounts");
+            return NAND_RESULT_OK;
+        }
+
+        // Keep the source as the authoritative copy when cleanup fails. The
+        // destination was published atomically on its own mount, so remove it
+        // to avoid presenting two entries to a later NAND scan. Cross-mount
+        // moves cannot provide crash-atomicity, so this is best effort.
+        std::error_code rollbackEc;
+        std::filesystem::remove_all(dstHost, rollbackEc);
+        LogNandError("NANDMove", "copy succeeded but source removal failed: %s",
+                     removeEc.message().c_str());
+        if (rollbackEc) {
+            LogNandError("NANDMove", "failed to roll back destination '%s': %s",
+                         HostPathText(dstHost).c_str(), rollbackEc.message().c_str());
+        }
+        return NAND_RESULT_UNKNOWN;
     }
 
     LogNandError("NANDMove", "FAILED error=%d message='%s'", ec.value(), ec.message().c_str());
