@@ -212,6 +212,8 @@ translation, generating the manifest and build graph, and compiling, see [`trans
 
 For a step-by-step guide on compiling both WiiCompiled and Retro Rewind from source on macOS (Apple Silicon), see the [macOS Build Guide](docs/building-macos.md).
 
+For building the Linux Flatpak bundle (`Launcher/dist/WiiCompiled-Setup-<arch>.flatpak`) — including the container-based two-phase workflow for hosts without bubblewrap — see the [Flatpak Build Guide](docs/building-flatpak.md).
+
 ## FAQ
 
 **Is this an emulator?**
