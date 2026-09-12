@@ -409,8 +409,9 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
                            HostPathText(tempHost).c_str());
         }
 
+        const bool sourceIsDirectory = IsDirectory(srcHost);
         std::error_code copyEc;
-        if (IsDirectory(srcHost)) {
+        if (sourceIsDirectory) {
             std::filesystem::copy(srcHost, tempHost,
                                   std::filesystem::copy_options::recursive, copyEc);
         } else {
@@ -453,13 +454,20 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         // destination was published atomically on its own mount, so remove it
         // to avoid presenting two entries to a later NAND scan. Cross-mount
         // moves cannot provide crash-atomicity, so this is best effort.
-        std::error_code rollbackEc;
-        std::filesystem::remove_all(dstHost, rollbackEc);
         LogNandError("NANDMove", "copy succeeded but source removal failed: %s",
                      removeEc.message().c_str());
-        if (rollbackEc) {
-            LogNandError("NANDMove", "failed to roll back destination '%s': %s",
-                         HostPathText(dstHost).c_str(), rollbackEc.message().c_str());
+        if (sourceIsDirectory) {
+            // remove_all may have removed only part of a directory tree. Keep
+            // the complete published copy rather than rolling it back to a
+            // partially deleted source.
+            LogNandWarning("NANDMove", "preserving published directory copy after partial source removal");
+        } else {
+            std::error_code rollbackEc;
+            std::filesystem::remove_all(dstHost, rollbackEc);
+            if (rollbackEc) {
+                LogNandError("NANDMove", "failed to roll back destination '%s': %s",
+                             HostPathText(dstHost).c_str(), rollbackEc.message().c_str());
+            }
         }
         return NAND_RESULT_UNKNOWN;
     }
