@@ -38,7 +38,11 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
   for (auto& slot : slots) {
     std::string error;
     slot = create(instance, device, {width, height, outWidth, outHeight, format}, error);
-    if (!slot) throw std::runtime_error(error);
+    if (!slot) {
+      throw std::runtime_error(error.empty()
+          ? "MetalFX resource pool was still busy retiring earlier slots"
+          : error);
+    }
   }
 
   // Asymmetric quadrants expose channel swaps, vertical flips, and stale frames.
