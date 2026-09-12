@@ -4,6 +4,8 @@
 
 #include "nand_internal.h"
 
+#include <atomic>
+
 // ============================================================================
 // Local helpers
 // ============================================================================
@@ -393,23 +395,46 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
     // nandMove must still work for files such as banner.bin. Preserve the
     // operation's semantics with a copy followed by source removal.
     if (ec == std::errc::cross_device_link) {
-        std::filesystem::path tempHost = dstHost;
-        tempHost += ".nandmove.tmp";
-        if (PathExists(tempHost)) {
-            // The source is still authoritative after an interrupted copy, so
-            // a stale temporary destination can be safely discarded.
-            std::error_code staleEc;
-            std::filesystem::remove_all(tempHost, staleEc);
-            if (staleEc) {
-                LogNandError("NANDMove", "failed to remove stale temporary path '%s': %s",
-                             HostPathText(tempHost).c_str(), staleEc.message().c_str());
+        static std::atomic<uint64_t> moveSequence{0};
+#ifdef _WIN32
+        const auto processId = GetCurrentProcessId();
+#else
+        const auto processId = getpid();
+#endif
+        std::filesystem::path scratchHost;
+        std::error_code scratchEc;
+        for (unsigned attempt = 0; attempt < 128; ++attempt) {
+            const auto name = ".nandmove-" + std::to_string(processId) + "-" +
+                              std::to_string(moveSequence.fetch_add(1)) + "-" +
+                              std::to_string(attempt);
+            const auto candidate = dstDirectoryHost / name;
+            scratchEc.clear();
+            if (std::filesystem::create_directory(candidate, scratchEc)) {
+                scratchHost = candidate;
+                break;
+            }
+            if (scratchEc && scratchEc != std::errc::file_exists) {
+                LogNandError("NANDMove", "failed to claim temporary directory '%s': %s",
+                             HostPathText(candidate).c_str(), scratchEc.message().c_str());
                 return NAND_RESULT_UNKNOWN;
             }
-            LogNandWarning("NANDMove", "discarded stale cross-mount temporary path '%s'",
-                           HostPathText(tempHost).c_str());
+        }
+        if (scratchHost.empty()) {
+            LogNandError("NANDMove", "could not claim a unique temporary directory");
+            return NAND_RESULT_UNKNOWN;
         }
 
         const bool sourceIsDirectory = IsDirectory(srcHost);
+        const std::filesystem::path tempHost = scratchHost / srcName;
+        const auto cleanupScratch = [&]() {
+            std::error_code cleanupEc;
+            std::filesystem::remove_all(scratchHost, cleanupEc);
+            if (cleanupEc) {
+                LogNandError("NANDMove", "failed to clean up temporary directory '%s': %s",
+                             HostPathText(scratchHost).c_str(), cleanupEc.message().c_str());
+            }
+        };
+
         std::error_code copyEc;
         if (sourceIsDirectory) {
             std::filesystem::copy(srcHost, tempHost,
@@ -419,29 +444,43 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         }
 
         if (copyEc) {
-            std::error_code cleanupEc;
-            std::filesystem::remove_all(tempHost, cleanupEc);
             LogNandError("NANDMove", "cross-mount copy failed: %s", copyEc.message().c_str());
-            if (cleanupEc) {
-                LogNandError("NANDMove", "failed to clean up temporary path '%s': %s",
-                             HostPathText(tempHost).c_str(), cleanupEc.message().c_str());
-            }
+            cleanupScratch();
             return NAND_RESULT_UNKNOWN;
         }
 
         std::error_code publishEc;
-        std::filesystem::rename(tempHost, dstHost, publishEc);
+        bool destinationClaimed = false;
+        if (sourceIsDirectory) {
+            destinationClaimed = std::filesystem::create_directory(dstHost, publishEc);
+            if (!destinationClaimed && !publishEc) {
+                publishEc = std::make_error_code(std::errc::file_exists);
+            }
+            if (!publishEc) {
+                std::filesystem::copy(tempHost, dstHost,
+                                      std::filesystem::copy_options::recursive, publishEc);
+            }
+        } else {
+            // link(2) and CreateHardLink do not replace an existing destination,
+            // unlike rename(2) on POSIX. Both paths are already on the target
+            // filesystem, so the link is a no-replace publication operation.
+            std::filesystem::create_hard_link(tempHost, dstHost, publishEc);
+        }
         if (publishEc) {
-            std::error_code cleanupEc;
-            std::filesystem::remove_all(tempHost, cleanupEc);
             LogNandError("NANDMove", "failed to publish cross-mount copy: %s",
                          publishEc.message().c_str());
-            if (cleanupEc) {
-                LogNandError("NANDMove", "failed to clean up temporary path '%s': %s",
-                             HostPathText(tempHost).c_str(), cleanupEc.message().c_str());
+            if (destinationClaimed) {
+                std::error_code rollbackEc;
+                std::filesystem::remove_all(dstHost, rollbackEc);
+                if (rollbackEc) {
+                    LogNandError("NANDMove", "failed to remove partial destination '%s': %s",
+                                 HostPathText(dstHost).c_str(), rollbackEc.message().c_str());
+                }
             }
+            cleanupScratch();
             return NAND_RESULT_UNKNOWN;
         }
+        cleanupScratch();
 
         std::error_code removeEc;
         std::filesystem::remove_all(srcHost, removeEc);
