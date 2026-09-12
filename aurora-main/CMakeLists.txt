@@ -83,3 +83,10 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND NOT CMAKE_CROSSCOMPIL
   enable_testing()
   add_subdirectory(tests)
 endif ()
+
+option(AURORA_BUILD_METALFX_SMOKE_TEST "Build the macOS MetalFX presentation smoke test" OFF)
+if (AURORA_BUILD_METALFX_SMOKE_TEST AND APPLE AND AURORA_ENABLE_GX AND DAWN_ENABLE_METAL AND AURORA_METALFX_FRAMEWORK)
+    add_executable(metalfx_presentation_smoke tests/metalfx_interop/presentation_smoke.cpp)
+    target_include_directories(metalfx_presentation_smoke PRIVATE lib)
+    target_link_libraries(metalfx_presentation_smoke PRIVATE aurora::core aurora::gx aurora::vi dawn::webgpu_dawn)
+endif ()

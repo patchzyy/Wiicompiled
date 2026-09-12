@@ -7,6 +7,7 @@
 #include "gx/shader_info.hpp"
 #include "imgui.hpp"
 #include "webgpu/gpu.hpp"
+#include "webgpu/metalfx.hpp"
 #include <webgpu/webgpu_cpp.h>
 #endif
 
@@ -60,6 +61,9 @@ std::atomic<AuroraFrameWorkerWaitCallback> g_frameWorkerWaitCallback{nullptr};
 // deadlines derived from it, so the presenter cannot drift. Zero means present when ready.
 std::atomic<uint64_t> g_presentScheduleBaseNanos{0};
 std::atomic<uint64_t> g_presentScheduleIntervalNanos{0};
+std::atomic<bool> g_metalfxRequested{false};
+std::atomic<bool> g_metalfxSupported{false};
+std::atomic<AuroraMetalFXStatus> g_metalfxStatus{AURORA_METALFX_DISABLED};
 
 namespace {
 Module Log("aurora");
@@ -747,6 +751,9 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
 #ifdef AURORA_ENABLE_GX
   gfx::initialize();
 
+  g_metalfxSupported.store(webgpu::metalfx::supported(g_device, webgpu::g_backendType));
+  g_metalfxStatus.store(AURORA_METALFX_DISABLED);
+
   imgui::create_context();
 #endif
   const auto size = window::get_window_size();
@@ -1169,12 +1176,113 @@ void stop_presenter() noexcept {
   g_presenterStarted.store(false, std::memory_order_release);
 }
 
+struct MetalFXSlot {
+  webgpu::metalfx::Size size{};
+  std::unique_ptr<webgpu::metalfx::SpatialScaler> scaler;
+  wgpu::BindGroup bindGroup;
+};
+std::array<MetalFXSlot, 3> g_metalfxSlots;
+size_t g_metalfxNextSlot = 0;
+webgpu::metalfx::SpatialScaler* g_metalfxPendingOutput = nullptr;
+bool g_metalfxFailed = false;
+
+void metalfx_failed(const std::string& reason) {
+  Log.warn("MetalFX spatial upscaling disabled: {}; using normal presentation", reason);
+  g_metalfxFailed = true;
+  g_metalfxStatus.store(AURORA_METALFX_ERROR);
+  g_metalfxPendingOutput = nullptr;
+  g_metalfxSlots = {};
+}
+
+wgpu::BindGroup upscale_presentation(wgpu::CommandEncoder& encoder,
+                                     const webgpu::PresentSource& source,
+                                     const webgpu::Viewport& viewport, bool enabled) {
+  if (!enabled) {
+    g_metalfxSlots = {};
+    g_metalfxFailed = false;
+    g_metalfxStatus.store(AURORA_METALFX_DISABLED);
+    return {};
+  }
+  if (!g_metalfxSupported.load()) {
+    g_metalfxStatus.store(AURORA_METALFX_UNSUPPORTED);
+    return {};
+  }
+  if (g_metalfxFailed) return {};
+  const webgpu::metalfx::Size size{
+      source.size.width, source.size.height,
+      static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height),
+      webgpu::g_graphicsConfig.surfaceConfiguration.format,
+  };
+  // The existing copy path samples perceptual values from unorm game images.
+  // Do not introduce implicit sRGB decoding or downscaling into MetalFX.
+  if (!size.inputWidth || !size.inputHeight || size.inputWidth >= size.outputWidth ||
+      size.inputHeight >= size.outputHeight ||
+      (source.format != wgpu::TextureFormat::RGBA8Unorm && source.format != wgpu::TextureFormat::BGRA8Unorm)) {
+    g_metalfxStatus.store(AURORA_METALFX_NOT_UPSCALING);
+    return {};
+  }
+  auto& slot = g_metalfxSlots[g_metalfxNextSlot++ % g_metalfxSlots.size()];
+  if (!slot.scaler || !(slot.size == size)) {
+    slot = {};
+    std::string error;
+    slot.scaler = webgpu::metalfx::create(g_instance, g_device, size, error);
+    if (!slot.scaler) {
+      if (error.empty()) g_metalfxStatus.store(AURORA_METALFX_NOT_UPSCALING);
+      else metalfx_failed(error);
+      return {};
+    }
+    slot.size = size;
+    wgpu::SamplerDescriptor samplerDescriptor{};
+    samplerDescriptor.magFilter = wgpu::FilterMode::Linear;
+    samplerDescriptor.minFilter = wgpu::FilterMode::Linear;
+    slot.bindGroup = webgpu::create_copy_bind_group(slot.scaler->output_view(),
+                                                   g_device.CreateSampler(&samplerDescriptor));
+    Log.info("MetalFX spatial slot: {}x{} -> {}x{}", size.inputWidth, size.inputHeight,
+             size.outputWidth, size.outputHeight);
+  }
+  if (!slot.scaler->begin_input()) {
+    metalfx_failed(slot.scaler->error());
+    return {};
+  }
+  const wgpu::RenderPassColorAttachment attachment{
+      .view = slot.scaler->input_view(),
+      .loadOp = wgpu::LoadOp::Clear,
+      .storeOp = wgpu::StoreOp::Store,
+  };
+  const wgpu::RenderPassDescriptor descriptor{
+      .label = "MetalFX input copy",
+      .colorAttachmentCount = 1,
+      .colorAttachments = &attachment,
+  };
+  auto pass = encoder.BeginRenderPass(&descriptor);
+  pass.SetPipeline(webgpu::g_CopyPipeline);
+  pass.SetBindGroup(0, source.bindGroup);
+  pass.SetViewport(0, 0, static_cast<float>(size.inputWidth), static_cast<float>(size.inputHeight), 0, 1);
+  pass.Draw(3);
+  pass.End();
+  // Submit the sealed scene and input copy before crossing to the native queue.
+  // The replacement encoder composites the upscaled image and ImGui normally.
+  auto buffer = encoder.Finish();
+  {
+    std::lock_guard submitLock(g_queueSubmitMutex);
+    g_queue.Submit(1, &buffer);
+  }
+  encoder = g_device.CreateCommandEncoder();
+  if (!slot.scaler->upscale()) {
+    metalfx_failed(slot.scaler->error());
+    return {};
+  }
+  g_metalfxPendingOutput = slot.scaler.get();
+  g_metalfxStatus.store(AURORA_METALFX_ACTIVE);
+  return slot.bindGroup;
+}
+
 // `presentSource` is latched in the seal prologue: by the time this encodes, the producer's next
 // gfx::begin_frame() may already have cleared the display-copy override.
-void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
+void encode_presentation_snapshot(wgpu::CommandEncoder& encoder,
                                   const webgpu::PresentSource& presentSource,
                                   const PresentationImage& image,
-                                  bool includeImGui) {
+                                  bool includeImGui, bool metalfxEnabled) {
   ZoneScoped;
   auto viewport = webgpu::calculate_present_viewport(
       image.texture.size.width, image.texture.size.height, presentSource.size.width,
@@ -1185,6 +1293,9 @@ void encode_presentation_snapshot(const wgpu::CommandEncoder& encoder,
         image.texture.size.width, image.texture.size.height, presentAspect);
   }
   wgpu::BindGroup presentBindGroup = presentSource.bindGroup;
+  if (auto upscaled = upscale_presentation(encoder, presentSource, viewport, metalfxEnabled)) {
+    presentBindGroup = std::move(upscaled);
+  }
   {
     const std::array attachments{
         wgpu::RenderPassColorAttachment{
@@ -1233,6 +1344,13 @@ void shutdown() noexcept {
 #ifdef AURORA_ENABLE_GX
   stop_presenter();
   g_presentationImagePools = {};
+  g_metalfxSlots = {};
+  g_metalfxPendingOutput = nullptr;
+  g_metalfxNextSlot = 0;
+  g_metalfxFailed = false;
+  g_metalfxRequested.store(false);
+  g_metalfxSupported.store(false);
+  g_metalfxStatus.store(AURORA_METALFX_DISABLED);
   imgui::shutdown();
   gfx::shutdown();
   webgpu::shutdown();
@@ -1345,6 +1463,7 @@ struct SealedFrameContext {
   uint32_t logicalFrame = 0;
   bool interpolationActive = false;
   bool replayInterpolatedFrames = false;
+  bool metalfxEnabled = false;
 };
 
 // Phase 1: everything that touches producer-shared renderer state. Needs g_rendererGpuMutex and
@@ -1372,6 +1491,7 @@ void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
   ctx.snapshotWidth = (std::max)(windowSize.native_fb_width, 1u);
   ctx.snapshotHeight = (std::max)(windowSize.native_fb_height, 1u);
   ctx.logicalFrame = gfx::current_frame();
+  ctx.metalfxEnabled = g_metalfxRequested.load();
   // Latched before webgpu::clear_present_source_override() in the producer's
   // next gfx::begin_frame().
   ctx.presentSource = webgpu::current_present_source();
@@ -1423,6 +1543,10 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
     const auto buffer = target.Finish(&cmdBufDescriptor);
     std::lock_guard submitLock(g_queueSubmitMutex);
     g_queue.Submit(1, &buffer);
+    if (g_metalfxPendingOutput) {
+      if (!g_metalfxPendingOutput->end_output()) metalfx_failed(g_metalfxPendingOutput->error());
+      g_metalfxPendingOutput = nullptr;
+    }
   };
 
   if (ctx.replayInterpolatedFrames) {
@@ -1431,7 +1555,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       gfx::render(sealedFrame, encoder, static_cast<int32_t>(interpolatedFrame), false);
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
-      encode_presentation_snapshot(encoder, ctx.presentSource, *image, true);
+      encode_presentation_snapshot(encoder, ctx.presentSource, *image, true, ctx.metalfxEnabled);
       presentationJobs.push_back({
           .image = std::move(image),
           .logicalFrame = ctx.logicalFrame,
@@ -1454,7 +1578,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
          ++interpolatedFrame) {
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
-      encode_presentation_snapshot(encoder, ctx.presentSource, *image, true);
+      encode_presentation_snapshot(encoder, ctx.presentSource, *image, true, ctx.metalfxEnabled);
       presentationJobs.push_back({
           .image = std::move(image),
           .logicalFrame = ctx.logicalFrame,
@@ -1468,7 +1592,7 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   }
   auto finalImage =
       acquire_presentation_image(ctx.interpolatedFrameCount, ctx.snapshotWidth, ctx.snapshotHeight);
-  encode_presentation_snapshot(encoder, ctx.presentSource, *finalImage, true);
+  encode_presentation_snapshot(encoder, ctx.presentSource, *finalImage, true, ctx.metalfxEnabled);
   auto pendingFrameCapture = encode_frame_capture(encoder, ctx.presentSource);
   presentationJobs.push_back({
       .image = std::move(finalImage),
@@ -1948,3 +2072,7 @@ void aurora_set_background_input(bool value) {
 }
 void aurora_set_display_mode(AuroraDisplayMode mode) { aurora::window::set_display_mode(mode); }
 AuroraDisplayMode aurora_get_display_mode() { return aurora::window::get_display_mode(); }
+void aurora_set_metalfx_spatial(bool enabled) { aurora::g_metalfxRequested.store(enabled); }
+bool aurora_get_metalfx_spatial() { return aurora::g_metalfxRequested.load(); }
+bool aurora_is_metalfx_spatial_supported() { return aurora::g_metalfxSupported.load(); }
+AuroraMetalFXStatus aurora_get_metalfx_status() { return aurora::g_metalfxStatus.load(); }

@@ -1,7 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <IOSurface/IOSurface.h>
 #import <Metal/Metal.h>
-#import <MetalFX/MetalFX.h>
+#include "webgpu/metalfx.hpp"
 
 #include <dawn/native/MetalBackend.h>
 #include <webgpu/webgpu_cpp.h>
@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
@@ -28,155 +29,16 @@ void wait(const wgpu::Instance& instance, wgpu::Future future) {
           "Dawn operation timed out or failed");
 }
 
-struct SharedImage {
-  IOSurfaceRef surface = nullptr;
-  id<MTLTexture> metal;
-  wgpu::SharedTextureMemory memory;
-  wgpu::Texture texture;
-
-  SharedImage() = default;
-  SharedImage(const SharedImage&) = delete;
-  SharedImage& operator=(const SharedImage&) = delete;
-  ~SharedImage() { if (surface) CFRelease(surface); }
-
-  void create(const wgpu::Device& device, id<MTLDevice> native, uint32_t width,
-              uint32_t height, bool bgra, MTLTextureUsage metalUsage,
-              wgpu::TextureUsage usage) {
-    const size_t rowBytes = IOSurfaceAlignProperty(kIOSurfaceBytesPerRow, width * 4);
-    NSDictionary* properties = @{
-      (id)kIOSurfaceWidth: @(width), (id)kIOSurfaceHeight: @(height),
-      (id)kIOSurfaceBytesPerElement: @4, (id)kIOSurfaceBytesPerRow: @(rowBytes),
-      (id)kIOSurfaceAllocSize: @(rowBytes * height),
-      (id)kIOSurfacePixelFormat: @(bgra ? 0x42475241u : 0x52474241u)
-    };
-    surface = IOSurfaceCreate((__bridge CFDictionaryRef)properties);
-    require(surface != nullptr, "IOSurface allocation failed");
-    auto descriptor = [MTLTextureDescriptor
-        texture2DDescriptorWithPixelFormat:bgra ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm
-        width:width height:height mipmapped:NO];
-    descriptor.storageMode = MTLStorageModeShared;
-    descriptor.usage = metalUsage;
-    metal = [native newTextureWithDescriptor:descriptor iosurface:surface plane:0];
-    require(metal != nil, "Metal IOSurface texture creation failed");
-
-    wgpu::SharedTextureMemoryIOSurfaceDescriptor io{};
-    io.ioSurface = surface;
-    io.allowStorageBinding = false;
-    wgpu::SharedTextureMemoryDescriptor import{};
-    import.nextInChain = &io;
-    memory = device.ImportSharedTextureMemory(&import);
-    wgpu::SharedTextureMemoryProperties actual{};
-    require(memory.GetProperties(&actual) == wgpu::Status::Success,
-            "Dawn IOSurface import failed");
-    const auto format = bgra ? wgpu::TextureFormat::BGRA8Unorm : wgpu::TextureFormat::RGBA8Unorm;
-    require(actual.format == format && actual.size.width == width && actual.size.height == height,
-            "Unexpected imported IOSurface format or dimensions");
-    require((actual.usage & usage) == usage, "Imported texture lacks required Dawn usages");
-    wgpu::TextureDescriptor textureDescriptor{};
-    textureDescriptor.size = {width, height, 1};
-    textureDescriptor.format = format;
-    textureDescriptor.usage = usage;
-    texture = memory.CreateTexture(&textureDescriptor);
-    require(texture != nullptr, "Dawn shared texture creation failed");
-  }
-};
-
-// EndAccess exports both ownership and GPU completion dependencies. Scheduling
-// is a separate requirement on Metal: submit the producer before a queue waits
-// for its event, without waiting for the GPU to finish the frame.
-wgpu::SharedTextureMemoryEndAccessState endAccess(const wgpu::Instance& instance,
-                                                 SharedImage& image) {
-  wgpu::SharedTextureMemoryMetalEndAccessState metal{};
-  wgpu::SharedTextureMemoryEndAccessState state{};
-  state.nextInChain = &metal;
-  require(image.memory.EndAccess(image.texture, &state) == wgpu::Status::Success,
-          "Dawn EndAccess failed");
-  wait(instance, metal.commandsScheduledFuture);
-  state.nextInChain = nullptr;
-  return state;
-}
-
-void encodeWaits(id<MTLCommandBuffer> commands,
-                 const wgpu::SharedTextureMemoryEndAccessState& state) {
-  for (size_t i = 0; i < state.fenceCount; ++i) {
-    wgpu::SharedFenceMTLSharedEventExportInfo metal{};
-    wgpu::SharedFenceExportInfo info{};
-    info.nextInChain = &metal;
-    state.fences[i].ExportInfo(&info);
-    require(info.type == wgpu::SharedFenceType::MTLSharedEvent && metal.sharedEvent,
-            "Dawn did not export a Metal shared event");
-    [commands encodeWaitForEvent:(__bridge id<MTLSharedEvent>)metal.sharedEvent
-                           value:state.signaledValues[i]];
-  }
-}
-
-void beginAccess(SharedImage& image, bool initialized, const wgpu::SharedFence& fence,
-                 uint64_t value) {
-  wgpu::SharedTextureMemoryBeginAccessDescriptor access{};
-  access.initialized = initialized;
-  if (value) {
-    access.fenceCount = 1;
-    access.fences = &fence;
-    access.signaledValueCount = 1;
-    access.signaledValues = &value;
-  }
-  require(image.memory.BeginAccess(image.texture, &access) == wgpu::Status::Success,
-          "Dawn BeginAccess failed");
-}
-
-struct Slot {
-  SharedImage input, output;
-  id<MTLFXSpatialScaler> scaler;
-  id<MTLTexture> privateOutput;
-  id<MTLSharedEvent> event;
-  wgpu::SharedFence fence;
-  uint64_t value = 0;
-  wgpu::SharedTextureMemoryEndAccessState outputReleased{};
-};
-
 void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
-             id<MTLDevice> native, bool bgra, uint32_t width, uint32_t height,
+             bool bgra, uint32_t width, uint32_t height,
              uint32_t outWidth, uint32_t outHeight) {
   const auto format = bgra ? wgpu::TextureFormat::BGRA8Unorm : wgpu::TextureFormat::RGBA8Unorm;
-  const auto metalFormat = bgra ? MTLPixelFormatBGRA8Unorm : MTLPixelFormatRGBA8Unorm;
-  id<MTLCommandQueue> queue = [native newCommandQueue];
-  require(queue != nil, "Metal command queue creation failed");
-  std::array<Slot, 3> slots;
+  using namespace aurora::webgpu::metalfx;
+  std::array<std::unique_ptr<SpatialScaler>, 3> slots;
   for (auto& slot : slots) {
-    auto descriptor = [MTLFXSpatialScalerDescriptor new];
-    descriptor.inputWidth = width;
-    descriptor.inputHeight = height;
-    descriptor.outputWidth = outWidth;
-    descriptor.outputHeight = outHeight;
-    descriptor.colorTextureFormat = metalFormat;
-    descriptor.outputTextureFormat = metalFormat;
-    descriptor.colorProcessingMode = MTLFXSpatialScalerColorProcessingModePerceptual;
-    slot.scaler = [descriptor newSpatialScalerWithDevice:native];
-    require(slot.scaler != nil, "MetalFX spatial scaler creation failed");
-    slot.input.create(device, native, width, height, bgra, slot.scaler.colorTextureUsage,
-                      wgpu::TextureUsage::RenderAttachment);
-    slot.output.create(device, native, outWidth, outHeight, bgra, MTLTextureUsageShaderRead,
-                       wgpu::TextureUsage::CopySrc | wgpu::TextureUsage::TextureBinding);
-    auto outputDescriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:metalFormat
-        width:outWidth height:outHeight mipmapped:NO];
-    // MetalFX requires private output; IOSurface-backed shared storage cannot
-    // be passed as outputTexture. Return it to Dawn with a GPU-only blit.
-    outputDescriptor.storageMode = MTLStorageModePrivate;
-    outputDescriptor.usage = slot.scaler.outputTextureUsage;
-    slot.privateOutput = [native newTextureWithDescriptor:outputDescriptor];
-    require(slot.privateOutput != nil, "Private MetalFX output allocation failed");
-    slot.scaler.colorTexture = slot.input.metal;
-    slot.scaler.outputTexture = slot.privateOutput;
-    slot.scaler.inputContentWidth = width;
-    slot.scaler.inputContentHeight = height;
-    slot.event = [native newSharedEvent];
-    require(slot.event != nil, "Metal shared event creation failed");
-    wgpu::SharedFenceMTLSharedEventDescriptor shared{};
-    shared.sharedEvent = (__bridge void*)slot.event;
-    wgpu::SharedFenceDescriptor fenceDescriptor{};
-    fenceDescriptor.nextInChain = &shared;
-    slot.fence = device.ImportSharedFence(&fenceDescriptor);
-    require(slot.fence != nullptr, "Dawn shared event import failed");
+    std::string error;
+    slot = create(instance, device, {width, height, outWidth, outHeight, format}, error);
+    if (!slot) throw std::runtime_error(error);
   }
 
   // Asymmetric quadrants expose channel swaps, vertical flips, and stale frames.
@@ -211,11 +73,10 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
   const uint32_t bytesPerRow = (outWidth * 4 + 255) & ~255u;
   const uint64_t readbackSize = uint64_t(bytesPerRow) * outHeight;
   std::vector<wgpu::Buffer> readbacks;
-  std::vector<id<MTLCommandBuffer>> nativeCommands;
 
   for (unsigned frame = 0; frame < kFrames; ++frame) {
     auto& slot = slots[frame % slots.size()];
-    beginAccess(slot.input, slot.value != 0, slot.fence, slot.value);
+    require(slot->begin_input(), "Production MetalFX begin_input failed");
     const std::array<float, 4> params{0.2f + float(frame % 5) * 0.1f,
                                      float(width), float(height), 0};
     wgpu::BufferDescriptor uniformDescriptor{};
@@ -234,7 +95,7 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
     auto bindGroup = device.CreateBindGroup(&bindDescriptor);
     auto encoder = device.CreateCommandEncoder();
     wgpu::RenderPassColorAttachment attachment{};
-    attachment.view = slot.input.texture.CreateView();
+    attachment.view = slot->input_view();
     attachment.loadOp = wgpu::LoadOp::Clear;
     attachment.storeOp = wgpu::StoreOp::Store;
     wgpu::RenderPassDescriptor passDescriptor{};
@@ -247,35 +108,15 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
     pass.End();
     auto render = encoder.Finish();
     dawnQueue.Submit(1, &render);
-    auto inputReleased = endAccess(instance, slot.input);
+    if (!slot->upscale()) throw std::runtime_error(slot->error());
 
-    id<MTLCommandBuffer> commands = [queue commandBuffer];
-    require(commands != nil, "Metal command buffer creation failed");
-    encodeWaits(commands, inputReleased);
-    encodeWaits(commands, slot.outputReleased);
-    [slot.scaler encodeToCommandBuffer:commands];
-    id<MTLBlitCommandEncoder> blit = [commands blitCommandEncoder];
-    require(blit != nil, "Metal blit encoder creation failed");
-    [blit copyFromTexture:slot.privateOutput sourceSlice:0 sourceLevel:0
-        sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(outWidth, outHeight, 1)
-        toTexture:slot.output.metal destinationSlice:0 destinationLevel:0
-        destinationOrigin:MTLOriginMake(0, 0, 0)];
-    [blit endEncoding];
-    ++slot.value;
-    [commands encodeSignalEvent:slot.event value:slot.value];
-    [commands commit];
-    // Scheduling, not completion: avoid cross-queue scheduling inversions.
-    [commands waitUntilScheduled];
-    nativeCommands.push_back(commands);
-
-    beginAccess(slot.output, true, slot.fence, slot.value);
     wgpu::BufferDescriptor readbackDescriptor{};
     readbackDescriptor.size = readbackSize;
     readbackDescriptor.usage = wgpu::BufferUsage::CopyDst | wgpu::BufferUsage::MapRead;
     auto readback = device.CreateBuffer(&readbackDescriptor);
     encoder = device.CreateCommandEncoder();
     wgpu::TexelCopyTextureInfo copySource{};
-    copySource.texture = slot.output.texture;
+    copySource.texture = slot->output_texture();
     wgpu::TexelCopyBufferInfo destination{};
     destination.buffer = readback;
     destination.layout.bytesPerRow = bytesPerRow;
@@ -284,9 +125,14 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
     encoder.CopyTextureToBuffer(&copySource, &destination, &extent);
     auto copy = encoder.Finish();
     dawnQueue.Submit(1, &copy);
-    slot.outputReleased = endAccess(instance, slot.output);
+    if (!slot->end_output()) throw std::runtime_error(slot->error());
     readbacks.push_back(std::move(readback));
   }
+
+  // Model toggle/resize immediately after submission, while either queue may
+  // still be consuming these textures. Production completion callbacks must
+  // keep the resources alive after the cache drops its wrappers.
+  slots = {};
 
   // Readback is only the test oracle. No CPU image transfer or GPU completion
   // wait occurs between Dawn rendering, MetalFX, and Dawn consumption above.
@@ -320,13 +166,6 @@ void runCase(const wgpu::Instance& instance, const wgpu::Device& device,
       }
     }
     readback.Unmap();
-  }
-  for (id<MTLCommandBuffer> commands : nativeCommands) {
-    // Event signaling can precede the CPU-visible completed status. This wait
-    // belongs to final verification, never the frame handoff above.
-    [commands waitUntilCompleted];
-    if (commands.error) std::cerr << "Metal error: " << commands.error.description.UTF8String << '\n';
-    require(commands.status == MTLCommandBufferStatusCompleted, "Metal command buffer failed");
   }
   require(g_errors.load() == 0, "Dawn reported validation errors or device loss");
   std::cout << "PASS " << (bgra ? "BGRA8" : "RGBA8") << ' ' << width << 'x' << height
@@ -383,14 +222,33 @@ int run() {
   id<MTLDevice> native = dawn::native::metal::GetMTLDevice(device.Get());
   require(native != nil, "Dawn native Metal device is unavailable");
   std::cout << "GPU: " << native.name.UTF8String << '\n';
-  if (![MTLFXSpatialScalerDescriptor supportsDevice:native]) {
+  if (!aurora::webgpu::metalfx::supported(device, wgpu::BackendType::Metal)) {
     std::cout << "SKIP: GPU does not support MetalFX spatial scaling\n";
     return 77;
   }
+  require(!aurora::webgpu::metalfx::supported(device, wgpu::BackendType::Vulkan),
+          "MetalFX must reject non-Metal backends");
+  std::string error;
+  require(!aurora::webgpu::metalfx::create(instance, device,
+              {128, 96, 128, 96, wgpu::TextureFormat::RGBA8Unorm}, error) && !error.empty(),
+          "MetalFX must reject equal-size input/output");
+  require(!aurora::webgpu::metalfx::create(instance, device,
+              {128, 96, 256, 192, wgpu::TextureFormat::RGBA8UnormSrgb}, error),
+          "MetalFX must reject implicit sRGB conversion");
+  {
+    using namespace aurora::webgpu::metalfx;
+    std::array<std::unique_ptr<SpatialScaler>, 6> resources;
+    for (auto& scaler : resources) {
+      scaler = create(instance, device, {64, 48, 128, 96, wgpu::TextureFormat::RGBA8Unorm}, error);
+      require(scaler != nullptr, "Could not fill the MetalFX resource pool");
+    }
+    require(!create(instance, device, {64, 48, 128, 96, wgpu::TextureFormat::RGBA8Unorm}, error)
+                && error.empty(), "A full retirement pool must defer allocation without a fatal error");
+  }
   for (bool bgra : {false, true}) {
-    runCase(instance, device, native, bgra, 64, 48, 128, 96);
-    runCase(instance, device, native, bgra, 320, 180, 480, 270);
-    runCase(instance, device, native, bgra, 960, 540, 1920, 1080);
+    runCase(instance, device, bgra, 64, 48, 128, 96);
+    runCase(instance, device, bgra, 320, 180, 480, 270);
+    runCase(instance, device, bgra, 960, 540, 1920, 1080);
   }
   return 0;
 }

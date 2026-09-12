@@ -265,6 +265,9 @@ mkdir -p "$HOME/Library/Application Support/WiiCompiled"
 widescreen = true
 resolution_multiplier = 1.0
 graphics_api = "metal"
+# Optional: render at a lower internal resolution, then upscale with MetalFX.
+# Requires macOS 13+ and a supported GPU.
+metalfx_spatial_upscaling = false
 
 [paths]
 dvd_root = "/absolute/path/to/Wiicompiled/Assets/DATA"
@@ -277,6 +280,7 @@ dvd_root = "/absolute/path/to/Wiicompiled/Assets/DATA"
 widescreen = true
 resolution_multiplier = 1.0
 graphics_api = "metal"
+metalfx_spatial_upscaling = false
 
 [paths]
 dvd_root = "/absolute/path/to/Wiicompiled/Assets/DATA"
