@@ -408,8 +408,20 @@ if [[ "$cc_bin" == */* ]]; then
     [[ -x "$toolchain_bin/ld.lld" ]] && configure_args+=(-DCMAKE_LINKER="$toolchain_bin/ld.lld")
     configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
 fi
+# lld links single-threaded unless told otherwise, and the final WiiCompiled/RetroRewind links pull
+# in hundreds of MB of objects (plus debug info) - each running on one core is what makes that last
+# phase sit silent for many minutes. Give lld every core: the flag is lld-only, so it is only added
+# when the effective linker is lld (an explicit --fuse-ld that is lld, or the bundled toolchain's
+# ld.lld backing CMAKE_LINKER); other linkers keep their previous behaviour.
+link_threads=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || printf '1')
 if [[ -n "$fuse_ld_override" ]]; then
-    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
+    linker_flags="-fuse-ld=$fuse_ld_override"
+    case "$fuse_ld_override" in
+        lld|ld.lld|*ld.lld) linker_flags="$linker_flags -Wl,--threads=$link_threads" ;;
+    esac
+    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="$linker_flags")
+elif [[ -n "${toolchain_bin:-}" && -x "$toolchain_bin/ld.lld" ]]; then
+    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-Wl,--threads=$link_threads")
 fi
 if [[ -n "$native_prebuilt_dir" ]]; then
     configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")

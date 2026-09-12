@@ -1,8 +1,9 @@
 name: Package installers
 
 # Builds the per-platform installer/setup tool (WiiCompiled-Setup.exe /
-# WiiCompiled-Setup-x86_64.AppImage) via Launcher/Build-Installer.ps1 and
-# Launcher/build-appimage.sh respectively - the same scripts a maintainer runs by hand today to
+# WiiCompiled-Setup-x86_64.AppImage / WiiCompiled-Setup-x86_64.flatpak) via
+# Launcher/Build-Installer.ps1, Launcher/build-appimage.sh and Launcher/build-flatpak.sh
+# respectively - the same scripts a maintainer runs by hand today to
 # produce a GitHub Release asset. This does NOT build the actual translated game executable:
 # that step requires the end user's own Mario Kart Wii dump (Assets/main.dol, Assets/StaticR.rel),
 # which is proprietary and not present in this repository or in CI.
@@ -67,6 +68,67 @@ jobs:
           if-no-files-found: error
           archive: false
 
+  linux-flatpak:
+    name: Linux (Flatpak, ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: x86_64
+          - runner: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      # Same SDL3 build-dependency list as the AppImage job (Prepare-NativePrebuilt.sh compiles
+      # aurora/vendored SDL3 once when harvesting the precompiled package), plus flatpak itself and
+      # dbus-run-session: --user installs/runs talk to the session bus, which GitHub runners do not
+      # reliably have.
+      - name: Install dependencies (flatpak + SDL3 build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak dbus build-essential libxml2 libicu70 git make \
+            pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
+            libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
+            libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev libudev-dev libthai-dev libusb-1.0-0-dev \
+            libpipewire-0.3-dev libwayland-dev libdecor-0-dev liburing-dev
+
+      # build-flatpak.sh runs on the org.freedesktop.Sdk runtime (the app's base and the source of
+      # the glibc/libstdc++/zlib dev files its bundled clang needs at compile time - see the
+      # script's header). Pulling the SDK also installs the matching Platform as its dependency.
+      - name: Install the freedesktop SDK runtime
+        run: |
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          dbus-run-session -- flatpak install --user --noninteractive -y flathub org.freedesktop.Sdk//25.08
+
+      - name: Build Flatpak bundle
+        run: bash Launcher/build-flatpak.sh
+
+      # The bundle is the release contract, so install it and smoke-test inside the sandbox rather
+      # than trusting that the artifact merely exists.
+      - name: Smoke test the bundle
+        run: |
+          dbus-run-session -- flatpak install --user --noninteractive -y \
+            ./Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.flatpak
+          dbus-run-session -- flatpak run io.github.skiletro.Wiicompiled --version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WiiCompiled-Setup-flatpak-linux-${{ matrix.arch }}
+          path: Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.flatpak
+          if-no-files-found: error
+          archive: false
+
   windows-installer:
     name: Windows (installer exe)
     runs-on: windows-latest
@@ -97,7 +159,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, windows-installer, recompilation]
+    needs: [linux-appimage, linux-flatpak, windows-installer, recompilation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -143,7 +205,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup-x86_64.flatpak WiiCompiled-Setup-aarch64.flatpak; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")
