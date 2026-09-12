@@ -28,6 +28,7 @@ list(REMOVE_DUPLICATES SOURCES)
 if(MKW_PLATFORM_MACOS)
     find_library(MKW_IOKIT_FRAMEWORK IOKit REQUIRED)
     find_library(MKW_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+    find_library(MKW_COREAUDIO_FRAMEWORK CoreAudio REQUIRED)
 endif()
 
 function(mkw_apply_common_compile_options target)
@@ -84,6 +85,8 @@ target_link_libraries(mkw_runtime_common PRIVATE
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp)
 if(MKW_PLATFORM_WINDOWS)
     target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp)
+elseif(MKW_PLATFORM_MACOS)
+    target_link_libraries(mkw_runtime_common PRIVATE "${MKW_COREAUDIO_FRAMEWORK}")
 elseif(MKW_PLATFORM_LINUX)
     # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
     # media monitoring). Empty string on glibc >= 2.34 where dl* is in libc.
@@ -205,7 +208,8 @@ function(mkw_configure_product target)
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
     if(MKW_PLATFORM_MACOS)
         target_link_libraries(${target} PRIVATE
-            "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}")
+            "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}"
+            "${MKW_COREAUDIO_FRAMEWORK}")
     endif()
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")

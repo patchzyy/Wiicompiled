@@ -52,7 +52,10 @@ Play at several times the console's resolution.
 **Music ducking.** 
 Start playing something else, Spotify, a YouTube video, and
 the game automatically mutes its own music until the other audio stops. Optional, if you'd
-rather it didn't. All audio that shows in your display media controls on your windows pc fall under this.
+rather it didn't. Windows uses system media controls and Linux uses MPRIS players.
+On macOS 14.2 or later, this detects other apps with active audio output and excludes
+the game's own audio. Apps that keep an output stream running silently can keep
+game music muted even when nothing is audible.
 
 **An in-game settings bar.** 
 Press **F10** while the game window has focus:

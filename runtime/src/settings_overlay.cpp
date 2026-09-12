@@ -974,13 +974,24 @@ void DrawAudioSettings() {
         MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
         RuntimeConfigFile::SetAttenuateMusicWhenMediaPlays(g_attenuateMusicWhenMediaPlays);
     }
+#if defined(__APPLE__)
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Detects other apps with active audio output on macOS 14.2 or later. "
+            "Apps that keep an output stream running silently may keep game music muted.");
+    }
+#endif
     if (g_attenuateMusicWhenMediaPlays) {
         if (MusicAttenuation::IsExternalMediaPlaying()) {
             ImGui::TextDisabled("External media is playing; game music is muted.");
         } else if (!MusicAttenuation::IsMediaControlInitializationComplete()) {
-            ImGui::TextDisabled("Waiting for media controls...");
+            ImGui::TextDisabled("Checking external audio...");
         } else if (!MusicAttenuation::IsMediaControlAvailable()) {
+#if defined(__APPLE__)
+            ImGui::TextDisabled("External audio detection unavailable (requires macOS 14.2 or later).");
+#else
             ImGui::TextDisabled("Media controls are unavailable.");
+#endif
         } else {
             ImGui::TextDisabled("No external media is currently playing.");
         }

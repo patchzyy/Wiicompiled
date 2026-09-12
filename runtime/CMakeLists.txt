@@ -342,6 +342,13 @@ if(MKW_PLATFORM_MACOS)
     target_include_directories(mkw_macos_guest_flat_memory_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
     target_compile_features(mkw_macos_guest_flat_memory_tests PRIVATE cxx_std_17)
     add_test(NAME mkw_macos_guest_flat_memory_tests COMMAND mkw_macos_guest_flat_memory_tests)
+
+    add_executable(mkw_macos_external_audio_tests
+        "${CMAKE_CURRENT_LIST_DIR}/tests/macos_external_audio_tests.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/src/external_audio_macos.cpp")
+    target_include_directories(mkw_macos_external_audio_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+    target_compile_features(mkw_macos_external_audio_tests PRIVATE cxx_std_17)
+    add_test(NAME mkw_macos_external_audio_tests COMMAND mkw_macos_external_audio_tests)
 endif()
 
 # The translator emits the complete, content-addressed source graph. Consuming
