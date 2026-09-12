@@ -7,8 +7,8 @@ internal static class Program
 {
     private static async Task<int> Main(string[] args)
     {
-        // Checked anywhere in argv, not just args[0]: AppRun (Launcher/build-appimage.sh) prepends
-        // --workspace <cache> ahead of whatever the caller passed, so these can't assume position 0.
+        // Checked anywhere in argv, not just args[0]: the sandbox entrypoint (Launcher/build-flatpak.sh)
+        // prepends --workspace <cache> ahead of whatever the caller passed, so these can't assume position 0.
         if (args.Length == 0 || args.Contains("-h") || args.Contains("--help")) { PrintUsage(); return 0; }
         if (args.Contains("--version")) { Console.WriteLine(ProductInfo.Version); return 0; }
 
@@ -25,9 +25,9 @@ internal static class Program
 
     private static async Task<int> RunAsync(string[] args, CancellationTokenSource cts)
     {
-        // AppRun (Launcher/build-appimage.sh) invokes this as `wiicompiled-setup --workspace
-        // <cache> <command> [options]` - a global flag ahead of the subcommand - so the command
-        // word is whichever token isn't part of a --flag/value pair, not strictly args[0].
+        // The sandbox entrypoint (Launcher/build-flatpak.sh) invokes this as `wiicompiled-setup
+        // --workspace <cache> <command> [options]` - a global flag ahead of the subcommand - so the
+        // command word is whichever token isn't part of a --flag/value pair, not strictly args[0].
         var (command, flags) = ParseArgs(args);
         if (command is null) { PrintUsage(); return 1; }
         var progressJson = flags.ContainsKey("progress-json");
@@ -284,7 +284,7 @@ internal static class Program
 
     /// <summary>
     /// A single pass that finds both the command word and every --flag[=value] pair, regardless
-    /// of order - a --flag may appear before or after the command (see the AppRun caller note in
+    /// of order - a --flag may appear before or after the command (see the entrypoint caller note in
     /// RunAsync). The first token that is neither a --flag nor a value already consumed by the
     /// preceding --flag is taken as the command.
     /// </summary>

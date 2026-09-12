@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Prepares a self-contained native-Linux build toolchain bundled into the AppImage by
-# build-appimage.sh, so a user needs no `clang`/`cmake`/`ninja` of their own to build the
+# Prepares a self-contained native-Linux build toolchain bundled into the Flatpak by
+# build-flatpak.sh, so a user needs no `clang`/`cmake`/`ninja` of their own to build the
 # translated game (mirrors why Windows bundles llvm-mingw + CMake + Ninja via
 # Prepare-PortableTools.ps1 - this is that script's Linux counterpart, for the same reason).
 #

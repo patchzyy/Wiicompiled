@@ -138,7 +138,7 @@ image under Settings, turn on **WiiCompiled (beta)**, and hit install from the H
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
-### Linux: Flatpak (recommended)
+### Linux
 
 Grab `WiiCompiled-Setup-<arch>.flatpak` from the
 [Releases](https://github.com/patchzyy/Wiicompiled/releases) page (`x86_64` or `aarch64`, matching
@@ -169,14 +169,6 @@ Run `flatpak run io.github.skiletro.Wiicompiled --help` for all commands and opt
 
 Game controllers work out of the box: the sandbox is granted access to `/dev/input` (joypads with
 rumble/hotplug) plus the session bus (Steam/BT controllers that prefer D-Bus).
-
-### Linux: AppImage (alternative)
-
-Prefer a single self-contained file over Flatpak? `WiiCompiled-Setup-<arch>.AppImage` from the
-same Releases page runs directly after `chmod +x` and prompts for its own setup, and the resulting
-install keeps the `wiicompiled-setup` CLI (`install`, `launch-base`, `launch-retro`,
-`check-products`) at `~/.local/share/WiiCompiled`.
-
 
 > [!CAUTION]
 > Only take builds from this repository's

@@ -9,7 +9,7 @@
     <Version>0.2.31</Version>
     <Authors>patchzy</Authors>
     <Product>WiiCompiled</Product>
-    <Description>Packaging-time helper: resolves (downloading if needed) the nodtool binary bundled by build-appimage.sh and Build-Installer.ps1</Description>
+    <Description>Packaging-time helper: resolves (downloading if needed) the nodtool binary bundled by build-flatpak.sh and Build-Installer.ps1</Description>
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
