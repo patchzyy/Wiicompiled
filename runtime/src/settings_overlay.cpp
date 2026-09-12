@@ -80,6 +80,7 @@ int g_soundEffectsVolumePercent =
 int g_uiVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::UiVolume(1.0f) * 100.0f));
 int g_voicesVolumePercent = static_cast<int>(std::lround(RuntimeConfigFile::VoicesVolume(1.0f) * 100.0f));
 bool g_audioMuted = RuntimeConfigFile::AudioMuted(false);
+int32_t g_muteHotkey = RuntimeConfigFile::MuteHotkey(SDL_SCANCODE_BACKSLASH);
 bool g_audioMixWorker = RuntimeConfigFile::AudioMixWorkerEnabled(true);
 bool g_attenuateMusicWhenMediaPlays = RuntimeConfigFile::AttenuateMusicWhenMediaPlays(false);
 int g_frameInterpolationMode = [] {
@@ -429,7 +430,7 @@ const char* KeyBindingName(int scancode) {
     }
 }
 
-enum class RebindKind { KeyboardButton, KeyboardAxis, Controller };
+enum class RebindKind { KeyboardButton, KeyboardAxis, Controller, MuteHotkey };
 struct RebindState {
     bool active = false;
     bool openPopup = false;
@@ -495,6 +496,11 @@ void CompleteRebind(uint32_t value) {
         if (alternateValue != PAD_NATIVE_BUTTON_INVALID) config += ',' + NativeBindingConfig(alternateValue);
         for (size_t i = 0; i < kControllerButtons.size(); ++i)
             if (kControllerButtons[i].padButton == capture.target) RuntimeConfigFile::SetControllerButton(i, config);
+    } else if (capture.kind == RebindKind::MuteHotkey) {
+        g_muteHotkey = static_cast<int32_t>(value);
+        RuntimeConfigFile::SetMuteHotkey(g_muteHotkey);
+        g_rebind.active = false;
+        return;
     } else if (capture.kind == RebindKind::KeyboardButton) {
         PADSetKeyButtonBinding(capture.port, {static_cast<int32_t>(value), capture.target});
     } else {
@@ -517,7 +523,9 @@ void DrawRebindPrompt() {
         ImGui::Text("Rebind: %s", g_rebind.label.c_str());
         ImGui::TextUnformatted(g_rebind.kind == RebindKind::Controller
             ? "Press a controller button, pull a trigger, or move a stick."
-            : "Press a keyboard key or click a mouse button.");
+            : g_rebind.kind == RebindKind::MuteHotkey
+                ? "Press a keyboard key."
+                : "Press a keyboard key or click a mouse button.");
         ImGui::TextUnformatted("Release any held input first. Backspace or Delete clears the mapping.");
         ImGui::TextUnformatted("Escape can be bound. F10 is reserved for settings.");
         const float remaining = std::chrono::duration<float>(g_rebind.deadline - Clock::now()).count();
@@ -539,7 +547,8 @@ void DrawRebindPrompt() {
             }
             const uint32_t mouse = SDL_GetMouseState(nullptr, nullptr);
             for (int i = 1; i <= 5 && g_rebind.active; ++i)
-                if (!overControl && (mouse & ~g_rebind.mouse & (1u << (i - 1))) != 0) CompleteRebind(static_cast<uint32_t>(-i - 1));
+                if (!overControl && g_rebind.kind != RebindKind::MuteHotkey &&
+                    (mouse & ~g_rebind.mouse & (1u << (i - 1))) != 0) CompleteRebind(static_cast<uint32_t>(-i - 1));
             g_rebind.mouse = mouse;
         } else if (g_rebind.active && SDL_GetKeyboardFocus() != nullptr && g_rebind.kind == RebindKind::Controller) {
             auto* pad = SDL_GetGamepadFromID(g_rebind.instance);
@@ -562,10 +571,11 @@ void DrawRebindPrompt() {
     ImGui::EndPopup();
 }
 
-void DrawKeyBinding(const char* label, int scancode, RebindKind kind, uint16_t target) {
+void DrawKeyBinding(const char* label, int scancode, RebindKind kind, uint16_t target,
+                    float width = 220.0f) {
     const std::string caption = std::string(KeyBindingName(scancode)) + "##binding";
-    if (ImGui::Button(caption.c_str(), ImVec2(220.0f, 0.0f))) BeginRebind(kind, target, label);
-    ImGui::SameLine();
+    if (ImGui::Button(caption.c_str(), ImVec2(width, 0.0f))) BeginRebind(kind, target, label);
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::TextUnformatted(label);
 
 }
@@ -952,10 +962,14 @@ void DrawAudioSettings() {
         MusicAttenuation::SetVoicesVolume(volume);
         RuntimeConfigFile::SetVoicesVolume(volume);
     }
+    const float labelColumn = ImGui::GetCursorPosX() + ImGui::CalcItemWidth();
     if (ImGui::Checkbox("Mute", &g_audioMuted)) {
         AudioBackend::Instance().SetMuted(g_audioMuted);
         RuntimeConfigFile::SetAudioMuted(g_audioMuted);
     }
+    ImGui::SameLine();
+    DrawKeyBinding("Mute shortcut", g_muteHotkey, RebindKind::MuteHotkey, 0,
+                   std::max(60.0f, labelColumn - ImGui::GetCursorPosX()));
     ImGui::Separator();
     if (ImGui::Checkbox("Mix audio on a worker thread", &g_audioMixWorker)) {
         // Applies immediately: SetMixWorkerEnabled joins any in-flight mix
@@ -1240,6 +1254,7 @@ void DrawTopBar() {
     const std::string audioMenuLabel = audioLabel + "###AudioSettingsMenu";
     if (ImGui::BeginMenu(audioMenuLabel.c_str())) {
         DrawAudioSettings();
+        DrawRebindPrompt();
         ImGui::EndMenu();
     }
 
@@ -1276,9 +1291,12 @@ void UpdateCursorAutoHide() {
         return;
     }
     g_cursorHidden = shouldHide;
+    // ImGui_ImplSDL3_NewFrame calls SDL_ShowCursor every frame unless this flag is set.
     if (shouldHide) {
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         SDL_HideCursor();
     } else {
+        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
         SDL_ShowCursor();
     }
 }
@@ -1341,6 +1359,12 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         }
         if (!g_rebind.active && IsToggleKey(ev->sdl, SDL_SCANCODE_F10)) {
             SetTopBarVisible(!g_topBarVisible);
+        }
+        if (!g_rebind.active && g_muteHotkey != PAD_KEY_INVALID &&
+            IsToggleKey(ev->sdl, static_cast<SDL_Scancode>(g_muteHotkey))) {
+            g_audioMuted = !g_audioMuted;
+            AudioBackend::Instance().SetMuted(g_audioMuted);
+            RuntimeConfigFile::SetAudioMuted(g_audioMuted);
         }
         if (IsMouseActivity(ev->sdl)) {
             g_lastMouseActivity = Clock::now();

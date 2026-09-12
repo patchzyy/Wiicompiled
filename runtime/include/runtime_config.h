@@ -91,6 +91,7 @@ struct RuntimeUserConfig {
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
     std::optional<bool> rumbleEnabled;
+    std::optional<int32_t> muteHotkey;
     std::map<std::string, std::string> controllerExpressions;
 };
 
@@ -411,6 +412,9 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
 
     config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
+    if (auto value = FindConfigInt(document, "audio", "mute_key")) {
+        config.muteHotkey = *value;
+    }
 
     if (const auto* section = document.contains("controller") ? &document.at("controller") : nullptr;
         section != nullptr && section->is_table()) {
@@ -708,6 +712,15 @@ inline bool RumbleEnabled(bool fallback = true) {
 inline bool SetRumbleEnabled(bool value) {
     Mutable().rumbleEnabled = value;
     return WriteSetting("controller", "rumble", value ? "true" : "false");
+}
+
+inline int32_t MuteHotkey(int32_t fallback) {
+    return Get().muteHotkey.value_or(fallback);
+}
+
+inline bool SetMuteHotkey(int32_t value) {
+    Mutable().muteHotkey = value;
+    return WriteSetting("audio", "mute_key", std::to_string(value));
 }
 
 inline bool SetAudioVolume(float value) {
