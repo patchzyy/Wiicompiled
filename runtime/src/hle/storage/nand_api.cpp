@@ -5,6 +5,12 @@
 #include "nand_internal.h"
 
 #include <atomic>
+#include <cerrno>
+
+#ifdef __linux__
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#endif
 
 // ============================================================================
 // Local helpers
@@ -45,6 +51,32 @@ static FileHandle* ResolveNandFileHandle(const char* who, uint32_t fileInfoPtr) 
 // ============================================================================
 // The synchronous RVL NAND* library
 // ============================================================================
+
+static bool RenameNoReplace(const std::filesystem::path& from,
+                            const std::filesystem::path& to,
+                            std::error_code& error) {
+#ifdef _WIN32
+    if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) {
+        error.clear();
+        return true;
+    }
+    error = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+    return false;
+#elif defined(__linux__)
+    const int result = syscall(SYS_renameat2, AT_FDCWD, from.c_str(), AT_FDCWD, to.c_str(), RENAME_NOREPLACE);
+    if (result == 0) {
+        error.clear();
+        return true;
+    }
+    error = std::error_code(errno, std::generic_category());
+    return false;
+#else
+    (void)from;
+    (void)to;
+    error = std::make_error_code(std::errc::operation_not_supported);
+    return false;
+#endif
+}
 
 extern "C" int32_t NANDInit_HLE(void) {
     // Initialize ISFS
@@ -450,21 +482,8 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         }
 
         std::error_code publishEc;
-        bool destinationClaimed = false;
         if (sourceIsDirectory) {
-            destinationClaimed = std::filesystem::create_directory(dstHost, publishEc);
-            if (!destinationClaimed && !publishEc) {
-                publishEc = std::make_error_code(std::errc::file_exists);
-            }
-            if (!publishEc) {
-                for (const auto& entry : std::filesystem::directory_iterator(tempHost, publishEc)) {
-                    if (publishEc) {
-                        break;
-                    }
-                    std::filesystem::copy(entry.path(), dstHost / entry.path().filename(),
-                                          std::filesystem::copy_options::recursive, publishEc);
-                }
-            }
+            RenameNoReplace(tempHost, dstHost, publishEc);
         } else {
             // link(2) and CreateHardLink do not replace an existing destination,
             // unlike rename(2) on POSIX. Both paths are already on the target
@@ -474,14 +493,6 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         if (publishEc) {
             LogNandError("NANDMove", "failed to publish cross-mount copy: %s",
                          publishEc.message().c_str());
-            if (destinationClaimed) {
-                std::error_code rollbackEc;
-                std::filesystem::remove_all(dstHost, rollbackEc);
-                if (rollbackEc) {
-                    LogNandError("NANDMove", "failed to remove partial destination '%s': %s",
-                                 HostPathText(dstHost).c_str(), rollbackEc.message().c_str());
-                }
-            }
             cleanupScratch();
             return NAND_RESULT_UNKNOWN;
         }
