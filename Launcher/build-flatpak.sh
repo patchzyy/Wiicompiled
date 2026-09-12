@@ -19,7 +19,7 @@
 # game dump ISO and any --install-dir/--retro-dir paths resolve, --share=network for the
 # Retro-WFC payload download, and the socket/device grants for launching the compiled game.
 #
-# The flatpak-builder manifest (Launcher/flatpak/io.github.skiletro.Wiicompiled.yml.in) is the
+# The flatpak-builder manifest (Launcher/flatpak/io.github.TeamWheelWizard.Wiicompiled.yml.in) is the
 # declarative source of truth for the runtime version, command and finish-args; this script
 # renders it per build and lets flatpak-builder write the app metadata and export the repo, then
 # build-bundles the single-file asset. The SDK-as-runtime choice and the self-hosted distribution
@@ -31,7 +31,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/.." && pwd)
 
-app_id="io.github.skiletro.Wiicompiled"
+app_id="io.github.TeamWheelWizard.Wiicompiled"
 runtime_branch="25.08"
 output_dir="$workspace/Launcher/dist"
 flatpak_override=""
@@ -283,7 +283,7 @@ PY
 fi
 
 echo "Rendering the Flatpak manifest..."
-manifest_template="$script_dir/flatpak/io.github.skiletro.Wiicompiled.yml.in"
+manifest_template="$script_dir/flatpak/io.github.TeamWheelWizard.Wiicompiled.yml.in"
 manifest_path="$workspace/Launcher/artifacts/flatpak-build/wiicompiled-$bundle_arch.yml"
 mkdir -p "$workspace/Launcher/artifacts/flatpak-build"
 sed -e "s|@RUNTIME_BRANCH@|$runtime_branch|g" \

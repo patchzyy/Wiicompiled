@@ -153,19 +153,19 @@ compile toolchain runs inside the sandbox). Then translate and build the game fr
 `RMCP01` dump and launch it, all through the same CLI:
 
 ```bash
-flatpak run io.github.skiletro.Wiicompiled install --game /path/to/RMCP01.iso
-flatpak run io.github.skiletro.Wiicompiled launch-base
+flatpak run io.github.TeamWheelWizard.Wiicompiled install --game /path/to/RMCP01.iso
+flatpak run io.github.TeamWheelWizard.Wiicompiled launch-base
 ```
 
 For Retro Rewind builds, pass the mod checkout instead of `--game` (see
 [Retro Rewind](#retro-rewind)):
 
 ```bash
-flatpak run io.github.skiletro.Wiicompiled install --retro-dir /path/to/RetroRewind6 --download-retro-wfc-payload
-flatpak run io.github.skiletro.Wiicompiled launch-retro
+flatpak run io.github.TeamWheelWizard.Wiicompiled install --retro-dir /path/to/RetroRewind6 --download-retro-wfc-payload
+flatpak run io.github.TeamWheelWizard.Wiicompiled launch-retro
 ```
 
-Run `flatpak run io.github.skiletro.Wiicompiled --help` for all commands and options.
+Run `flatpak run io.github.TeamWheelWizard.Wiicompiled --help` for all commands and options.
 
 Game controllers work out of the box: the sandbox is granted access to `/dev/input` (joypads with
 rumble/hotplug) plus the session bus (Steam/BT controllers that prefer D-Bus).

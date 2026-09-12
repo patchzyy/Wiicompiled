@@ -10,7 +10,7 @@
 # path. If a future distribution route makes the toolchain available at
 # build-time via org.freedesktop.Sdk.Extension, the runtime can switch to
 # Platform; that path is discussed in the project's Flathub planning notes.
-app-id: io.github.skiletro.Wiicompiled
+app-id: io.github.TeamWheelWizard.Wiicompiled
 runtime: org.freedesktop.Sdk
 runtime-version: '@RUNTIME_BRANCH@'
 sdk: org.freedesktop.Sdk
