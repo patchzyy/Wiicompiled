@@ -49,8 +49,8 @@ all use the same upscaling hook; game-specific interpolation remains untested.
    letterboxing, then draw ImGui. Submit and end output access. Reuse observes
    both Dawn-to-Metal and Metal-to-Dawn event dependencies.
 6. GPU completion callbacks retain resources after a cache entry is replaced,
-   disabled, or shut down. At most six resource sets may exist (three current
-   plus three retiring); rapid resizing cannot allocate an unbounded queue.
+   disabled, or shut down. At most eight resource sets may exist (four current
+   plus four retiring); rapid resizing cannot allocate an unbounded queue.
 
 CPU scheduling waits remain, but there are no CPU image transfers or per-frame
 GPU-completion waits in the upscaling path. There is one source-size GPU copy
@@ -91,12 +91,12 @@ green and blue distinguish left/right and top/bottom. All channels are checked
 within five 8-bit levels, catching stale images, orientation/channel mistakes,
 and missing output. Tests cover 1.5× and 2× scaling, padded readback rows, slot
 reuse, dropping wrappers before readback completion, invalid dimensions/sRGB
-formats, the six-set allocation bound, and the unavailable-backend stub.
+formats, the eight-set allocation bound, and the unavailable-backend stub.
 
 Readback is only the test oracle and is absent from the game upscaling path.
 These samples do not measure reconstruction quality at edges or race performance.
 
-## Windowed presentation smoke test
+## Windowed presentation test
 
 This optional target exercises Aurora's actual frame submission and presentation
 with a synthetic source and an ImGui overlay. It requires no Wii game data and
@@ -105,10 +105,10 @@ from-source runtime build (the normal dependency/provider options still apply):
 
 ```sh
 cmake -S runtime -B build-macos -DCMAKE_BUILD_TYPE=Release \
-  -DAURORA_BUILD_METALFX_SMOKE_TEST=ON
-cmake --build build-macos --target metalfx_presentation_smoke
+  -DAURORA_BUILD_METALFX_PRESENTATION_TEST=ON
+cmake --build build-macos --target metalfx_presentation_test
 MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
-  ./build-macos/aurora-build/metalfx_presentation_smoke
+  ./build-macos/aurora-build/metalfx_presentation_test
 ```
 
 On the same M3, all 84 frames passed with Metal API/GPU validation: disabled,

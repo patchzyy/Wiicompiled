@@ -13,9 +13,9 @@
 namespace aurora::webgpu::metalfx {
 namespace {
 constexpr uint64_t kScheduleTimeoutNs = 1'000'000'000;
-// Three current slots plus at most three retiring slots during resize. A busy
+// Four current slots plus at most four retiring slots during resize. A busy
 // GPU must not allow resize events to allocate unbounded full-resolution images.
-constexpr unsigned kMaxLiveResources = 6;
+constexpr unsigned kMaxLiveResources = 8;
 std::atomic<unsigned> g_liveResources{0};
 
 struct SharedImage {

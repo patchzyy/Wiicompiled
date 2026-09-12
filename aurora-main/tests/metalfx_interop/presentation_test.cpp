@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -72,11 +73,11 @@ void draw_frames(uint32_t width, uint32_t height, AuroraMetalFXStatus expected) 
 
 int main(int argc, char** argv) {
   const auto cache = std::filesystem::temp_directory_path() /
-      ("aurora-metalfx-smoke-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+      ("aurora-metalfx-presentation-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   std::filesystem::create_directories(cache);
   const auto path = cache.string();
   AuroraConfig config{};
-  config.appName = "MetalFX presentation smoke test";
+  config.appName = "MetalFX presentation test";
   config.userPath = path.c_str();
   config.cachePath = path.c_str();
   config.resourcesPath = path.c_str();
@@ -117,6 +118,7 @@ int main(int argc, char** argv) {
     result = 1;
   }
   aurora_shutdown();
-  std::filesystem::remove_all(cache);
+  std::error_code cleanupError;
+  std::filesystem::remove_all(cache, cleanupError);
   return result;
 }

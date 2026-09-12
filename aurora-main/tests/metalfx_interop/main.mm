@@ -241,7 +241,7 @@ int run() {
           "MetalFX must reject implicit sRGB conversion");
   {
     using namespace aurora::webgpu::metalfx;
-    std::array<std::unique_ptr<SpatialScaler>, 6> resources;
+    std::array<std::unique_ptr<SpatialScaler>, 8> resources;
     for (auto& scaler : resources) {
       scaler = create(instance, device, {64, 48, 128, 96, wgpu::TextureFormat::RGBA8Unorm}, error);
       require(scaler != nullptr, "Could not fill the MetalFX resource pool");

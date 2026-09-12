@@ -1181,7 +1181,7 @@ struct MetalFXSlot {
   std::unique_ptr<webgpu::metalfx::SpatialScaler> scaler;
   wgpu::BindGroup bindGroup;
 };
-std::array<MetalFXSlot, 3> g_metalfxSlots;
+std::array<MetalFXSlot, gx::MaxInterpolatedFrames + 1> g_metalfxSlots;
 size_t g_metalfxNextSlot = 0;
 webgpu::metalfx::SpatialScaler* g_metalfxPendingOutput = nullptr;
 bool g_metalfxFailed = false;
@@ -1279,10 +1279,11 @@ wgpu::BindGroup upscale_presentation(wgpu::CommandEncoder& encoder,
 
 // `presentSource` is latched in the seal prologue: by the time this encodes, the producer's next
 // gfx::begin_frame() may already have cleared the display-copy override.
-void encode_presentation_snapshot(wgpu::CommandEncoder& encoder,
-                                  const webgpu::PresentSource& presentSource,
-                                  const PresentationImage& image,
-                                  bool includeImGui, bool metalfxEnabled) {
+wgpu::BindGroup encode_presentation_snapshot(wgpu::CommandEncoder& encoder,
+                                              const webgpu::PresentSource& presentSource,
+                                              const PresentationImage& image,
+                                              bool includeImGui, bool metalfxEnabled,
+                                              const wgpu::BindGroup* cachedMetalFXOutput = nullptr) {
   ZoneScoped;
   auto viewport = webgpu::calculate_present_viewport(
       image.texture.size.width, image.texture.size.height, presentSource.size.width,
@@ -1293,8 +1294,12 @@ void encode_presentation_snapshot(wgpu::CommandEncoder& encoder,
         image.texture.size.width, image.texture.size.height, presentAspect);
   }
   wgpu::BindGroup presentBindGroup = presentSource.bindGroup;
-  if (auto upscaled = upscale_presentation(encoder, presentSource, viewport, metalfxEnabled)) {
+  wgpu::BindGroup newMetalFXOutput;
+  if (cachedMetalFXOutput && *cachedMetalFXOutput) {
+    presentBindGroup = *cachedMetalFXOutput;
+  } else if (auto upscaled = upscale_presentation(encoder, presentSource, viewport, metalfxEnabled)) {
     presentBindGroup = std::move(upscaled);
+    newMetalFXOutput = presentBindGroup;
   }
   {
     const std::array attachments{
@@ -1336,6 +1341,7 @@ void encode_presentation_snapshot(wgpu::CommandEncoder& encoder,
     imgui::render(pass);
     pass.End();
   }
+  return newMetalFXOutput;
 }
 #endif
 
@@ -1539,11 +1545,11 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   const wgpu::CommandBufferDescriptor cmdBufDescriptor{
       .label = "Presentation slot command buffer",
   };
-  const auto submitEncodedSlot = [&](wgpu::CommandEncoder& target) {
+  const auto submitEncodedSlot = [&](wgpu::CommandEncoder& target, bool releaseMetalFXOutput = true) {
     const auto buffer = target.Finish(&cmdBufDescriptor);
     std::lock_guard submitLock(g_queueSubmitMutex);
     g_queue.Submit(1, &buffer);
-    if (g_metalfxPendingOutput) {
+    if (releaseMetalFXOutput && g_metalfxPendingOutput) {
       if (!g_metalfxPendingOutput->end_output()) metalfx_failed(g_metalfxPendingOutput->error());
       g_metalfxPendingOutput = nullptr;
     }
@@ -1573,12 +1579,18 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
   // The copy targets now hold this frame's resolves, so queue their readbacks on the same encoder;
   // completion is harvested in gfx::after_submit, never waited on here.
   gfx::efb_ram::encode_async_downloads(encoder);
+  wgpu::BindGroup duplicatedMetalFXOutput;
   if (!ctx.replayInterpolatedFrames) {
     for (uint32_t interpolatedFrame = 0; interpolatedFrame < ctx.interpolatedFrameCount;
          ++interpolatedFrame) {
       auto image =
           acquire_presentation_image(interpolatedFrame, ctx.snapshotWidth, ctx.snapshotHeight);
-      encode_presentation_snapshot(encoder, ctx.presentSource, *image, true, ctx.metalfxEnabled);
+      const auto newMetalFXOutput = encode_presentation_snapshot(
+          encoder, ctx.presentSource, *image, true, ctx.metalfxEnabled,
+          duplicatedMetalFXOutput ? &duplicatedMetalFXOutput : nullptr);
+      if (!duplicatedMetalFXOutput && newMetalFXOutput) {
+        duplicatedMetalFXOutput = newMetalFXOutput;
+      }
       presentationJobs.push_back({
           .image = std::move(image),
           .logicalFrame = ctx.logicalFrame,
@@ -1586,13 +1598,14 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
           .interpolated = true,
           .duplicated = true,
       });
-      submitEncodedSlot(encoder);
+      submitEncodedSlot(encoder, false);
       encoder = g_device.CreateCommandEncoder(&encoderDescriptor);
     }
   }
   auto finalImage =
       acquire_presentation_image(ctx.interpolatedFrameCount, ctx.snapshotWidth, ctx.snapshotHeight);
-  encode_presentation_snapshot(encoder, ctx.presentSource, *finalImage, true, ctx.metalfxEnabled);
+  encode_presentation_snapshot(encoder, ctx.presentSource, *finalImage, true, ctx.metalfxEnabled,
+                               duplicatedMetalFXOutput ? &duplicatedMetalFXOutput : nullptr);
   auto pendingFrameCapture = encode_frame_capture(encoder, ctx.presentSource);
   presentationJobs.push_back({
       .image = std::move(finalImage),
