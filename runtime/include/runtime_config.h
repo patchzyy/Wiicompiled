@@ -41,6 +41,7 @@ struct RuntimeUserConfig {
     std::optional<std::string> graphicsApi;
     std::optional<std::string> displayMode;
     std::optional<uint32_t> frameInterpolationFps;
+    std::optional<bool> metalFxSpatialUpscaling;
     std::optional<bool> skipUnreadyPipelines;
     std::optional<bool> disableCopyFilter;
     std::optional<bool> textureReplacements;
@@ -452,6 +453,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
             config.frameInterpolationFps = migrated;
         }
     }
+    config.metalFxSpatialUpscaling =
+        FindConfigValue<bool>(document, "video", "metalfx_spatial_upscaling");
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
@@ -653,6 +656,11 @@ inline bool SetFrameInterpolationFps(uint32_t value) {
     return WriteSetting("video", "frame_interpolation_fps", std::to_string(value));
 }
 
+inline bool SetMetalFxSpatialUpscaling(bool value) {
+    Mutable().metalFxSpatialUpscaling = value;
+    return WriteSetting("video", "metalfx_spatial_upscaling", value ? "true" : "false");
+}
+
 inline bool SetDisplayMode(std::string value) {
     if (!IsSupportedDisplayMode(value)) {
         return false;
@@ -788,6 +796,10 @@ inline uint32_t WindowHeight(uint32_t fallback) {
 
 inline float ResolutionMultiplier(float fallback = 1.0f) {
     return std::max(0.0f, Get().resolutionMultiplier.value_or(fallback));
+}
+
+inline bool MetalFxSpatialUpscaling(bool fallback = false) {
+    return Get().metalFxSpatialUpscaling.value_or(fallback);
 }
 
 inline float AudioVolume(float fallback = 1.0f) {

@@ -277,6 +277,13 @@ target_link_libraries(mkw_platform_paths_tests PRIVATE mkw_platform)
 target_compile_features(mkw_platform_paths_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_platform_paths_tests COMMAND mkw_platform_paths_tests)
 
+add_executable(mkw_runtime_config_tests "${CMAKE_CURRENT_LIST_DIR}/tests/runtime_config_tests.cpp")
+target_include_directories(mkw_runtime_config_tests PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/include"
+    "${CMAKE_CURRENT_LIST_DIR}/third_party/toml11")
+target_compile_features(mkw_runtime_config_tests PRIVATE cxx_std_20)
+add_test(NAME mkw_runtime_config_tests COMMAND mkw_runtime_config_tests)
+
 add_executable(mkw_nand_save_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_save_tests.cpp")
 target_include_directories(mkw_nand_save_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
 target_compile_features(mkw_nand_save_tests PRIVATE cxx_std_17)
