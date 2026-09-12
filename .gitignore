@@ -54,6 +54,7 @@ project.lock.json
 .packages/
 
 # Launcher artifacts
+/.flatpak-builder/
 /Launcher/artifacts/
 /Launcher/dist/
 /Launcher/WiiCompiled-Setup.exe

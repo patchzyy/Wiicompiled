@@ -1,0 +1,43 @@
+# Flatpak-builder manifest for the self-hosted WiiCompiled bundle.
+#
+# This is the declarative source of truth for the sandbox permissions. The
+# runtime is org.freedesktop.Sdk (not Platform) on purpose: local-build.sh
+# compiles the translated game *inside the running sandbox*, and its bundled
+# clang/lld toolchain resolves glibc/crt/libstdc++/libz dev files that only
+# the SDK carries. That makes the SDK-as-runtime pattern incompatible with
+# Flathub policy; this bundle is published as a GitHub Release asset and
+# installed from a local .flatpak file, which is the intended distribution
+# path. If a future distribution route makes the toolchain available at
+# build-time via org.freedesktop.Sdk.Extension, the runtime can switch to
+# Platform; that path is discussed in the project's Flathub planning notes.
+app-id: io.github.TeamWheelWizard.Wiicompiled
+runtime: org.freedesktop.Sdk
+runtime-version: '@RUNTIME_BRANCH@'
+sdk: org.freedesktop.Sdk
+command: wiicompiled-setup
+
+# --device=dri: Vulkan / GL hardware rendering.
+# --device=input: evdev + hidraw game controllers (joypads, rumble, hotplug).
+# --socket=session-bus: Steam controller D-Bus features / Bluetooth controller
+#   enumeration where SDL3 falls back to session-bus over direct evdev.
+# --filesystem=home: the user's game dump ISO / --install-dir / --retro-dir
+#   paths resolve under $HOME; the game compiles at install time and the
+#   output lands in XDG_DATA_HOME.
+finish-args:
+  - --device=dri
+  - --device=input
+  - --share=network
+  - --socket=wayland
+  - --socket=x11
+  - --socket=pulseaudio
+  - --socket=session-bus
+  - --filesystem=home
+
+modules:
+  - name: app-payload
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: '@STAGED_APP_DIR@'
+    build-commands:
+      - cp -a . "$FLATPAK_DEST"/
