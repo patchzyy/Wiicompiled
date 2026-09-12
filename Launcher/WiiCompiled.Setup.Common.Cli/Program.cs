@@ -1,8 +1,8 @@
 using WiiCompiled.Setup.Common;
 
 // A packaging-time-only helper - never shipped, never run by an end user. Both
-// Launcher/build-appimage.sh and Launcher/Build-Installer.ps1 invoke this to obtain the nodtool
-// binary they bundle, so there is exactly one place (NodToolProvider) that knows the pinned
+// Launcher/build-appimage.sh, Launcher/build-flatpak.sh and Launcher/Build-Installer.ps1 invoke
+// this to obtain the nodtool binary they bundle, so there is exactly one place (NodToolProvider) that knows the pinned
 // version/URL/platform-asset mapping, instead of a separate copy per packaging script.
 //
 // Usage: WiiCompiled.Setup.Common.Cli --workspace <repo-root>

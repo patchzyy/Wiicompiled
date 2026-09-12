@@ -88,10 +88,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # Same SDL3 build-dependency list as the AppImage job (Prepare-NativePrebuilt.sh compiles
-      # aurora/vendored SDL3 once when harvesting the precompiled package), plus flatpak itself and
-      # dbus-run-session: --user installs/runs talk to the session bus, which GitHub runners do not
-      # reliably have.
+      # Prepare-NativePrebuilt.sh compiles aurora/vendored SDL3 once when harvesting the precompiled
+      # package, hence the SDL3 build-dependency list, plus flatpak itself and dbus-run-session:
+      # --user installs/runs talk to the session bus, which GitHub runners do not reliably have.
       - name: Install dependencies (flatpak + SDL3 build)
         run: |
           sudo apt-get update

@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
 # Packages Launcher/WiiCompiled.Setup.Linux as a self-contained Flatpak bundle for local install:
 # a single .flatpak file anyone can `flatpak install` with no git clone, no `dotnet` install, and
-# no host build prerequisites of any kind. It is the recommended Linux distribution path; the
-# AppImage (build-appimage.sh) remains the alternative for users who prefer a file to execute
-# directly.
+# no host build prerequisites of any kind. It is the Linux distribution path.
 #
-# The bundle carries the exact same payload as the AppImage - self-contained installer and
-# translator binaries, bundled nodtool, the pruned clang/lld/cmake/ninja toolchain
-# (prepare-portable-tools.sh), the precompiled aurora + third-party package
-# (Prepare-NativePrebuilt.sh), and a workspace snapshot - but lays it out under a Flatpak /app
-# and runs on the org.freedesktop.Sdk runtime. The key difference from the AppImage is *why* the
-# SDK is used as the app runtime: a Flatpak only sees what its runtime + bundle provide, and
-# local-build.sh compiles the translated game at install time. The AppImage leans on the host
-# distro for the glibc/libstdc++/zlib dev files its bundled clang resolves at compile time; the
-# Sandbox has no host distro, so the SDK runtime fills exactly that role (its /usr/include, crt
-# objects, libz.so and libstdc++-devel are what the build resolves against). /app is read-only
-# and stable across runs (unlike an AppImage's fresh /tmp/.mount_XXXXXX FUSE mount every launch),
-# so the entrypoint below - the Flatpak analogue of AppRun - copies the workspace snapshot out to
-# a writable cache and references the toolchain/native-prebuilt at their stable /app paths
-# directly, with no symlink indirection needed to keep CMake/Ninja's baked command lines stable.
+# The bundle carries the self-contained installer and translator binaries, bundled nodtool, the
+# pruned clang/lld/cmake/ninja toolchain (prepare-portable-tools.sh), the precompiled aurora +
+# third-party package (Prepare-NativePrebuilt.sh), and a workspace snapshot, laid out under a
+# Flatpak /app and running on the org.freedesktop.Sdk runtime. The *why* of the SDK-as-runtime:
+# a Flatpak only sees what its runtime + bundle provide, and local-build.sh compiles the
+# translated game at install time. The sandbox has no host distro, so the SDK runtime fills
+# exactly that role (its /usr/include, crt objects, libz.so and libstdc++-devel are what the
+# build resolves against). /app is read-only and stable across runs, so the entrypoint below
+# copies the workspace snapshot out to a writable cache and references the toolchain/native-
+# prebuilt at their stable /app paths directly, with no symlink indirection needed to keep
+# CMake/Ninja's baked command lines stable.
 #
 # The sandbox's game-compile needs are what set the permissions: --filesystem=home so the user's
 # game dump ISO and any --install-dir/--retro-dir paths resolve, --share=network for the
@@ -61,9 +56,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Same ELF-header userspace-architecture detection as build-appimage.sh (the kernel's `uname -m`
-# can disagree with the actual userspace, e.g. an aarch64 kernel running 32-bit armhf userland) -
-# the dotnet RID must match the binaries that will actually run inside the sandbox.
+# ELF-header userspace-architecture detection (the kernel's `uname -m` can disagree with the
+# actual userspace, e.g. an aarch64 kernel running 32-bit armhf userland) - the dotnet RID must
+# match the binaries that will actually run inside the sandbox.
 elf_exe=$(readlink -f "/proc/$$/exe")
 elf_class=$(od -An -t u1 -j 4 -N 1 "$elf_exe" | tr -d ' ')
 elf_machine_lo=$(od -An -t u1 -j 18 -N 1 "$elf_exe" | tr -d ' ')
@@ -198,8 +193,8 @@ find "$stagedir/app/workspace/aurora-main/extern" -mindepth 1 -maxdepth 1 -type 
 rm -rf "$stagedir/app/workspace/runtime/build"
 cp "$workspace/Launcher/local-build.sh" "$stagedir/app/workspace/Launcher/local-build.sh"
 
-# Same bundle-version stamping as build-appimage.sh: AppRun-analogue re-syncs the workspace into
-# the writable cache only when this changes, so it must change whenever the bundled paths did.
+# Bundle-version stamping: the entrypoint re-syncs the workspace into the writable cache only
+# when this changes, so it must change whenever the bundled paths did.
 if git -C "$workspace" rev-parse HEAD >/dev/null 2>&1; then
     version=$(git -C "$workspace" rev-parse HEAD)
     if [[ -n "$(git -C "$workspace" status --porcelain 2>/dev/null)" ]]; then
@@ -210,7 +205,7 @@ else
     date -u +%s > "$stagedir/app/workspace/.bundle-version"
 fi
 
-echo "Writing the Flatpak entrypoint (AppRun analogue)..."
+echo "Writing the Flatpak entrypoint..."
 cat > "$stagedir/app/bin/wiicompiled-setup" <<'ENTRYPOINT'
 #!/bin/bash
 set -euo pipefail
@@ -220,8 +215,7 @@ APP=/app
 export LD_LIBRARY_PATH="$APP/usr/toolchain/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # /app is read-only and the workspace snapshot must be writable (local-build.sh writes
 # generated/, native-build/, Assets/, ...), so it is copied out to the sandbox's writable data
-# dir on first run and only re-synced when the bundled snapshot's version stamp changes - exactly
-# AppRun's behavior, matching the comments in Launcher/build-appimage.sh.
+# dir on first run and only re-synced when the bundled snapshot's version stamp changes.
 CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
 mkdir -p "$CACHE"
 if [ ! -f "$CACHE/.bundle-version" ] || \
@@ -235,11 +229,9 @@ if [ ! -f "$CACHE/.bundle-version" ] || \
     cp "$APP/workspace/.bundle-version" "$CACHE/.bundle-version"
 fi
 # toolchain/ and native-prebuilt/ are NOT copied into the cache (they're large - ~500 MiB /
-# ~90 MiB - and local-build.sh only ever reads from them). Unlike an AppImage, whose FUSE mount
-# moves to a fresh /tmp/.mount_XXXXXX every launch (forcing the symlink workaround AppRun uses so
-# CMake's baked-in command lines stay stable), a Flatpak's /app path is fixed for the lifetime of
-# the installed bundle - so these are referenced directly here and the paths CMake records never
-# change across runs.
+# ~90 MiB - and local-build.sh only ever reads from them). A Flatpak's /app path is fixed for the
+# lifetime of the installed bundle, so these are referenced directly here and the paths CMake
+# records never change across runs.
 exec "$APP/libexec/wiicompiled-setup" --workspace "$CACHE" \
     --translator-bin "$APP/libexec/translator-cli" \
     --disc-tool-bin "$APP/libexec/nodtool" \
