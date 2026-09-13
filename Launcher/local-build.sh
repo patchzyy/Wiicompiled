@@ -420,6 +420,11 @@ if [[ -n "$native_prebuilt_dir" ]]; then
 fi
 if [[ -n "$sysroot" ]]; then
     configure_args+=(-DCMAKE_SYSROOT="$sysroot")
+else
+    # Explicitly clear any cached CMAKE_SYSROOT from a prior configure so an
+    # incremental build that transitions from one sysroot to none does not
+    # silently keep the stale cached path.
+    configure_args+=(-UCMAKE_SYSROOT)
 fi
 
 log_step configure-native "Configuring the native toolchain"
