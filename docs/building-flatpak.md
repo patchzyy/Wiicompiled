@@ -51,11 +51,16 @@ for the lld host libs), pinned nodtool releases, and offline NuGet feeds.
 
 ## 2. Prerequisites
 
-- A Linux machine (NixOS, Ubuntu, …) with `git` and `flatpak` + `flatpak-builder` working with
-  bwrap. bwrap mounts a new proc namespace, so the build **cannot run inside a container** —
-  run it on a host/VM (that is exactly what CI does on its Linux VM runners).
-  - **Ubuntu/Debian**: `sudo apt-get install flatpak flatpak-builder dbus`
-  - **NixOS**: `nix shell nixpkgs#flatpak-builder nixpkgs#flatpak nixpkgs#python3`
+- A Linux machine (NixOS, Ubuntu, …) with `git` and `flatpak` + `flatpak-builder` + `appstreamcli`
+  working with bwrap. bwrap mounts a new proc namespace, so the build **cannot run inside a
+  container** — run it on a host/VM (that is exactly what CI does on its Linux VM runners).
+  - **Ubuntu/Debian**: `sudo apt-get install flatpak flatpak-builder dbus appstream`
+  - **NixOS**: run the whole build inside a nix shell so all four tools (plus python3) are on
+    PATH:
+    ```bash
+    nix shell nixpkgs#flatpak-builder nixpkgs#flatpak nixpkgs#appstream nixpkgs#python3 \
+      --command bash Launcher/build-flatpak.sh
+    ```
 - The runtimes the build needs, installed up front (`build-flatpak.sh` also prints the exact
   commands if any are missing):
   ```bash
@@ -64,8 +69,6 @@ for the lld host libs), pinned nodtool releases, and offline NuGet feeds.
     org.freedesktop.Platform//25.08 org.freedesktop.Sdk//25.08 \
     org.freedesktop.Sdk.Extension.dotnet8//25.08
   ```
-- `python3` for the native-prebuilt provenance check (the script falls back to
-  `nix shell nixpkgs#python3` when python3 is not on PATH).
 - A .NET 8 SDK only if `Prepare-NativePrebuilt.sh` needs to harvest a fresh native-prebuilt
   package (it skips straight to the build when the stored fingerprint is current).
 

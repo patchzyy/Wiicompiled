@@ -62,6 +62,29 @@ fi
 
 flatpak_bin=${flatpak_override:-flatpak}
 
+if ! command -v "$flatpak_bin" >/dev/null 2>&1; then
+    echo "build-flatpak.sh: flatpak is not installed ($flatpak_bin not on PATH)" >&2
+    echo "  Ubuntu/Debian: sudo apt-get install flatpak" >&2
+    echo "  NixOS: nix shell nixpkgs#flatpak" >&2
+    exit 1
+fi
+
+command -v "$flatpak_builder_cmd" >/dev/null 2>&1 || {
+    echo "build-flatpak.sh: flatpak-builder is required" >&2
+    echo "  Ubuntu/Debian: sudo apt-get install flatpak-builder" >&2
+    echo "  NixOS: nix shell nixpkgs#flatpak-builder" >&2
+    exit 1
+}
+
+# flatpak-builder runs `appstreamcli compose` because the bundle ships AppStream metainfo.
+# Without it the build runs for a long time and then fails at the very last step.
+command -v appstreamcli >/dev/null 2>&1 || {
+    echo "build-flatpak.sh: appstreamcli is required (flatpak-builder compose step)" >&2
+    echo "  Ubuntu/Debian: sudo apt-get install appstream" >&2
+    echo "  NixOS: nix shell nixpkgs#appstream" >&2
+    exit 1
+}
+
 # The build needs the SDK (build sandbox), the Platform runtime (what the bundle installs on),
 # and the dotnet8 sdk-extension (the dotnet-apps module's compiler). Require all three up front
 # with one actionable message; flatpak-builder also auto-installs them if a remote is configured.
