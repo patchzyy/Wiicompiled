@@ -21,6 +21,8 @@ public sealed class KamekLrContinuationIntegrationTests
     {
         var bundle = Translate(tailDepth, SkipReturn(20));
         AssertResumeDispatch(Source(bundle, Caller), Caller, Caller + 24);
+        Assert.Contains(bundle.Entries, entry => entry.EntryPoint == Caller + 24 &&
+            entry.VirtualPath.Contains("rr_continue_"));
     }
 
     [Theory]
@@ -115,6 +117,8 @@ public sealed class KamekLrContinuationIntegrationTests
     {
         var bundle = Translate(0, SyntheticLrHookFactory.ManyOrdinaryReturnPaths());
         AssertResumeDispatch(Source(bundle, Caller), Caller, Caller + 24);
+        Assert.Contains(bundle.Entries, entry => entry.EntryPoint == Caller + 24 &&
+            entry.VirtualPath.Contains("rr_continue_"));
     }
 
     private static void AssertResumeDispatch(string source, uint callSite, uint continuation)

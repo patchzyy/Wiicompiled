@@ -2282,59 +2282,33 @@ int EmitModCpp(
                 .Where(h => h.TargetAddress.HasValue && RetroWfcHookSetsLinkRegister(h))
                 .Select(h => (h.TargetAddress!.Value, h.ContinuationAddress)));
     }
-    // An ordinary bl patch returns normally like any call and needs none of the
-    // conservative LR-continuation codegen below (forced register reload, disabled
-    // resident-call fast paths, local dispatch tables) - only a target that actually
-    // manipulates LR to resume somewhere other than the call's own return address
-    // does. Without this check every bl patch target would qualify, which is far
-    // broader than the skip-return hooks this plumbing exists for and bloats
-    // unrelated callers that merely call into a patched function (see the Retro
-    // Rewind mod-size regression this was found to cause).
-    var lrSkipReturnTargetCache = new Dictionary<uint, bool>();
-    bool TargetExhibitsLrSkipReturn(uint target)
+    var hookLrAnalysis = new Dictionary<uint, LrContinuationAnalysis>();
+    var hookDiscoveryCache = new Dictionary<uint, IReadOnlyList<PpcInstruction>>();
+    IReadOnlyList<PpcInstruction> DiscoverHookBody(uint target)
     {
-        if (lrSkipReturnTargetCache.TryGetValue(target, out var cached))
+        if (!hookDiscoveryCache.TryGetValue(target, out var instructions))
         {
-            return cached;
+            instructions = modTranslator.Discover(target,
+                new TranslationOptions(KnownFunctionEntryPoints: knownFunctionEntryPoints)).Instructions;
+            hookDiscoveryCache.Add(target, instructions);
         }
+        return instructions;
+    }
 
-        bool exhibitsSkipReturn;
-        try
+    LrContinuationAnalysis AnalyzeHook(uint target)
+    {
+        if (!hookLrAnalysis.TryGetValue(target, out var analysis))
         {
-            var discovery = modTranslator.Discover(
-                target,
-                new TranslationOptions(KnownFunctionEntryPoints: knownFunctionEntryPoints));
-            var stateCapExceeded = false;
-            exhibitsSkipReturn = ContinuationPlanner
-                .DiscoverLrRelativeIndirectJumpOffsets(discovery.Instructions, () => stateCapExceeded = true)
-                .Any();
-            if (!exhibitsSkipReturn && stateCapExceeded)
-            {
-                // The path-sensitive search hit its per-instruction state cap somewhere
-                // before it could rule out every path, so "no offsets found" here is
-                // inconclusive rather than a verified negative - a dropped state's own
-                // bctr/return could never have contributed to the result. Fail safe.
-                exhibitsSkipReturn = true;
-            }
+            analysis = LrContinuationAnalysis.Analyze(target, DiscoverHookBody);
+            hookLrAnalysis.Add(target, analysis);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException
-                                      or IndexOutOfRangeException or NotSupportedException
-                                      or OverflowException)
-        {
-            // Could not statically analyze this target - fail safe and keep the
-            // conservative handling rather than risk silently reintroducing a
-            // skip-return crash for a target this check could not examine.
-            exhibitsSkipReturn = true;
-        }
-
-        lrSkipReturnTargetCache[target] = exhibitsSkipReturn;
-        return exhibitsSkipReturn;
+        return analysis;
     }
 
     foreach (var patch in patchPlan.ExecutablePatches.Where(p => p.CommandId == KamekCommandId.BranchLink && p.Arguments.Count > 0))
     {
         var target = KamekAddress.Resolve(patch.Arguments[0], patchPlan.ModuleGuestBase);
-        if (!TargetExhibitsLrSkipReturn(target))
+        if (!AnalyzeHook(target).MaySkipReturn)
         {
             continue;
         }
@@ -2441,49 +2415,41 @@ int EmitModCpp(
         }
     }
 
-    void RecordDiscoveredLrRelativeBaseContinuations(
-        FunctionTranslationResult result,
-        IReadOnlyList<uint> lrBases,
-        string reason)
+    void RecordHookContinuations(uint hookTarget, IReadOnlyList<uint> lrBases)
     {
-        if (lrBases.Count == 0)
+        var analysis = AnalyzeHook(hookTarget);
+        foreach (var lrBase in lrBases)
         {
-            return;
-        }
-
-        foreach (var offset in DiscoverLrRelativeIndirectJumpOffsets(result).Distinct())
-        {
-            foreach (var lrBase in lrBases)
+            var targets = analysis.Offsets.Select(offset => unchecked(lrBase + (uint)offset));
+            if (analysis.WasTruncated && baseFunctions.FindContaining(lrBase - 4u) is { } caller)
             {
-                var target = unchecked(lrBase + (uint)offset);
+                // Unknown offsets can resume at any aligned instruction in this caller.
+                targets = targets.Concat(Enumerable.Range(0, checked((int)((caller.End - caller.Start) / 4)))
+                    .Select(index => caller.Start + (uint)index * 4u));
+            }
+            foreach (var target in targets.Distinct())
+            {
                 var section = baseManifest.Sections.FirstOrDefault(s => target >= s.GuestStart && target < s.GuestEnd);
-                if (section is null || !section.Executable)
-                {
+                if (section is null || !section.Executable || (target & 3u) != 0)
                     continue;
-                }
-
                 var containing = baseFunctions.FindContaining(target);
-                if (containing is null || containing.Start == target)
-                {
+                if (containing is null || containing.Start == target || !queuedContinuationAddresses.Add(target))
                     continue;
-                }
-
-                if (!queuedContinuationAddresses.Add(target))
-                {
-                    continue;
-                }
 
                 discoveredContinuationQueue.Enqueue(new ContinuationEntry(
                     target,
                     containing.Start,
                     containing.End,
                     section.Name,
-                    result.EntryPoint,
+                    hookTarget,
                     KamekCommandId.Branch,
-                    $"{reason}; LR-relative jump offset {offset:+#;-#;0}"));
+                    $"LR-relative hook target 0x{hookTarget:X8}"));
             }
         }
     }
+
+    foreach (var (target, lrBases) in linkedHookLrBasesByTarget)
+        RecordHookContinuations(target, lrBases);
 
     ModTranslationWork CreateContinuationWork(ContinuationEntry continuation)
     {
@@ -2650,16 +2616,7 @@ int EmitModCpp(
         }
 
         CommitWave(attempts, (result, work) =>
-        {
-            RecordDiscoveredBaseContinuations(result, $"base continuation discovered from module 0x{work.Address:X8}");
-            if (linkedHookLrBasesByTarget.TryGetValue(work.Address, out var lrBases))
-            {
-                RecordDiscoveredLrRelativeBaseContinuations(
-                    result,
-                    lrBases,
-                    $"base continuation discovered from LR-relative hook target 0x{work.Address:X8}");
-            }
-        });
+            RecordDiscoveredBaseContinuations(result, $"base continuation discovered from module 0x{work.Address:X8}"));
     }
 
     DrainDiscoveredContinuations();
@@ -2816,9 +2773,6 @@ IEnumerable<uint> DirectModuleTargets(FunctionTranslationResult result, uint mod
         }
     }
 }
-
-IEnumerable<int> DiscoverLrRelativeIndirectJumpOffsets(FunctionTranslationResult result) =>
-    ContinuationPlanner.DiscoverLrRelativeIndirectJumpOffsets(result.Instructions);
 
 static bool RetroWfcHookSetsLinkRegister(RetroWfcExecutableHookPlan hook) =>
     hook.TypeName is "call" or "branchCtrLink" ||
