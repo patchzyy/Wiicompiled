@@ -91,10 +91,12 @@ jobs:
       # Prepare-NativePrebuilt.sh compiles aurora/vendored SDL3 once when harvesting the precompiled
       # package, hence the SDL3 build-dependency list, plus flatpak itself and dbus-run-session:
       # --user installs/runs talk to the session bus, which GitHub runners do not reliably have.
+      # appstream (appstreamcli) is needed because the bundle ships AppStream metainfo, which
+      # makes flatpak-builder run its compose step at the end of the build.
       - name: Install dependencies (flatpak + SDL3 build)
         run: |
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder dbus build-essential libxml2 libicu70 git make \
+          sudo apt-get install -y flatpak flatpak-builder dbus appstream build-essential libxml2 libicu70 git make \
             pkg-config cmake ninja-build gnome-desktop-testing libasound2-dev libpulse-dev \
             libaudio-dev libfribidi-dev libjack-dev libsndio-dev libx11-dev libxext-dev \
             libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
@@ -125,7 +127,7 @@ jobs:
         run: |
           dbus-run-session -- flatpak install --user --noninteractive -y \
             ./Launcher/dist/WiiCompiled-Setup-${{ matrix.arch }}.flatpak
-          dbus-run-session -- flatpak run io.github.TeamWheelWizard.Wiicompiled --version
+          dbus-run-session -- flatpak run --command=wiicompiled-setup io.github.TeamWheelWizard.Wiicompiled --version
           flatpak info --show-permissions io.github.TeamWheelWizard.Wiicompiled \
             | grep -E '^(devices=.*input|sockets=.*session-bus)'
           dbus-run-session -- flatpak run --command=sh io.github.TeamWheelWizard.Wiicompiled \

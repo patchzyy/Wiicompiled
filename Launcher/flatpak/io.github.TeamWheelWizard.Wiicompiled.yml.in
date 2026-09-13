@@ -27,7 +27,7 @@ runtime-version: '@RUNTIME_BRANCH@'
 sdk: org.freedesktop.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.dotnet8
-command: wiicompiled-setup
+command: wiicompiled-gui
 separate-locales: false
 
 # --device=dri: Vulkan / GL hardware rendering.
@@ -224,6 +224,24 @@ modules:
         install -Dm755 nodtool-linux-* /app/libexec/nodtool
 
   # -------------------------------------------------------------------------
+  # The graphical launcher: a small GTK3 frontend that shells out to the
+  # wiicompiled-setup entrypoint (game picker via check-products, compile log
+  # via install --game --progress-json, play via launch-base). It builds
+  # against the SDK's GTK3 and runs against the Platform's - no extra toolkit
+  # is bundled.
+  # -------------------------------------------------------------------------
+  - name: gtk-gui
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: '@SOURCE_TREE@/Launcher/gtk-gui'
+    build-commands:
+      - |
+        set -euo pipefail
+        cc -O2 -o wiicompiled-gui wiicompiled-gui.c $(pkg-config --cflags --libs gtk+-3.0)
+        install -Dm755 wiicompiled-gui /app/bin/wiicompiled-gui
+
+  # -------------------------------------------------------------------------
   # The fingerprint-pinned precompiled aurora + third-party package. Harvested on
   # the build host by Prepare-NativePrebuilt.sh (a real compile, guarded by
   # provenance.json against toolchain/flag/source drift); this module verifies and
@@ -317,9 +335,9 @@ modules:
         printf '%s\n' '@BUNDLE_VERSION@' > /app/workspace/.bundle-version
 
   # -------------------------------------------------------------------------
-  # Small static runtime files: the sandbox entrypoint and the desktop entry.
-  # The icon is generated (a solid-colour placeholder) so the repo needs no
-  # binary blob.
+  # Small static runtime files: the sandbox entrypoint, the desktop entry, the
+  # AppStream metainfo, and the icon. The PNG icon is generated (a solid-colour
+  # placeholder) so the repo needs no binary blob; the SVG is the real icon.
   # -------------------------------------------------------------------------
   - name: runtime-files
     buildsystem: simple
@@ -330,13 +348,23 @@ modules:
         dest: bin
       - type: file
         url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.desktop'
-        sha256: 9cd8dc4c6bbcb95a60140fb458d8dd50fa6e8aa17e484506d695195f74cd9b85
+        sha256: 9067d8af10dddfb201b849253d80e852290d0121e1822ea5f5094b99610ccfa1
         dest: share/applications
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.metainfo.xml'
+        sha256: d67e447a05ad5bae47557c717fe6c24c04107a5ae915ae747d63ed51f669ba8d
+        dest: share/metainfo
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.svg'
+        sha256: eeb728bee2ff94d9d2ed49d5aebde52b409ec8d74699f8907f742740a0b5034a
+        dest: share/icons/hicolor/scalable/apps
     build-commands:
       - |
         set -euo pipefail
         install -Dm755 bin/wiicompiled-setup /app/bin/wiicompiled-setup
         install -Dm644 "share/applications/@APP_ID@.desktop" /app/share/applications/@APP_ID@.desktop
+        install -Dm644 "share/metainfo/@APP_ID@.metainfo.xml" /app/share/metainfo/@APP_ID@.metainfo.xml
+        install -Dm644 "share/icons/hicolor/scalable/apps/@APP_ID@.svg" /app/share/icons/hicolor/scalable/apps/@APP_ID@.svg
         mkdir -p /app/share/icons/hicolor/512x512/apps
         python3 - /app/share/icons/hicolor/512x512/apps/@APP_ID@.png <<'PY'
         import struct
