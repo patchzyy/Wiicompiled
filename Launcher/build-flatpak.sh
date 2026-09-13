@@ -62,17 +62,6 @@ fi
 
 flatpak_bin=${flatpak_override:-flatpak}
 
-# The provenance freshness check (and a fresh native-prebuilt harvest) needs python3. On hosts
-# that lack it, fall back to what nix provides.
-PYTHON3=""
-if command -v python3 >/dev/null 2>&1; then
-    PYTHON3=$(command -v python3)
-elif command -v nix >/dev/null 2>&1; then
-    echo "build-flatpak.sh: python3 not on PATH; using nix-shell to provide it..."
-    PYTHON3=$(nix shell nixpkgs#python3 --command python3 -c 'import sys; print(sys.executable)')
-fi
-[[ -n "$PYTHON3" ]] || { echo "build-flatpak.sh: python3 is required for the native-prebuilt provenance check" >&2; exit 1; }
-
 # The build needs the SDK (build sandbox), the Platform runtime (what the bundle installs on),
 # and the dotnet8 sdk-extension (the dotnet-apps module's compiler). Require all three up front
 # with one actionable message; flatpak-builder also auto-installs them if a remote is configured.
@@ -124,27 +113,7 @@ fi
 # --- native-prebuilt harvest -------------------------------------------------------------------
 native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$bundle_arch"
 echo "Checking whether the precompiled aurora + third-party package ($bundle_arch) is current..."
-current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$bundle_arch" --print-fingerprint-only)
-package_current=0
-if [[ -f "$native_prebuilt_dir/provenance.json" ]]; then
-    package_current=$(CURRENT_FINGERPRINT="$current_fingerprint" "$PYTHON3" - "$native_prebuilt_dir/provenance.json" <<'PY'
-import json
-import os
-import sys
-
-provenance = json.load(open(sys.argv[1], encoding="utf-8"))
-current = dict(line.split("=", 1) for line in os.environ["CURRENT_FINGERPRINT"].splitlines() if line)
-fields = {
-    "compiler_sha256": "CompilerSha256",
-    "flag_fingerprint": "FlagFingerprint",
-    "aurora_fingerprint": "AuroraSourceFingerprint",
-    "third_party_fingerprint": "ThirdPartySourceFingerprint",
-}
-print(1 if all(provenance.get(v) == current.get(k) for k, v in fields.items()) else 0)
-PY
-    )
-fi
-if [[ "$package_current" == "1" ]]; then
+if bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$bundle_arch" --check "$native_prebuilt_dir"; then
     echo "Native prebuilt package is current; reusing $native_prebuilt_dir"
 else
     echo "Native prebuilt package is missing or stale; harvesting a fresh one (compiles aurora/third-party once, can take a while)..."

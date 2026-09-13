@@ -27,6 +27,7 @@ keep_stage=0
 reuse_stage=0
 parallel=0
 print_fingerprint_only=0
+check_dir=""
 
 usage() {
     cat <<'EOF'
@@ -44,6 +45,9 @@ Usage: Prepare-NativePrebuilt.sh --arch {x86_64|aarch64} [options]
                           exit, without configuring/building/harvesting anything - lets a caller
                           (build-appimage.sh / build-flatpak.sh) decide whether an existing package
                           is still current without paying for a full aurora rebuild just to find out.
+  --check DIR             Exit 0 if the package in DIR is current (its provenance.json matches the
+                          four fingerprints computed now), 1 if it is missing or stale. Like
+                          --print-fingerprint-only, does not configure/build anything.
 EOF
 }
 
@@ -56,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --reuse-stage) reuse_stage=1; shift ;;
         --parallel) parallel=$2; shift 2 ;;
         --print-fingerprint-only) print_fingerprint_only=1; shift ;;
+        --check) check_dir=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Prepare-NativePrebuilt.sh: unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -162,6 +167,41 @@ if [[ "$print_fingerprint_only" -eq 1 ]]; then
     printf 'aurora_fingerprint=%s\n' "$aurora_fingerprint"
     printf 'third_party_fingerprint=%s\n' "$third_party_fingerprint"
     exit 0
+fi
+
+if [[ -n "$check_dir" ]]; then
+    # Exit 0 if $check_dir/provenance.json matches the fingerprints computed now. The provenance
+    # check is what build-appimage.sh / build-flatpak.sh gate their skip-reuse decision on; having
+    # it here (like --print-fingerprint-only) means a caller pays one python3 invocation and no
+    # aurora rebuild just to find out whether an existing package is current.
+    if [[ -f "$check_dir/provenance.json" ]]; then
+        if python3 - "$check_dir/provenance.json" "$compiler_sha256" "$flag_fingerprint" \
+            "$aurora_fingerprint" "$third_party_fingerprint" <<'PY'
+import json
+import sys
+
+provenance = json.load(open(sys.argv[1], encoding="utf-8"))
+(compiler_sha256, flag_fingerprint, aurora_fingerprint, third_party_fingerprint) = sys.argv[2:]
+fields = {
+    "compiler_sha256": "CompilerSha256",
+    "flag_fingerprint": "FlagFingerprint",
+    "aurora_fingerprint": "AuroraSourceFingerprint",
+    "third_party_fingerprint": "ThirdPartySourceFingerprint",
+}
+current = {
+    "compiler_sha256": compiler_sha256,
+    "flag_fingerprint": flag_fingerprint,
+    "aurora_fingerprint": aurora_fingerprint,
+    "third_party_fingerprint": third_party_fingerprint,
+}
+sys.exit(0 if all(provenance.get(v) == current[k] for k, v in fields.items()) else 1)
+PY
+        then exit 0
+        else exit 1
+        fi
+    else
+        exit 1
+    fi
 fi
 
 # The package must never contain a stale mixture of two builds.
