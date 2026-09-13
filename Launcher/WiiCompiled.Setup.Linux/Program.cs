@@ -156,6 +156,7 @@ internal static class Program
             flags.GetValueOrDefault("cmake"),
             flags.GetValueOrDefault("ninja"),
             flags.GetValueOrDefault("native-prebuilt-dir"),
+            flags.GetValueOrDefault("sysroot"),
             reporter, token);
 
         reporter.Progress(InstallStages.Shortcuts, "Creating shortcuts", 98);
@@ -324,7 +325,7 @@ internal static class Program
                   {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
                   [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
                   [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
-                  [--native-prebuilt-dir DIR] [--progress-json] [--workspace DIR]
+                  [--native-prebuilt-dir DIR] [--sysroot PATH] [--progress-json] [--workspace DIR]
           uninstall
           launch-base
           launch-retro

@@ -13,7 +13,8 @@ internal static class BuildRunner
         string workspace, string profile, string outputDir, string? baseOutputDir,
         string? retroDir, string? retroWfcOfflineDir, bool skipRetroWfcPayload,
         bool forceCleanBuild, string? translatorBin, string? ccBin, string? cxxBin, string? fuseLd,
-        string? cmakeBin, string? ninjaBin, string? nativePrebuiltDir, IInstallReporter reporter,
+        string? cmakeBin, string? ninjaBin, string? nativePrebuiltDir, string? sysroot,
+        IInstallReporter reporter,
         CancellationToken cancellationToken)
     {
         var script = Path.Combine(workspace, "Launcher", "local-build.sh");
@@ -76,6 +77,10 @@ internal static class BuildRunner
         if (!string.IsNullOrEmpty(nativePrebuiltDir))
         {
             startInfo.ArgumentList.Add("--native-prebuilt-dir"); startInfo.ArgumentList.Add(nativePrebuiltDir);
+        }
+        if (!string.IsNullOrEmpty(sysroot))
+        {
+            startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);
         }
 
         using var process = new Process { StartInfo = startInfo };

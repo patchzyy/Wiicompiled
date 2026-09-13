@@ -65,6 +65,7 @@ translator_dll_override=""
 translator_bin_override=""
 fuse_ld_override=""
 native_prebuilt_dir=""
+sysroot=""
 
 usage() {
     cat <<'EOF'
@@ -87,6 +88,8 @@ Usage: local-build.sh --output-dir DIR [options]
   --translator-bin PATH           Self-contained Translator.Cli executable (skips building AND needs no dotnet at all)
   --native-prebuilt-dir DIR       Precompiled aurora/third-party package (see Prepare-NativePrebuilt.sh);
                                    skips compiling aurora-main from source entirely
+  --sysroot PATH                   Passed to CMake as -DCMAKE_SYSROOT: where the compiler resolves
+                                   standard headers/startup files
 EOF
 }
 
@@ -110,6 +113,7 @@ while [[ $# -gt 0 ]]; do
         --translator-dll) translator_dll_override=$2; shift 2 ;;
         --translator-bin) translator_bin_override=$2; shift 2 ;;
         --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
+        --sysroot) sysroot=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -413,6 +417,9 @@ if [[ -n "$fuse_ld_override" ]]; then
 fi
 if [[ -n "$native_prebuilt_dir" ]]; then
     configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")
+fi
+if [[ -n "$sysroot" ]]; then
+    configure_args+=(-DCMAKE_SYSROOT="$sysroot")
 fi
 
 log_step configure-native "Configuring the native toolchain"
