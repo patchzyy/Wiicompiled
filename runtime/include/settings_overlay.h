@@ -12,4 +12,6 @@ void Draw() noexcept;
 bool StartupScreenVisible() noexcept;
 void NotifyStrapInputAccepted() noexcept;
 void AdvancePresentedFrame() noexcept;
+// Put host controllers back to a neutral state before the process ends.
+void ReleaseControllers() noexcept;
 } // namespace settings_overlay

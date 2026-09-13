@@ -1,5 +1,6 @@
 #include "settings_overlay.h"
 #include "audio_backend.h"
+#include "aurora_events.h"
 #include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
 #include "input_bindings.h"
@@ -15,6 +16,7 @@
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
+#include <SDL3/SDL_timer.h>
 
 #include <array>
 #include <algorithm>
@@ -70,6 +72,7 @@ const char* GraphicsApiDisplayName() {
 }
 
 bool g_topBarVisible = false;
+bool g_exitPromptOpen = false;
 bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
@@ -1189,6 +1192,18 @@ void DrawStartupScreen() {
     ImGui::PopStyleColor();
 }
 
+void DrawExitPrompt() {
+    constexpr const char* kTitle = "Exit";
+    if (g_exitPromptOpen && !ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
+    if (!ImGui::BeginPopupModal(kTitle, &g_exitPromptOpen, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    ImGui::TextUnformatted("Quit the game?");
+    if (ImGui::Button("Exit", ImVec2(120.0f, 0.0f))) ExitForAuroraWindowClose();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) g_exitPromptOpen = false;
+    if (!g_exitPromptOpen) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void DrawTopBar() {
     if (!g_topBarVisible) {
         return;
@@ -1258,10 +1273,16 @@ void DrawTopBar() {
         ImGui::EndMenu();
     }
 
-    const float hideWidth = ImGui::CalcTextSize("Hide (F10)").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetWindowWidth() - hideWidth - 8.0f));
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float hideWidth = ImGui::CalcTextSize("Hide (F10)").x + style.FramePadding.x * 2.0f;
+    const float exitWidth = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
+                                  ImGui::GetWindowWidth() - hideWidth - exitWidth - style.ItemSpacing.x - 8.0f));
     if (ImGui::MenuItem("Hide (F10)")) {
         SetTopBarVisible(false);
+    }
+    if (ImGui::MenuItem("X")) {
+        g_exitPromptOpen = true;
     }
     ImGui::EndMainMenuBar();
 }
@@ -1366,10 +1387,34 @@ void HandleEvents(const AuroraEvent* events) noexcept {
             AudioBackend::Instance().SetMuted(g_audioMuted);
             RuntimeConfigFile::SetAudioMuted(g_audioMuted);
         }
+        if (!g_rebind.active && !g_topBarVisible && IsToggleKey(ev->sdl, SDL_SCANCODE_ESCAPE)) {
+            g_exitPromptOpen = true;
+        }
         if (IsMouseActivity(ev->sdl)) {
             g_lastMouseActivity = Clock::now();
         }
     }
+}
+
+void ReleaseControllers() noexcept {
+    // Aurora drives the LED white on first PADRead and never clears it, and the
+    // exit paths terminate the process outright, so do it here.
+    bool queued = false;
+    for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+        const s32 index = PADGetIndexForPort(port);
+        if (index < 0) continue;
+        if (SDL_Gamepad* pad = PADGetSDLGamepadForIndex(static_cast<u32>(index))) {
+            SDL_SetGamepadLED(pad, 0, 0, 0);
+            queued = true;
+        }
+    }
+    constexpr std::array<uint32_t, PAD_MAX_CONTROLLERS> stopAll{
+        PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD, PAD_MOTOR_STOP_HARD};
+    PADControlAllMotors(stopAll.data());
+    // SDL hands LED and rumble reports to its own HIDAPI sender thread rather
+    // than writing them here, so without this the process dies before the
+    // controller ever receives them.
+    if (queued) SDL_Delay(120);
 }
 
 void Draw() noexcept {
@@ -1389,6 +1434,7 @@ void Draw() noexcept {
     }
     DrawFpsOverlay();
     DrawTopBar();
+    DrawExitPrompt();
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game.
     const bool inputBlocked = controller_mapping_wizard::IsActive() || g_rebind.active;

@@ -39,9 +39,9 @@ $packages = @(
     },
     [pscustomobject]@{
         Name = 'dawn_prebuilt'; File = 'dawn-v20260603.191052-windows-amd64.tar.gz'
-        Uris = @('https://github.com/encounter/dawn-build/releases/download/v20260603.191052/dawn-windows-amd64.tar.gz')
+        Uris = @('https://github.com/theofficialgman/dawn-build/releases/download/v20260603.191052/dawn-windows-amd64.tar.gz')
         Pins = @(@{ File = $auroraCMake; Text = 'set(AURORA_DAWN_VERSION "v20260603.191052"' },
-                 @{ File = $auroraDawn; Text = 'SHA256=7785373d569b3b0237918ec9c523239f7d0667857c5ea8242e3cdfde95e6aeab' })
+                 @{ File = $auroraDawn; Text = 'SHA256=13be9cff8b9b179c42dcd16aeabb6effcc8f0dfdcc14463eda2a5caeda225142' })
     },
     [pscustomobject]@{
         Name = 'fmt'; File = 'fmt-11.1.4.tar.gz'

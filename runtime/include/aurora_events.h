@@ -58,6 +58,7 @@ inline void Flush(bool force = false) {
 // still active.  A window close is an intentional successful exit, so end the
 // process directly and do not run the crash/atexit paths.
 [[noreturn]] inline void ExitForAuroraWindowClose() noexcept {
+    settings_overlay::ReleaseControllers();
     WindowPlacementPersistence::Flush(true);
 #if defined(_WIN32)
     ::ExitProcess(0);
