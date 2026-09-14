@@ -94,8 +94,6 @@ elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 endif()
 
-    target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
-endif()
 if(MKW_CPPWINRT_INCLUDE_DIR)
     if(NOT EXISTS "${MKW_CPPWINRT_INCLUDE_DIR}/winrt/base.h")
         message(FATAL_ERROR
