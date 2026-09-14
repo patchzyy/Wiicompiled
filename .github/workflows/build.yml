@@ -61,6 +61,7 @@ jobs:
         run: |
           cmake --build build-macos --target \
             mkw_platform_paths_tests \
+            mkw_runtime_config_tests \
             mkw_nand_save_tests \
             mkw_nand_settings_tests \
             mkw_sc_serial_tests \
