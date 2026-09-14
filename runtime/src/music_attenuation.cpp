@@ -16,6 +16,8 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
+#elif defined(__APPLE__)
+#include "external_audio_macos.h"
 #elif defined(__linux__)
 #include <dlfcn.h>
 
@@ -448,6 +450,19 @@ void MonitorLinuxMprisSessions() noexcept {
 }
 #endif
 
+#if defined(__APPLE__)
+void MonitorMacOSAudio() noexcept {
+    using namespace std::chrono_literals;
+    for (;;) {
+        const auto status = QueryMacOSExternalAudio();
+        g_externalMediaPlaying.store(status.playing, std::memory_order_release);
+        g_mediaControlAvailable.store(status.available, std::memory_order_release);
+        g_mediaControlInitializationComplete.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(250ms);
+    }
+}
+#endif
+
 void StartMonitor() noexcept {
 #if defined(_WIN32)
     // The process owns this monitor for its remaining lifetime. Keeping it
@@ -456,6 +471,8 @@ void StartMonitor() noexcept {
 #elif defined(__linux__)
     // Detached so there is no shutdown ordering to manage against static audio state.
     std::thread(MonitorLinuxMprisSessions).detach();
+#elif defined(__APPLE__)
+    std::thread(MonitorMacOSAudio).detach();
 #else
     g_mediaControlAvailable.store(false, std::memory_order_release);
     g_mediaControlInitializationComplete.store(true, std::memory_order_release);
