@@ -238,7 +238,7 @@ modules:
     build-commands:
       - |
         set -euo pipefail
-        cc -O2 -o wiicompiled-gui wiicompiled-gui.c $(pkg-config --cflags --libs gtk+-3.0)
+        c++ -std=c++20 -O2 -o wiicompiled-gui wiicompiled-gui.cpp $(pkg-config --cflags --libs gtk+-3.0)
         install -Dm755 wiicompiled-gui /app/bin/wiicompiled-gui
 
   # -------------------------------------------------------------------------
