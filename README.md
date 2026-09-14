@@ -58,6 +58,7 @@ rather it didn't. All audio that shows in your display media controls on your wi
 Press **F10** while the game window has focus:
 - Internal resolution
 - FPS counter
+- MetalFX spatial upscaling on supported macOS GPUs
 - Controller assignment for all four ports
 - Full per-controller button mapping, including the bumpers
 - Dolphin-syntax input expressions and GCPadNew.ini import
