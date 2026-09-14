@@ -84,9 +84,16 @@ target_link_libraries(mkw_runtime_common PRIVATE
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp)
 if(MKW_PLATFORM_WINDOWS)
     target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp)
+elseif(MKW_PLATFORM_MACOS)
+    target_link_libraries(mkw_runtime_common PRIVATE "${MKW_COREAUDIO_FRAMEWORK}")
 elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
+    # libco is used by Linux and Intel macOS. Apple Silicon uses the local
+    # x18-safe assembly backend and therefore does not define mkw::libco.
     # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
     # media monitoring). Empty on platforms where dl* is already in libc/libSystem.
+    target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
+endif()
+
     target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
 endif()
 if(MKW_CPPWINRT_INCLUDE_DIR)
