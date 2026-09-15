@@ -7,6 +7,9 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "wii_remote_input.h"
+#ifdef MKW_PLATFORM_IOS
+#include "ios_motion_input.h"
+#endif
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -330,6 +333,9 @@ void ApplyConfiguredMappings() {
 
 bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled(true);
 bool g_wiiContinuousScan = RuntimeConfigFile::WiiContinuousScanEnabled(false);
+#ifdef MKW_PLATFORM_IOS
+bool g_iosMotionControls = RuntimeConfigFile::IosMotionControlsEnabled(false);
+#endif
 
 // Accelerometer readout and zero-point calibration for a bare remote / remote + Nunchuk.
 void DrawWiiRemoteAccelerometer(uint32_t port) {
@@ -483,6 +489,37 @@ void DrawControllerSettings() {
         g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
     }
     ImGui::Separator();
+#ifdef MKW_PLATFORM_IOS
+    if (ImGui::Checkbox("Use phone as a Wii Wheel", &g_iosMotionControls)) {
+        RuntimeConfigFile::SetIosMotionControlsEnabled(g_iosMotionControls);
+        if (!g_iosMotionControls) {
+            IosMotionInput::Stop();
+        }
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Tilt to steer. Phone motion is sent to Mario Kart Wii as a Wii Remote, including shake actions.");
+    }
+    ImGui::BeginDisabled(!g_iosMotionControls);
+    bool motionGameCube = RuntimeConfigFile::IosMotionGameCubeEnabled();
+    if (ImGui::Checkbox("GameCube-style motion", &motionGameCube)) {
+        RuntimeConfigFile::SetIosMotionGameCubeEnabled(motionGameCube);
+        TouchPad::ResetMotionRemote();
+    }
+    if (ImGui::Button(motionGameCube ? "Recenter motion steering" : "Recenter Wii Wheel")) {
+        TouchPad::RecenterMotionRemote();
+    }
+    ImGui::SameLine();
+    bool motionInverted = RuntimeConfigFile::IosMotionInverted();
+    if (ImGui::Checkbox("Invert tilt", &motionInverted)) {
+        RuntimeConfigFile::SetIosMotionInverted(motionInverted);
+    }
+    float motionSensitivity = RuntimeConfigFile::IosMotionSensitivity();
+    if (ImGui::SliderFloat("Wii Wheel sensitivity", &motionSensitivity, 0.5f, 2.0f, "%.1fx")) {
+        RuntimeConfigFile::SetIosMotionSensitivity(motionSensitivity);
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+#endif
     controller_mapping_wizard::DrawSetupList();
     DrawWiiRemoteSettings(selectedGamePort);
     const uint32_t controllerCount = PADCount();
@@ -1042,6 +1079,11 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
         }
+#ifdef MKW_PLATFORM_IOS
+        if (ev->type == AURORA_PAUSED) {
+            TouchPad::ResetMotionRemote();
+        }
+#endif
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
         }

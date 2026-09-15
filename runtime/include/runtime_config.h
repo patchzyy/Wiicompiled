@@ -62,6 +62,12 @@ struct RuntimeUserConfig {
     // (Dolphin's "continuous scanning"), so a remote that dropped or was switched on
     // after launch shows up without restarting.
     std::optional<bool> wiiContinuousScan;
+    // iPhone/iPad touch player presented to the game as a Wii Remote, so the
+    // game's Wii Wheel and motion actions receive the phone's sensor data.
+    std::optional<bool> iosMotionControls;
+    std::optional<bool> iosMotionGameCube;
+    std::optional<bool> iosMotionInverted;
+    std::optional<float> iosMotionSensitivity;
     // Accelerometer zero-point correction for the Bluetooth Wii Remote, in g and in
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
     // SDL's Wii driver falls back to a nominal zero point when its read of the
@@ -463,6 +469,13 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
     config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
+    config.iosMotionControls = FindConfigValue<bool>(document, "controller", "ios_motion_controls");
+    config.iosMotionGameCube = FindConfigValue<bool>(document, "controller", "ios_motion_gamecube");
+    config.iosMotionInverted = FindConfigValue<bool>(document, "controller", "ios_motion_inverted");
+    if (auto value = FindConfigFloat(document, "controller", "ios_motion_sensitivity");
+        value && *value >= 0.5f && *value <= 2.0f) {
+        config.iosMotionSensitivity = *value;
+    }
     config.wiiAccelOffsetX = FindConfigValue<double>(document, "controller", "wii_accel_offset_x");
     config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
     config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
@@ -812,6 +825,45 @@ inline bool WiiContinuousScanEnabled(bool fallback = false) {
 inline bool SetWiiContinuousScanEnabled(bool value) {
     Mutable().wiiContinuousScan = value;
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
+}
+
+inline bool IosMotionControlsEnabled(bool fallback = false) {
+    return Get().iosMotionControls.value_or(fallback);
+}
+
+inline bool SetIosMotionControlsEnabled(bool value) {
+    Mutable().iosMotionControls = value;
+    return WriteSetting("controller", "ios_motion_controls", value ? "true" : "false");
+}
+
+inline bool IosMotionGameCubeEnabled(bool fallback = false) {
+    return Get().iosMotionGameCube.value_or(fallback);
+}
+
+inline bool SetIosMotionGameCubeEnabled(bool value) {
+    Mutable().iosMotionGameCube = value;
+    return WriteSetting("controller", "ios_motion_gamecube", value ? "true" : "false");
+}
+
+inline bool IosMotionInverted(bool fallback = false) {
+    return Get().iosMotionInverted.value_or(fallback);
+}
+
+inline bool SetIosMotionInverted(bool value) {
+    Mutable().iosMotionInverted = value;
+    return WriteSetting("controller", "ios_motion_inverted", value ? "true" : "false");
+}
+
+inline float IosMotionSensitivity(float fallback = 1.0f) {
+    return std::clamp(Get().iosMotionSensitivity.value_or(fallback), 0.5f, 2.0f);
+}
+
+inline bool SetIosMotionSensitivity(float value) {
+    value = std::clamp(value, 0.5f, 2.0f);
+    Mutable().iosMotionSensitivity = value;
+    std::ostringstream formatted;
+    formatted << value;
+    return WriteSetting("controller", "ios_motion_sensitivity", formatted.str());
 }
 
 // Wii Remote accelerometer zero-point correction (g, SDL sensor frame); all zero

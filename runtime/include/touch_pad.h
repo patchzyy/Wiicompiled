@@ -4,6 +4,7 @@
 #include <cstdint>
 
 struct PADStatus;
+namespace WiiRemoteInput { struct KpadSample; }
 
 // On-screen touch controls. Read() fills a status array the caller merges over
 // aurora's PADRead result.
@@ -19,6 +20,14 @@ bool IsActive();
 // Port 0 only. Returns false when touch is not driving input, leaving the
 // caller's existing statuses untouched.
 bool Read(std::array<PADStatus, 4>& statuses);
+
+// Builds port 0's virtual Wii Remote state while iOS motion controls are on.
+// The caller sends it through KPAD instead of the GameCube PAD path.
+bool ReadMotionRemote(WiiRemoteInput::KpadSample& sample);
+bool MotionRemoteActive();
+bool MotionGameCubeActive();
+void RecenterMotionRemote();
+void ResetMotionRemote();
 
 // Draws the control overlay. Must be called inside a live ImGui frame.
 void Draw();
