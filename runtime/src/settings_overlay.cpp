@@ -73,6 +73,25 @@ const char* GraphicsApiDisplayName() {
 
 bool g_topBarVisible = false;
 bool g_exitPromptOpen = false;
+
+// Global UI scale multiplier and visibility state
+float g_userUiScale = 1.0f;
+static bool g_showKeyboardGuide = true;
+
+/**
+ * @brief Computes the effective UI scaling factor.
+ * 
+ * Combines the automatic viewport-relative base scale with the user multiplier,
+ * clamped within the supported visual range.
+ * @return The effective UI scaling factor.
+ */
+float GetUiScale() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    if (!viewport || viewport->Size.y <= 0.0f) return 1.0f;
+    float autoBase = std::clamp(viewport->Size.y / 1080.0f, 0.75f, 2.5f);
+    return std::clamp(autoBase * g_userUiScale, 0.75f, 2.5f);
+}
+
 bool g_rumbleEnabled = RuntimeConfigFile::RumbleEnabled(true);
 int g_controllerPort = 0;
 float g_resolutionScale = RuntimeConfigFile::ResolutionMultiplier(1.0f);
@@ -228,11 +247,19 @@ std::string NativeBindingConfig(uint32_t binding) {
 }
 
 
+/**
+ * @brief Updates top bar visibility and ensures the controls guide reopens when the overlay appears.
+ * @param visible True to show the top menu bar, false to hide it.
+ */
 void SetTopBarVisible(bool visible) {
     if (g_topBarVisible == visible) {
         return;
     }
     g_topBarVisible = visible;
+    // Reopen controls guide whenever F10 overlay is opened
+    if (visible) {
+        g_showKeyboardGuide = true;
+    }
 }
 
 void ApplyConfiguredMappings() {
@@ -522,6 +549,10 @@ void DrawRebindPrompt() {
         g_rebind.active = false;
         return;
     }
+
+    // Apply UI scale to the rebind modal window
+    ImGui::SetWindowFontScale(GetUiScale());
+
     if (g_rebind.active) {
         ImGui::Text("Rebind: %s", g_rebind.label.c_str());
         ImGui::TextUnformatted(g_rebind.kind == RebindKind::Controller
@@ -580,7 +611,7 @@ void DrawKeyBinding(const char* label, int scancode, RebindKind kind, uint16_t t
     if (ImGui::Button(caption.c_str(), ImVec2(width, 0.0f))) BeginRebind(kind, target, label);
     ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
     ImGui::TextUnformatted(label);
-
+    
 }
 
 bool DrawKeyboardSettings(uint32_t port) {
@@ -598,6 +629,8 @@ bool DrawKeyboardSettings(uint32_t port) {
     }
     if (!enabled) return false;
     ImGui::TextDisabled("Replaces the gamepad on this port. F10 opens settings.");
+    // Toggle to reopen or hide the controls guide while in settings
+    ImGui::Checkbox("Show controls guide diagram", &g_showKeyboardGuide);
     if (ImGui::Button("Use WASD + mouse preset") || usePreset) {
         const std::array<int, PAD_BUTTON_COUNT> keys = {
             PAD_KEY_MOUSE_LEFT, SDL_SCANCODE_SPACE, SDL_SCANCODE_E, SDL_SCANCODE_Q,
@@ -1092,6 +1125,14 @@ void DrawGraphicsSettings() {
         RuntimeConfigFile::SetShowFps(g_showFps);
     }
     ImGui::Separator();
+    /* Disabled, due to feedback loop bug and redundancy: UI scale slider is already present in Controls Guide.
+    // UI scale setting in Graphics menu (clamped to persistent range)
+    ImGui::SetNextItemWidth(200.0f);
+    ImGui::SliderFloat("UI Scale", &g_userUiScale, 0.75f, 2.50f, "%.2fx");
+    if (ImGui::IsItemDeactivatedAfterEdit()) {
+        RuntimeConfigFile::SetUiScale(g_userUiScale);
+    }
+    */
     ImGui::Text("Graphics API: %s", GraphicsApiDisplayName());
 }
 
@@ -1192,14 +1233,250 @@ void DrawStartupScreen() {
     ImGui::PopStyleColor();
 }
 
+/**
+ * @brief Renders the interactive visual keyboard controls setup window.
+ * 
+ * Displays keybindings in logical clusters (Driving, Actions, Tricks/D-Pad)
+ * with click-to-rebind capability and UI scale adjustments.
+ */
+void DrawKeyboardVisualGuide() {
+    if (!g_showKeyboardGuide) return;
+
+    const float scale = GetUiScale();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+
+    // Center the guide in the middle of the game viewport
+    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f,
+                                 viewport->Pos.y + viewport->Size.y * 0.5f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize;
+
+    // Palette colors for key groups
+    const ImVec4 colGreen  = ImVec4(0.18f, 0.65f, 0.30f, 0.95f); // Accelerate
+    const ImVec4 colRed    = ImVec4(0.78f, 0.22f, 0.22f, 0.95f); // Brake / Reverse
+    const ImVec4 colBlue   = ImVec4(0.20f, 0.48f, 0.82f, 0.95f); // Steering
+    const ImVec4 colPurple = ImVec4(0.55f, 0.28f, 0.80f, 0.95f); // Drift
+    const ImVec4 colOrange = ImVec4(0.88f, 0.52f, 0.12f, 0.95f); // Item
+    const ImVec4 colCyan   = ImVec4(0.15f, 0.60f, 0.68f, 0.90f); // D-Pad / Look Behind
+    const ImVec4 colGray   = ImVec4(0.38f, 0.40f, 0.44f, 0.90f); // Pause
+
+    uint32_t btnCount = 0;
+    auto* buttons = PADGetKeyButtonBindings(static_cast<uint32_t>(g_controllerPort), &btnCount);
+    uint32_t axisCount = 0;
+    auto* axes = PADGetKeyAxisBindings(static_cast<uint32_t>(g_controllerPort), &axisCount);
+
+        // Retrieve active button key name or fallback
+    auto GetButtonKey = [&](uint16_t padBtn) -> const char* {
+        if (buttons) {
+            for (uint32_t i = 0; i < btnCount; ++i) {
+                if (buttons[i].padButton == padBtn) return KeyBindingName(buttons[i].scancode);
+            }
+        }
+        return "Unmapped";
+    };
+
+    // Retrieve active axis key name or fallback
+    auto GetAxisKey = [&](uint16_t padAxis) -> const char* {
+        if (axes) {
+            for (uint32_t i = 0; i < axisCount; ++i) {
+                if (axes[i].padAxis == padAxis) return KeyBindingName(axes[i].scancode);
+            }
+        }
+        return "Unmapped";
+    };
+
+    // Render an interactive clickable key block
+    auto DrawKeyBox = [&](const char* currentKey, const char* label, RebindKind kind, uint16_t target, ImVec4 bg, ImVec2 size) {
+        ImGui::PushStyleColor(ImGuiCol_Button, bg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(1.0f, bg.x * 1.25f), std::min(1.0f, bg.y * 1.25f), std::min(1.0f, bg.z * 1.25f), 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(bg.x * 0.8f, bg.y * 0.8f, bg.z * 0.8f, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f * scale);
+
+        // Disambiguate button and axis IDs to avoid ImGui collision
+        std::string btnText = std::string(currentKey) + "\n" + label +
+                              (kind == RebindKind::KeyboardAxis ? "##axis_" : "##btn_") +
+                              std::to_string(target);
+
+        if (ImGui::Button(btnText.c_str(), size)) {
+            uint32_t count = 0;
+            if (PADGetKeyButtonBindings(static_cast<uint32_t>(g_controllerPort), &count) == nullptr) {
+                PADSetKeyboardActive(static_cast<uint32_t>(g_controllerPort), true);
+                PADSerializeMappings();
+            }
+            BeginRebind(kind, target, label);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Click to rebind: %s", label);
+        }
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+    };
+
+    if (ImGui::Begin("Keyboard Controls Setup", &g_showKeyboardGuide, flags)) {
+        ImGui::SetWindowFontScale(scale);
+
+        ImGui::TextDisabled("Click on any key to rebind its control in real-time.");
+        ImGui::Spacing();
+
+        // -------------------------------------------------------------
+        // GROUP 1: DRIVING (WASD + Space)
+        // -------------------------------------------------------------
+        ImGui::BeginGroup();
+        // Section header without top white line
+        ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.85f, 1.0f), "DRIVING");
+        ImGui::Spacing();
+
+        const float driveKeyW = 82.0f * scale;
+        const float driveKeyH = 50.0f * scale;
+        const float indentW   = driveKeyW + ImGui::GetStyle().ItemSpacing.x;
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indentW);
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_A), "Accelerate", RebindKind::KeyboardButton, PAD_BUTTON_A, colGreen, ImVec2(driveKeyW, driveKeyH));
+
+        DrawKeyBox(GetAxisKey(PAD_AXIS_LEFT_X_NEG), "Steer Left", RebindKind::KeyboardAxis, PAD_AXIS_LEFT_X_NEG, colBlue, ImVec2(driveKeyW, driveKeyH));
+        ImGui::SameLine();
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_B), "Brake / Rev", RebindKind::KeyboardButton, PAD_BUTTON_B, colRed, ImVec2(driveKeyW, driveKeyH));
+        ImGui::SameLine();
+        DrawKeyBox(GetAxisKey(PAD_AXIS_LEFT_X_POS), "Steer Right", RebindKind::KeyboardAxis, PAD_AXIS_LEFT_X_POS, colBlue, ImVec2(driveKeyW, driveKeyH));
+
+        ImGui::Spacing();
+
+        const float spaceW = (driveKeyW * 3.0f) + (ImGui::GetStyle().ItemSpacing.x * 2.0f);
+        DrawKeyBox(GetButtonKey(PAD_TRIGGER_R), "Drift / Hop", RebindKind::KeyboardButton, PAD_TRIGGER_R, colPurple, ImVec2(spaceW, 46.0f * scale));
+
+        ImGui::EndGroup();
+
+        // -------------------------------------------------------------
+        // GROUP 2: ACTIONS & PAUSE
+        // -------------------------------------------------------------
+        ImGui::SameLine(0, 35.0f * scale);
+        ImGui::BeginGroup();
+        // Section header without top white line
+        ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.85f, 1.0f), "ACTIONS & PAUSE");
+        ImGui::Spacing();
+
+        const float actW = 125.0f * scale;
+        const float actH = 46.0f * scale;
+
+        DrawKeyBox(GetButtonKey(PAD_TRIGGER_L), "Use Item", RebindKind::KeyboardButton, PAD_TRIGGER_L, colOrange, ImVec2(actW, actH));
+        ImGui::Spacing();
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_X), "Look Behind", RebindKind::KeyboardButton, PAD_BUTTON_X, colCyan, ImVec2(actW, actH));
+        ImGui::Spacing();
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_START), "Pause", RebindKind::KeyboardButton, PAD_BUTTON_START, colGray, ImVec2(actW, actH));
+
+        ImGui::EndGroup();
+
+        // -------------------------------------------------------------
+        // GROUP 3: TRICKS & D-PAD
+        // -------------------------------------------------------------
+        ImGui::SameLine(0, 35.0f * scale);
+        ImGui::BeginGroup();
+        // Section header without top white line
+        ImGui::TextColored(ImVec4(0.85f, 0.85f, 0.85f, 1.0f), "TRICKS / D-PAD");
+        ImGui::Spacing();
+
+        const float dpadW = 68.0f * scale;
+        const float dpadH = 50.0f * scale;
+        const float indentDpad = dpadW + ImGui::GetStyle().ItemSpacing.x;
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indentDpad);
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_UP), "Wheelie / Up", RebindKind::KeyboardButton, PAD_BUTTON_UP, colCyan, ImVec2(dpadW, dpadH));
+
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_LEFT), "Trick L", RebindKind::KeyboardButton, PAD_BUTTON_LEFT, colCyan, ImVec2(dpadW, dpadH));
+        ImGui::SameLine();
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_DOWN), "Trick Down", RebindKind::KeyboardButton, PAD_BUTTON_DOWN, colCyan, ImVec2(dpadW, dpadH));
+        ImGui::SameLine();
+        DrawKeyBox(GetButtonKey(PAD_BUTTON_RIGHT), "Trick R", RebindKind::KeyboardButton, PAD_BUTTON_RIGHT, colCyan, ImVec2(dpadW, dpadH));
+
+        ImGui::EndGroup();
+
+        // -------------------------------------------------------------
+        // FOOTER
+        // -------------------------------------------------------------
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Resync staged scale whenever user is not actively interacting with the slider
+        static float s_stagedScale = g_userUiScale;
+        if (!ImGui::IsAnyItemActive()) {
+            s_stagedScale = g_userUiScale;
+        }
+
+        ImGui::SetNextItemWidth(160.0f * scale);
+        ImGui::SliderFloat("UI Scale", &s_stagedScale, 0.75f, 2.50f, "%.2fx");
+
+        // Apply scale upon release to avoid feedback loop oscillation
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            g_userUiScale = s_stagedScale;
+            RuntimeConfigFile::SetUiScale(g_userUiScale);
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Drag to select scale, release mouse click to apply.");
+        }
+
+        // Quick presets with higher scaling options
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset")) {
+            g_userUiScale = 1.0f;
+            s_stagedScale = 1.0f;
+            RuntimeConfigFile::SetUiScale(1.0f);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("100%")) {
+            g_userUiScale = 1.0f;
+            s_stagedScale = 1.0f;
+            RuntimeConfigFile::SetUiScale(1.0f);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("125%")) {
+            g_userUiScale = 1.25f;
+            s_stagedScale = 1.25f;
+            RuntimeConfigFile::SetUiScale(1.25f);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("150%")) {
+            g_userUiScale = 1.50f;
+            s_stagedScale = 1.50f;
+            RuntimeConfigFile::SetUiScale(1.50f);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("200%")) {
+            g_userUiScale = 2.00f;
+            s_stagedScale = 2.00f;
+            RuntimeConfigFile::SetUiScale(2.00f);
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Controls are paused while F10 is open. Press F10 to return to the game.");
+    }
+    ImGui::End();
+}
+
+/**
+ * @brief Renders the confirmation modal when quitting the game, scaled dynamically.
+ */
 void DrawExitPrompt() {
     constexpr const char* kTitle = "Exit";
     if (g_exitPromptOpen && !ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
+
+    const float scale = GetUiScale();
+
     if (!ImGui::BeginPopupModal(kTitle, &g_exitPromptOpen, ImGuiWindowFlags_AlwaysAutoResize)) return;
+
+    // Apply UI scale to popup text and controls
+    ImGui::SetWindowFontScale(scale);
+
     ImGui::TextUnformatted("Quit the game?");
-    if (ImGui::Button("Exit", ImVec2(120.0f, 0.0f))) ExitForAuroraWindowClose();
+    ImGui::Spacing();
+
+    const float btnWidth = 120.0f * scale;
+    if (ImGui::Button("Exit", ImVec2(btnWidth, 0.0f))) ExitForAuroraWindowClose();
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) g_exitPromptOpen = false;
+    if (ImGui::Button("Cancel", ImVec2(btnWidth, 0.0f))) g_exitPromptOpen = false;
+
     if (!g_exitPromptOpen) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
@@ -1209,22 +1486,36 @@ void DrawTopBar() {
         return;
     }
 
+    const float scale = GetUiScale();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGui::GetBackgroundDrawList()->AddRectFilled(viewport->Pos,
         ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
         IM_COL32(0, 0, 0, 70));
     ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f,
-                                 viewport->Pos.y + viewport->Size.y - 24.0f),
+                                 viewport->Pos.y + viewport->Size.y - (26.0f * scale)),
                             ImGuiCond_Always, ImVec2(0.5f, 1.0f));
     ImGui::SetNextWindowBgAlpha(0.85f);
     if (ImGui::Begin("Settings input hint", nullptr,
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing)) {
+        ImGui::SetWindowFontScale(scale);
         ImGui::TextUnformatted("Settings open - game controls disabled. Press F10 to return to the game.");
     }
     ImGui::End();
-    if (!ImGui::BeginMainMenuBar()) return;
+
+    // Render visual keyboard guide and modal rebind prompt
+    DrawKeyboardVisualGuide();
+    DrawRebindPrompt();
+
+    // Top menu bar with scaled padding
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * scale, 6.0f * scale));
+    const bool barOpen = ImGui::BeginMainMenuBar();
+    ImGui::PopStyleVar();
+
+    if (!barOpen) return;
+
+    ImGui::SetWindowFontScale(scale);
 
     ImGui::TextUnformatted("WiiCompiled");
     ImGui::Separator();
@@ -1246,19 +1537,22 @@ void DrawTopBar() {
         }
         ImGui::EndMenu();
     }
+    // Top bar menu separator
+    ImGui::Separator();
 
     if (ImGui::BeginMenu("Graphics")) {
         DrawGraphicsSettings();
         ImGui::EndMenu();
     }
+    // Top bar menu separator
+    ImGui::Separator();
 
     if (ImGui::BeginMenu("Controller settings")) {
         DrawControllerSettings();
-        // Nest capture under this menu so opening/closing the modal preserves
-        // the settings popup and its current port and scroll position.
-        DrawRebindPrompt();
         ImGui::EndMenu();
     }
+    // Top bar menu separator
+    ImGui::Separator();
 
     const std::string audioLabel = g_audioMuted
         ? "Audio: Muted"
@@ -1269,15 +1563,16 @@ void DrawTopBar() {
     const std::string audioMenuLabel = audioLabel + "###AudioSettingsMenu";
     if (ImGui::BeginMenu(audioMenuLabel.c_str())) {
         DrawAudioSettings();
-        DrawRebindPrompt();
         ImGui::EndMenu();
     }
+    // Top bar menu separator
+    ImGui::Separator();
 
     const ImGuiStyle& style = ImGui::GetStyle();
     const float hideWidth = ImGui::CalcTextSize("Hide (F10)").x + style.FramePadding.x * 2.0f;
     const float exitWidth = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
     ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(),
-                                  ImGui::GetWindowWidth() - hideWidth - exitWidth - style.ItemSpacing.x - 8.0f));
+                                  ImGui::GetWindowWidth() - hideWidth - exitWidth - style.ItemSpacing.x - (8.0f * scale)));
     if (ImGui::MenuItem("Hide (F10)")) {
         SetTopBarVisible(false);
     }
@@ -1340,6 +1635,8 @@ void InitializeRuntimeSettings() noexcept {
     InputBindings::Reload();
     controller_mapping_wizard::LoadPersistedMappings();
     ApplyConfiguredMappings();
+    // Load UI scale factor from RuntimeConfigFile
+    g_userUiScale = std::clamp(RuntimeConfigFile::UiScale(1.0f), 0.75f, 2.50f);
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
     AudioBackend::Instance().SetMuted(g_audioMuted);
     MusicAttenuation::SetMusicVolume(static_cast<float>(g_musicVolumePercent) / 100.0f);
@@ -1437,7 +1734,7 @@ void Draw() noexcept {
     DrawExitPrompt();
     controller_mapping_wizard::Draw();
     // The wizard captures raw presses; keep them out of the game.
-    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_rebind.active;
+    const bool inputBlocked = controller_mapping_wizard::IsActive() || g_topBarVisible || g_rebind.active;
     PADBlockInput(inputBlocked);
     InputBindings::SetInputBlocked(inputBlocked);
     DrawStartupScreen();
