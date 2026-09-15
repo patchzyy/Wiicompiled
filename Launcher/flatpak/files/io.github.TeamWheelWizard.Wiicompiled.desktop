@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=WiiCompiled
+Comment=Translate, compile, and play Mario Kart Wii natively on Linux
+Exec=wiicompiled-gui
+Icon=io.github.TeamWheelWizard.Wiicompiled
+Categories=Game;
+Keywords=wii;mario kart;recompilation;
+StartupWMClass=wiicompiled-gui
+Terminal=false

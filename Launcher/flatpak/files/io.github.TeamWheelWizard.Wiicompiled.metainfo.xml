@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.TeamWheelWizard.Wiicompiled</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>WiiCompiled</name>
+  <summary>Translate, compile, and play Mario Kart Wii natively on Linux</summary>
+  <description>
+    <p>
+      WiiCompiled recompiles Mario Kart Wii into a native Linux binary.
+      Point it at your own game dump and it translates the game code,
+      compiles it with a bundled toolchain, and installs a playable build.
+    </p>
+    <p>
+      The launcher shows whether the base game is installed, streams the
+      compile log while it builds, and starts the game when it is ready.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.TeamWheelWizard.Wiicompiled.desktop</launchable>
+  <provides>
+    <binary>wiicompiled-gui</binary>
+    <binary>wiicompiled-setup</binary>
+  </provides>
+  <categories>
+    <category>Game</category>
+  </categories>
+  <keywords>
+    <keyword>mario kart</keyword>
+    <keyword>wii</keyword>
+    <keyword>recompilation</keyword>
+  </keywords>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">mild</content_attribute>
+    <content_attribute id="violence-fantasy">none</content_attribute>
+    <content_attribute id="violence-realistic">none</content_attribute>
+    <content_attribute id="violence-bloodshed">none</content_attribute>
+    <content_attribute id="drugs-alcohol">none</content_attribute>
+    <content_attribute id="drugs-narcotics">none</content_attribute>
+    <content_attribute id="drugs-tobacco">none</content_attribute>
+    <content_attribute id="sex-nudity">none</content_attribute>
+    <content_attribute id="sex-themes">none</content_attribute>
+    <content_attribute id="language-profanity">none</content_attribute>
+    <content_attribute id="language-humor">none</content_attribute>
+    <content_attribute id="language-discrimination">none</content_attribute>
+    <content_attribute id="social-chat">none</content_attribute>
+    <content_attribute id="social-info">none</content_attribute>
+    <content_attribute id="social-audio">none</content_attribute>
+    <content_attribute id="social-location">none</content_attribute>
+    <content_attribute id="social-contacts">none</content_attribute>
+    <content_attribute id="money-purchasing">none</content_attribute>
+    <content_attribute id="money-gambling">none</content_attribute>
+  </content_rating>
+  <developer>
+    <name>Team Wheel Wizard</name>
+  </developer>
+  <url type="homepage">https://github.com/skiletro/Wiicompiled</url>
+  <url type="bugtracker">https://github.com/skiletro/Wiicompiled/issues</url>
+  <releases>
+    <release version="0.2.31" date="2026-09-13">
+      <description>
+        <p>Linux Flatpak with a graphical launcher for the base game.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,43 @@
+#!/bin/bash
+# Sandbox entrypoint for the WiiCompiled flatpak bundle.
+set -euo pipefail
+APP=/app
+# lld in the bundled toolchain links host libs (libxml2, ICU 70) the Platform runtime can't
+# provide; expose the copies bundled at build time into the toolchain's lib dir.
+export LD_LIBRARY_PATH="$APP/usr/toolchain/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# The bundled devroot keeps the multiarch lib dir (crt stubs, libc.so/libm.so linker
+# scripts, libc_nonshared.a, ...) under /app/usr/lib/$triple; expose it via LIBRARY_PATH so the
+# clang driver adds -L for it (lld resolves the libc.so GROUP members from there).
+case "$(uname -m)" in
+    x86_64) libdir=x86_64-linux-gnu ;;
+    aarch64) libdir=aarch64-linux-gnu ;;
+esac
+export LIBRARY_PATH="/app/usr/lib/$libdir${LIBRARY_PATH:+:$LIBRARY_PATH}"
+# /app is read-only and the workspace snapshot must be writable (local-build.sh writes
+# generated/, native-build/, Assets/, ...), so it is copied out to the sandbox's writable data
+# dir on first run and only re-synced when the bundled snapshot's version stamp changes.
+CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
+mkdir -p "$CACHE"
+if [ ! -f "$CACHE/.bundle-version" ] || \
+   [ "$(cat "$APP/workspace/.bundle-version")" != "$(cat "$CACHE/.bundle-version")" ]; then
+    mkdir -p "$CACHE/Launcher"
+    for dir in runtime aurora-main projects; do
+        rm -rf "$CACHE/$dir"
+        cp -r "$APP/workspace/$dir" "$CACHE/$dir"
+    done
+    cp "$APP/workspace/Launcher/local-build.sh" "$CACHE/Launcher/local-build.sh"
+    cp "$APP/workspace/.bundle-version" "$CACHE/.bundle-version"
+fi
+# --sysroot $APP: the bundled compile dev files (headers, crt objects, linker scripts) live
+# under /app/usr and the installed app carries no SDK /usr, so the bundled clang/lld must
+# resolve its standard includes and startup files against /app rather than /usr.
+exec "$APP/libexec/wiicompiled-setup" --workspace "$CACHE" \
+    --translator-bin "$APP/libexec/translator-cli" \
+    --disc-tool-bin "$APP/libexec/nodtool" \
+    --cc "$APP/usr/toolchain/bin/clang" \
+    --cxx "$APP/usr/toolchain/bin/clang++" \
+    --fuse-ld lld \
+    --cmake "$APP/usr/toolchain/bin/cmake" \
+    --ninja "$APP/usr/toolchain/bin/ninja" \
+    --sysroot "$APP" \
+    --native-prebuilt-dir "$APP/native-prebuilt" "$@"
