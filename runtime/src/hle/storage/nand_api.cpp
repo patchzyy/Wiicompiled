@@ -383,6 +383,25 @@ extern "C" int32_t NANDMove_HLE(uint32_t srcPathPtr, uint32_t dstPathPtr) {
         return NAND_RESULT_OK;
     }
 
+    // A Riivolution <savegame> redirect resolves the destination outside the managed
+    // NAND, so the two sides of a move can sit on different mounts. rename(2) refuses
+    // that with EXDEV even when both live on the same filesystem, which is the normal
+    // case under Flatpak: every application's data directory is its own bind mount.
+    // Copy-then-delete is the move the SDK's callers are asking for either way.
+    if (ec == std::errc::cross_device_link) {
+        std::error_code fallbackEc;
+        std::filesystem::copy_file(srcHost, dstHost, std::filesystem::copy_options::none, fallbackEc);
+        if (fallbackEc) {
+            ec = fallbackEc;
+        } else if (NandRemove(srcHost)) {
+            return NAND_RESULT_OK;
+        } else {
+            // Without the source gone this is a copy, not a move. Drop the new
+            // entry again so a failed move leaves the NAND exactly as it was.
+            NandRemove(dstHost);
+        }
+    }
+
     LogNandError("NANDMove", "FAILED error=%d message='%s'", ec.value(), ec.message().c_str());
     return NAND_RESULT_UNKNOWN;
 }
