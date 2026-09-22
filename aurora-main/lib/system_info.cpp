@@ -235,7 +235,7 @@ std::string GetOSVersion() {
   constexpr auto name = "iOS";
 #elif TARGET_OS_TV
   constexpr auto name = "tvOS";
-#elif
+#else
   constexpr auto name = Unknown;
 #endif
 

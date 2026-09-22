@@ -141,8 +141,8 @@ public sealed class KamekLrContinuationIntegrationTests
     ];
 
     private static string Source(TranslationSourceBundle bundle, uint address) =>
-        Assert.Single(bundle.Entries.Where(entry => entry.EntryPoint == address &&
-            entry.VirtualPath.StartsWith("overlays/", StringComparison.Ordinal))).Source;
+        Assert.Single(bundle.Entries, entry => entry.EntryPoint == address &&
+            entry.VirtualPath.StartsWith("overlays/", StringComparison.Ordinal)).Source;
 
     private static TranslationSourceBundle Translate(int tailDepth, uint[] body,
         bool conditionalWrapper = false, bool sharedTarget = false, uint[]? companionBody = null)

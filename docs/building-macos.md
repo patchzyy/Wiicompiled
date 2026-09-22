@@ -21,15 +21,15 @@ This guide covers building **WiiCompiled** (base game) and **Retro Rewind** from
 Install the required tools using [Homebrew](https://brew.sh):
 ```bash
 brew install cmake ninja
-brew install --cask dotnet-sdk@8
+brew install --cask dotnet-sdk
 ```
 
-Verify that Clang, CMake, Ninja, and the .NET 8 runtime are available:
+Verify that Clang, CMake, Ninja, and the .NET 10 runtime are available:
 ```bash
 clang --version
 cmake --version
 ninja --version
-dotnet --list-runtimes   # Must list Microsoft.NETCore.App 8.x
+dotnet --list-runtimes   # Must list Microsoft.NETCore.App 10.x
 ```
 
 ---
@@ -101,7 +101,7 @@ dotnet build translator/src/Translator.Cli/Translator.Cli.csproj -c Release
 Define a shell function to invoke the translator (ensuring paths with spaces are handled safely):
 ```bash
 translator() {
-  dotnet "$(pwd)/translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.dll" "$@"
+  dotnet "$(pwd)/translator/src/Translator.Cli/bin/Release/net10.0/Translator.Cli.dll" "$@"
 }
 ```
 

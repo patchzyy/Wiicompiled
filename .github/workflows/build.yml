@@ -1,4 +1,4 @@
-name: Build
+name: PR
 
 on:
   push:
@@ -10,39 +10,207 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
 
 jobs:
-  recompilation:
-    name: Recompilation test
-    uses: ./.github/workflows/recomp-test.yml
-
-  translator:
-    name: Translator (build + test)
-    runs-on: windows-latest
+  changes:
+    name: Classify changes
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      native: ${{ steps.classify.outputs.native }}
+      aurora: ${{ steps.classify.outputs.aurora }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test CI helper contracts
+        run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            python .github/scripts/classify_changes.py --all --github-output "$GITHUB_OUTPUT"
+          else
+            python .github/scripts/classify_changes.py \
+              --base "$BASE_SHA" --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+          fi
+
+      - name: Summarize classification
+        env:
+          NATIVE: ${{ steps.classify.outputs.native }}
+          AURORA: ${{ steps.classify.outputs.aurora }}
+        run: |
+          {
+            echo '## Change classification'
+            echo
+            echo "- Native synthetic matrix: **$NATIVE**"
+            echo "- Standalone Aurora tests: **$AURORA**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  managed:
+    name: Managed (${{ matrix.platform }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/build/ci/nuget-packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            platform: windows
+            arch: x64
+            coverage: false
+          - runner: ubuntu-22.04
+            platform: linux
+            arch: x64
+            coverage: true
+          - runner: macos-14
+            platform: macos
+            arch: arm64
+            coverage: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            translator/src/Translator.Cli/packages.lock.json
+            translator/tests/Translator.Tests/packages.lock.json
 
-      - name: Cache NuGet packages
-        uses: actions/cache@v5
-        with:
-          path: ~/.nuget/packages
-          key: ${{ runner.os }}-nuget-${{ hashFiles('translator/Translator.sln', '**/*.csproj', '**/*.props', '**/*.targets', '**/packages.lock.json', 'global.json', 'NuGet.config', 'nuget.config') }}
-          restore-keys: |
-            ${{ runner.os }}-nuget-
+      - name: Create evidence directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path '${{ runner.temp }}/test-results' | Out-Null
+          dotnet --info | Out-File -Encoding utf8 '${{ runner.temp }}/test-results/dotnet-info.txt'
 
-      - name: Restore
-        run: dotnet restore translator/Translator.sln
+      - name: Restore locked dependencies
+        run: dotnet restore translator/Translator.sln --locked-mode
 
-      - name: Build
+      - name: Build translator
         run: dotnet build translator/Translator.sln -c Release --no-restore
 
-      - name: Test
-        run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+      - name: Test translator
+        if: ${{ !matrix.coverage }}
+        run: >-
+          dotnet test translator/Translator.sln -c Release --no-build --no-restore
+          --logger "junit;LogFilePath=${{ runner.temp }}/test-results/translator.xml"
+          --results-directory "${{ runner.temp }}/test-results"
+
+      - name: Test translator with coverage
+        if: ${{ matrix.coverage }}
+        run: >-
+          dotnet test translator/Translator.sln -c Release --no-build --no-restore
+          --logger "junit;LogFilePath=${{ runner.temp }}/test-results/translator.xml"
+          --results-directory "${{ runner.temp }}/test-results"
+          --collect "XPlat Code Coverage"
+
+      - name: Run Windows setup self-tests
+        if: runner.os == 'Windows'
+        run: >-
+          dotnet run --project Launcher/WiiCompiled.Setup.Windows/WiiCompiled.Setup.Windows.csproj
+          -c Release -- --self-test
+
+      - name: Smoke-test Linux setup commands
+        if: runner.os == 'Linux'
+        run: |
+          dotnet run --project Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj -c Release -- --version
+          dotnet run --project Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj -c Release -- --help
+
+      - name: Check POSIX launcher syntax
+        if: runner.os != 'Windows'
+        run: bash -n Launcher/local-build.sh Launcher/local-build-macos.command Launcher/build-appimage.sh
+
+      - name: Summarize coverage
+        if: always() && matrix.coverage
+        shell: bash
+        run: |
+          coverage_file="$(find '${{ runner.temp }}/test-results' -name coverage.cobertura.xml -print -quit)"
+          if [[ -n "$coverage_file" ]]; then
+            python .github/scripts/summarize_coverage.py "$coverage_file"
+          else
+            echo 'No coverage report was produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publish managed test report
+        if: always() && !cancelled()
+        uses: mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16 # v6.4.2
+        with:
+          report_paths: ${{ runner.temp }}/test-results/translator.xml
+          check_name: Managed tests (${{ matrix.platform }}, ${{ matrix.arch }})
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          detailed_summary: true
+          include_passed: true
+          fail_on_failure: true
+          require_tests: true
+
+      - name: Upload managed evidence
+        if: always() && !cancelled()
+        id: managed-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: managed-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-results
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+      - name: Summarize managed artifact
+        if: always() && !cancelled()
+        shell: pwsh
+        run: |
+          @(
+            '## Managed artifact'
+            ''
+            '- Evidence: ${{ steps.managed-artifact.outputs.artifact-url }}'
+            '- SHA-256: `${{ steps.managed-artifact.outputs.artifact-digest }}`'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+
+  native:
+    name: Native synthetic matrix
+    if: needs.changes.outputs.native == 'true'
+    needs: changes
+    uses: ./.github/workflows/recomp-test.yml
+    with:
+      run-aurora-tests: ${{ needs.changes.outputs.aurora == 'true' }}
+    permissions:
+      contents: read
+      checks: write
+
+  required:
+    name: PR / required
+    if: always()
+    needs: [changes, managed, native]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Enforce required results
+        run: >-
+          python .github/scripts/check_required.py
+          --changes '${{ needs.changes.result }}'
+          --managed '${{ needs.managed.result }}'
+          --native '${{ needs.native.result }}'
+          --native-required '${{ needs.changes.outputs.native || 'false' }}'

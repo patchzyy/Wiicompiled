@@ -88,7 +88,7 @@ if [[ -n "$translator_bin" ]]; then
     translator() { "$translator_bin" "$@"; }
 else
     command -v "$dotnet_bin" >/dev/null || fail "required tool not found: $dotnet_bin"
-    translator_dll="$workspace/translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.dll"
+    translator_dll="$workspace/translator/src/Translator.Cli/bin/Release/net10.0/Translator.Cli.dll"
     if [[ ! -f "$translator_dll" ]]; then
         step build-translator 'Building the translator'
         "$dotnet_bin" build "$workspace/translator/src/Translator.Cli/Translator.Cli.csproj" -c Release

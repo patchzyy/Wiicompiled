@@ -144,7 +144,7 @@ Wheel Wizard drives this too.
 
 Owning the game is still required even if you compile everything yourself.
 
-You'll need: .NET 8 SDK, CMake, Ninja, and LLVM/Clang (the shipped build uses LLVM-MinGW targeting
+You'll need: .NET 10 SDK, CMake, Ninja, and LLVM/Clang (the shipped build uses LLVM-MinGW targeting
 `x86-64-v3`).
 
 Build the translator:

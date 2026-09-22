@@ -2,60 +2,283 @@ name: Synthetic recompilation
 
 on:
   workflow_call:
+    inputs:
+      run-aurora-tests:
+        description: Configure Aurora as the top-level project and run its native tests.
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
+    inputs:
+      run-aurora-tests:
+        description: Run the standalone Aurora native tests.
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  SCCACHE_CACHE_SIZE: 1G
+  SCCACHE_GHA_ENABLED: 'false'
+
 jobs:
-  windows:
-    name: Windows runtime (synthetic DOL)
-    runs-on: windows-latest
+  native:
+    name: Native (${{ matrix.platform }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            platform: windows
+            arch: x64
+            parallel: 4
+          - runner: ubuntu-22.04
+            platform: linux
+            arch: x64
+            parallel: 4
+          - runner: ubuntu-22.04-arm
+            platform: linux
+            arch: arm64
+            parallel: 4
+          - runner: macos-14
+            platform: macos
+            arch: arm64
+            parallel: 3
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/build/ci/nuget-packages
+      SCCACHE_DIR: ${{ github.workspace }}/build/ci/sccache
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/build/ci/fetchcontent
+      RECOMP_STAGE: ${{ github.workspace }}/build/ci/recomp-${{ matrix.platform }}-${{ matrix.arch }}
+      EVIDENCE_DIR: ${{ github.workspace }}/build/ci/native-evidence
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
-          dotnet-version: '8.0.x'
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            translator/src/Translator.Cli/packages.lock.json
+            translator/tests/Translator.Tests/packages.lock.json
 
-      # Cache downloads only. Preparation still validates pins, and every run
-      # compiles current Aurora, runtime, and generated sources from scratch.
-      - uses: actions/cache@v5
+      - name: Install Linux build prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libdrm-dev libgbm-dev libgl1-mesa-dev \
+            libgles2-mesa-dev libegl1-mesa-dev libdbus-1-dev libibus-1.0-dev \
+            libudev-dev libusb-1.0-0-dev libpipewire-0.3-dev libwayland-dev \
+            libdecor-0-dev liburing-dev
+
+      - name: Verify macOS build prerequisites
+        if: runner.os == 'macOS'
+        run: |
+          command -v clang
+          command -v cmake
+          command -v ninja
+          command -v pwsh
+
+      - name: Cache verified Windows downloads
+        if: runner.os == 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: Launcher/artifacts/downloads
-          key: windows-recomp-downloads-${{ hashFiles('Launcher/Prepare-PortableTools.ps1', 'Launcher/Prepare-Dependencies.ps1') }}
+          key: windows-native-downloads-${{ hashFiles('Launcher/Prepare-PortableTools.ps1', 'Launcher/Prepare-Dependencies.ps1', 'aurora-main/CMakeLists.txt', 'aurora-main/extern/CMakeLists.txt') }}
 
-      # Install sccache.
-      - name: Run sccache-action
-        uses: mozilla/sccache-action@v0.0.11
+      - name: Cache FetchContent source trees
+        if: runner.os != 'Windows'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ${{ env.FETCHCONTENT_BASE_DIR }}/**/*-src
+            ${{ env.FETCHCONTENT_BASE_DIR }}/**/*-subbuild
+          key: fetchcontent-v1-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('aurora-main/CMakeLists.txt', 'aurora-main/extern/CMakeLists.txt', 'aurora-main/tests/CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-v1-${{ runner.os }}-${{ matrix.arch }}-
 
-      # Tell CMake to use sccache and use GitHub's API.
-      - name: Configure sccache environment
-        shell: pwsh
-        run: |
-          "SCCACHE_GHA_ENABLED=true" | Add-Content -Path $env:GITHUB_ENV
-          "ACTIONS_CACHE_SERVICE_V2=on" | Add-Content -Path $env:GITHUB_ENV
-          "CMAKE_C_COMPILER_LAUNCHER=$env:SCCACHE_PATH" | Add-Content -Path $env:GITHUB_ENV
-          "CMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH" | Add-Content -Path $env:GITHUB_ENV
+      - name: Cache sccache objects
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ env.SCCACHE_DIR }}
+          key: sccache-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('runtime/CMakeLists.txt', 'runtime/cmake/**', 'aurora-main/CMakeLists.txt', 'aurora-main/cmake/**', 'Launcher/NativeBuildFlags.ps1') }}-${{ github.sha }}
+          restore-keys: |
+            sccache-v2-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('runtime/CMakeLists.txt', 'runtime/cmake/**', 'aurora-main/CMakeLists.txt', 'aurora-main/cmake/**', 'Launcher/NativeBuildFlags.ps1') }}-
+            sccache-v2-${{ runner.os }}-${{ matrix.arch }}-
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+        with:
+          version: v0.17.0
 
       - name: Prepare the shipped Windows toolchain
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./Launcher/Prepare-PortableTools.ps1
 
-      - name: Prepare pinned native dependencies
+      - name: Prepare pinned Windows dependencies
+        if: runner.os == 'Windows'
         shell: pwsh
         run: ./Launcher/Prepare-Dependencies.ps1
 
-      # Expose cache token context to the build script.
-      - name: Translate, compile the full runtime, and link
+      - name: Record environment
         shell: pwsh
-        run: ./Launcher/Test-Recompilation.ps1 -Parallel 4
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:EVIDENCE_DIR | Out-Null
+          dotnet --info | Out-File -Encoding utf8 (Join-Path $env:EVIDENCE_DIR 'dotnet-info.txt')
+          if ('${{ runner.os }}' -eq 'Windows') {
+            $cmake = 'Launcher/artifacts/portable-tools/CMake/bin/cmake.exe'
+            $clang = 'Launcher/artifacts/portable-tools/llvm-mingw/bin/x86_64-w64-mingw32-clang.exe'
+          } elseif ('${{ runner.os }}' -eq 'macOS') {
+            $cmake = (Get-Command cmake -CommandType Application | Select-Object -First 1).Source
+            $clang = '/usr/bin/clang'
+          } else {
+            $cmake = (Get-Command cmake -CommandType Application | Select-Object -First 1).Source
+            $clang = (Get-Command clang -CommandType Application | Select-Object -First 1).Source
+          }
+          @(
+            'runner.os=${{ runner.os }}'
+            'runner.arch=${{ runner.arch }}'
+            "image.os=$env:ImageOS"
+            "image.version=$env:ImageVersion"
+            "os.description=$([Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+            "process.architecture=$([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+            'github.sha=${{ github.sha }}'
+          ) | Out-File -Encoding utf8 (Join-Path $env:EVIDENCE_DIR 'environment.txt')
+          & $cmake --version | Out-File -Encoding utf8 (Join-Path $env:EVIDENCE_DIR 'cmake-version.txt')
+          & $clang --version | Out-File -Encoding utf8 (Join-Path $env:EVIDENCE_DIR 'clang-version.txt')
+          & sccache --version | Out-File -Encoding utf8 (Join-Path $env:EVIDENCE_DIR 'sccache-version.txt')
 
-      # Print cache results (even if the build fails)
-      - name: Show sccache stats
-        if: always()
+      - name: Translate, compile, link, and test
         shell: pwsh
-        run: sccache --show-stats
+        env:
+          RUN_AURORA: ${{ inputs.run-aurora-tests }}
+        run: |
+          $arguments = @{
+            Platform = '${{ matrix.platform }}'
+            StageDirectory = $env:RECOMP_STAGE
+            Parallel = ${{ matrix.parallel }}
+          }
+          if ($env:RUN_AURORA -eq 'true') { $arguments.RunAuroraTests = $true }
+          $transcript = Join-Path $env:EVIDENCE_DIR 'synthetic-recompilation.log'
+          Start-Transcript -LiteralPath $transcript -Force | Out-Null
+          try {
+            ./Launcher/Test-Recompilation.ps1 @arguments
+          } finally {
+            Stop-Transcript | Out-Null
+          }
+
+      - name: Record sccache statistics
+        if: always() && !cancelled()
+        shell: pwsh
+        run: sccache --show-stats | Tee-Object -FilePath (Join-Path $env:EVIDENCE_DIR 'sccache-stats.txt')
+
+      - name: Publish native test report
+        if: always() && !cancelled()
+        uses: mikepenz/action-junit-report@d9f48fc87bc235f7e214acf696ca5abc0a986f16 # v6.4.2
+        with:
+          report_paths: ${{ env.RECOMP_STAGE }}/test-results/*.xml
+          check_name: Native tests (${{ matrix.platform }}, ${{ matrix.arch }})
+          annotate_only: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          detailed_summary: true
+          include_passed: true
+          fail_on_failure: true
+          require_tests: false
+
+      - name: Bundle linked synthetic product
+        if: success()
+        shell: pwsh
+        run: |
+          $suffix = '${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}'
+          $nativeBuild = Join-Path $env:RECOMP_STAGE 'native-build'
+          $bundle = Join-Path $env:RUNNER_TEMP "synthetic-product-$suffix"
+          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
+          $executable = if ('${{ runner.os }}' -eq 'Windows') { 'WiiCompiled.exe' } else { 'WiiCompiled' }
+          Copy-Item -LiteralPath (Join-Path $nativeBuild $executable) -Destination $bundle
+          foreach ($asset in 'dsp_coef.bin', 'initial_pipeline_cache.db', 'wii_bootstrap') {
+            $source = Join-Path $nativeBuild $asset
+            if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination $bundle -Recurse }
+          }
+          foreach ($pattern in '*.dll', '*.dylib', '*.so', '*.so.*') {
+            Get-ChildItem -LiteralPath $nativeBuild -File -Filter $pattern |
+              Copy-Item -Destination $bundle -Force
+          }
+          if ('${{ runner.os }}' -eq 'Windows') {
+            $archive = Join-Path $env:RUNNER_TEMP "synthetic-product-$suffix.zip"
+            Compress-Archive -Path (Join-Path $bundle '*') -DestinationPath $archive
+          } else {
+            $archive = Join-Path $env:RUNNER_TEMP "synthetic-product-$suffix.tar.gz"
+            & tar -czf $archive -C $bundle .
+            if ($LASTEXITCODE -ne 0) { throw "tar failed with exit code $LASTEXITCODE" }
+          }
+          "PRODUCT_ARCHIVE=$archive" | Add-Content -Path $env:GITHUB_ENV
+
+      - name: Upload linked synthetic product
+        if: success()
+        id: product-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          path: ${{ env.PRODUCT_ARCHIVE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload native evidence
+        if: always() && !cancelled()
+        id: evidence-artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-evidence-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.EVIDENCE_DIR }}
+            ${{ env.RECOMP_STAGE }}/test-results
+            ${{ env.RECOMP_STAGE }}/native-build/CMakeCache.txt
+            ${{ env.RECOMP_STAGE }}/native-build/Testing/Temporary
+            ${{ env.RECOMP_STAGE }}/aurora-tests-build/CMakeCache.txt
+            ${{ env.RECOMP_STAGE }}/aurora-tests-build/Testing/Temporary
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 6
+
+      - name: Upload failure diagnostics
+        if: failure() && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-failure-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.EVIDENCE_DIR }}/synthetic-recompilation.log
+            ${{ env.RECOMP_STAGE }}/recomp.yml
+            ${{ env.RECOMP_STAGE }}/synthetic-functions.txt
+            ${{ env.RECOMP_STAGE }}/generated/base_translation_output.json
+            ${{ env.RECOMP_STAGE }}/generated/build_shards
+            ${{ env.RECOMP_STAGE }}/native-build/CMakeFiles/CMakeConfigureLog.yaml
+            ${{ env.RECOMP_STAGE }}/aurora-tests-build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
+          retention-days: 30
+          compression-level: 6
+
+      - name: Summarize artifacts
+        if: always() && !cancelled()
+        shell: pwsh
+        run: |
+          @(
+            '## Native artifacts'
+            ''
+            '- Evidence: ${{ steps.evidence-artifact.outputs.artifact-url }}'
+            '- Evidence SHA-256: `${{ steps.evidence-artifact.outputs.artifact-digest }}`'
+            '- Product: ${{ steps.product-artifact.outputs.artifact-url }}'
+            '- Product SHA-256: `${{ steps.product-artifact.outputs.artifact-digest }}`'
+          ) | Add-Content -Path $env:GITHUB_STEP_SUMMARY

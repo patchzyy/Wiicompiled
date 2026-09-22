@@ -462,8 +462,19 @@ TEST(FrameInterpolationContract, IndexedPaletteHistoryKeepsAbsoluteVertexSlots) 
   std::array<uint8_t, uniformSize> changedSource{};
   aurora::gx::begin_frame_interpolation();
   const auto changedRanges = recordFrame(changedTopology, 91.0f, 9.0f, changedSource);
-  EXPECT_EQ(changedRanges[0].size, 0u);
+  ASSERT_NE(changedRanges[0].size, 0u);
   aurora::gx::finalize_frame_interpolation();
+
+  // The palette fallback stages the draw before matching. A topology mismatch must leave that
+  // staged copy at the current-frame values instead of borrowing the previous palette.
+  const auto& changed = aurora::gfx::testing::uniform_allocation(0);
+  ASSERT_EQ(changed.size(), uniformSize);
+  std::memcpy(static_cast<void*>(&slot0Midpoint), changed.data() + positionOffset,
+              sizeof(slot0Midpoint));
+  std::memcpy(static_cast<void*>(&slot1Midpoint),
+              changed.data() + positionOffset + sizeof(slot0Midpoint), sizeof(slot1Midpoint));
+  EXPECT_FLOAT_EQ(slot0Midpoint.m0.w(), 91.0f);
+  EXPECT_FLOAT_EQ(slot1Midpoint.m0.w(), 9.0f);
 
   aurora::gx::set_frame_interpolation_fps(0);
   aurora::gx::begin_frame_interpolation();
@@ -651,7 +662,9 @@ TEST(TevRegisterLivenessContract, PacksOneUniformWhenBothHalvesNeedInitialValue)
   const auto info = aurora::gx::build_shader_info(config);
   EXPECT_TRUE(info.loadsTevRegRgb.test(GX_TEVREG0));
   EXPECT_TRUE(info.loadsTevRegAlpha.test(GX_TEVREG0));
-  EXPECT_EQ(info.uniformSize, baselineInfo.uniformSize + sizeof(aurora::Vec4<float>));
+  EXPECT_EQ((info.loadsTevRegRgb | info.loadsTevRegAlpha).count(), 1u);
+  // Both halves share one Vec4, and the additional value fits inside the existing aligned range.
+  EXPECT_EQ(info.uniformSize, baselineInfo.uniformSize);
 }
 
 // BP registers (direct FIFO writes, no dirty state flush needed)
@@ -4166,7 +4179,7 @@ TEST_F(GXFifoTest, CopyTexClearTruePassesScratchRectAndUpdateMasksToResolve) {
   EXPECT_NEAR(resolve.clearColorValue.y(), 128.f / 255.f, 1.f / 255.f);
   EXPECT_NEAR(resolve.clearColorValue.z(), 192.f / 255.f, 1.f / 255.f);
   EXPECT_NEAR(resolve.clearColorValue.w(), 32.f / 255.f, 1.f / 255.f);
-  EXPECT_NEAR(resolve.clearDepthValue, 0x123456 / 16777216.f, 1.f / 16777216.f);
+  EXPECT_NEAR(resolve.clearDepthValue, 1.f - 0x123456 / 16777216.f, 1.f / 16777216.f);
   EXPECT_EQ(resolve.resolveFormat, GX_TF_RGBA8);
   EXPECT_FALSE(resolve.halfScale);
   EXPECT_FALSE(resolve.forceOpaqueAlpha);

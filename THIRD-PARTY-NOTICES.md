@@ -181,10 +181,11 @@ Not redistributed in any release artifact.
 
 | Component | License |
 | --- | --- |
-| xUnit.net 2.4.2, xunit.runner.visualstudio 2.4.5 | Apache-2.0 |
-| Microsoft.NET.Test.Sdk 17.6.0 | MIT |
+| xUnit.net 2.9.3, xunit.runner.visualstudio 4.0.0 | Apache-2.0 |
+| Microsoft.NET.Test.Sdk 18.10.1 | MIT |
 | coverlet.collector 6.0.0 | MIT |
-| .NET 8 SDK | MIT |
+| JunitXml.TestLogger 8.0.0 | MIT |
+| .NET 10 SDK | MIT |
 
 ---
 

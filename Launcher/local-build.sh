@@ -208,7 +208,7 @@ if [[ -n "$translator_bin" ]]; then
     translator() { "$translator_bin" "$@"; }
 else
     if [[ -z "$translator_dll" ]]; then
-        translator_dll=$workspace/translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.dll
+        translator_dll=$workspace/translator/src/Translator.Cli/bin/Release/net10.0/Translator.Cli.dll
         log_step build-translator "Building the translator"
         "$dotnet_bin" build "$workspace/translator/src/Translator.Cli/Translator.Cli.csproj" -c Release
     fi

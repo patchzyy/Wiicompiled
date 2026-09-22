@@ -63,7 +63,9 @@ public sealed class ModDataPatchWriterTests
             Write(cppPath, [1, 2, 3, 4], null);
 
             var blobRoot = Path.Combine(root, "mod_data_patches_blobs");
-            Assert.Equal(["module_image.bin"], Directory.GetFiles(blobRoot, "*.bin").Select(Path.GetFileName).ToArray());
+            Assert.Equal(["module_image.bin"], Directory.GetFiles(blobRoot, "*.bin")
+                .Select(path => Path.GetFileName(path)!)
+                .ToArray());
             var assembly = File.ReadAllText(Path.Combine(root, "mod_data_patches_blobs.S"));
             Assert.DoesNotContain("kKamekCodeSha1Digest", assembly, StringComparison.Ordinal);
         }
