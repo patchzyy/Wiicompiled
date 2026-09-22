@@ -1708,8 +1708,22 @@ fn load_u16(p: ptr<storage, array<u32>>, byte_off: u32, le: bool) -> u32 {{
   return bswap16(raw, le);
 }}
 
+fn load_u24_raw(p: ptr<storage, array<u32>>, byte_off: u32) -> u32 {{
+  let word_idx = byte_off >> 2u;
+  let sub = byte_off & 3u;
+  let word = p[word_idx];
+  // Three bytes at offsets zero or one fit entirely in this word. Do not
+  // access the next word: this attribute may end at the binding boundary.
+  if (sub <= 1u) {{
+    return (word >> (sub * 8u)) & 0x00FFFFFFu;
+  }}
+  let next = p[word_idx + 1u];
+  let shift = sub * 8u;
+  return ((word >> shift) | (next << (32u - shift))) & 0x00FFFFFFu;
+}}
+
 fn load_u24(p: ptr<storage, array<u32>>, byte_off: u32, le: bool) -> u32 {{
-  let raw = load_u32_raw(p, byte_off) & 0x00FFFFFFu;
+  let raw = load_u24_raw(p, byte_off);
   if (le) {{
     return raw;
   }}
@@ -1749,7 +1763,7 @@ fn raw_fetch_u8_2(p: ptr<storage, array<u32>>, byte_off: u32) -> vec2u {{
 }}
 
 fn raw_fetch_u8_3(p: ptr<storage, array<u32>>, byte_off: u32) -> vec3u {{
-  let raw = load_u32_raw(p, byte_off);
+  let raw = load_u24_raw(p, byte_off);
   return vec3u(
     extractBits(raw, 0u, 8u),
     extractBits(raw, 8u, 8u),
