@@ -396,6 +396,7 @@ static PendingPipeline* touch_pending_pipeline(PipelineRef hash, bool prioritize
 
   g_priorityPipelines.emplace_back(std::move(*backgroundIt));
   g_backgroundPipelines.erase(backgroundIt);
+  g_pipelineCv.notify_all();
   return &g_priorityPipelines.back();
 }
 
@@ -530,7 +531,8 @@ static PipelineRef find_pipeline_impl(ShaderType type, const PipelineConfig& con
   }
 
   if (notifyWorker) {
-    g_pipelineCv.notify_one();
+    // Compiler workers and renderer waiters share this condition variable.
+    g_pipelineCv.notify_all();
   }
   if (notifyWaiters) {
     g_pipelineCv.notify_all();
