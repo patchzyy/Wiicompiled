@@ -75,18 +75,30 @@ void initialize() noexcept {
 
 void shutdown() noexcept {
   ZoneScoped;
-  if (g_useSdlRenderer) {
-    ImGui_ImplSDLRenderer3_Shutdown();
-  } else {
-    ImGui_ImplWGPU_Shutdown();
+  // Startup can fail before either backend initializes. A context alone does
+  // not mean its renderer/platform backend owns resources to release.
+  if (ImGui::GetCurrentContext() != nullptr) {
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.BackendRendererUserData != nullptr) {
+      if (g_useSdlRenderer) {
+        ImGui_ImplSDLRenderer3_Shutdown();
+      } else {
+        ImGui_ImplWGPU_Shutdown();
+      }
+    }
+    if (io.BackendPlatformUserData != nullptr) {
+      ImGui_ImplSDL3_Shutdown();
+    }
+    ImGui::DestroyContext();
   }
-  ImGui_ImplSDL3_Shutdown();
-  ImGui::DestroyContext();
   for (const auto& texture : g_sdlTextures) {
     SDL_DestroyTexture(texture);
   }
   g_sdlTextures.clear();
   g_wgpuTextures.clear();
+  g_useSdlRenderer = false;
+  g_scale = 0.f;
+  g_frameDataBuilt = false;
 }
 
 void process_event(const SDL_Event& event) noexcept {

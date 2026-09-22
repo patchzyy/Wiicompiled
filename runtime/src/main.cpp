@@ -1420,6 +1420,10 @@ int RuntimeMain(int argc, char** argv) {
         WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
 
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
+        if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
+            throw std::runtime_error(auroraInfo.initializationError != nullptr
+                ? auroraInfo.initializationError : "No supported graphics backend is available");
+        }
         if (requestedBackend != BACKEND_AUTO && auroraInfo.backend != requestedBackend) {
             RT_LOG(RT_TAG_RUNTIME) << "graphics_api=\"" << backend
                       << "\" is not available on this system; aurora fell back to \""

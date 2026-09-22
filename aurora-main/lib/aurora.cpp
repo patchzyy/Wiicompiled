@@ -689,15 +689,23 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
   const AuroraBackend requestedBackend = config.desiredBackend;
   AuroraBackend selectedBackend = requestedBackend;
   bool windowCreated = false;
+  std::string firstGraphicsError;
+  const auto rememberGraphicsError = [&] {
+    if (firstGraphicsError.empty() && SDL_GetError()[0] != '\0') {
+      firstGraphicsError = SDL_GetError();
+    }
+  };
   if (selectedBackend != BACKEND_AUTO) {
     Log.info("Requested graphics backend: {}", backend_name(selectedBackend));
     if (window::create_window(selectedBackend)) {
       if (webgpu::initialize(selectedBackend)) {
         windowCreated = true;
       } else {
+        rememberGraphicsError();
         window::destroy_window();
       }
     } else {
+      rememberGraphicsError();
       Log.error("Failed to create a window for backend {}: {}", backend_name(selectedBackend),
                 SDL_GetError());
     }
@@ -714,18 +722,28 @@ AuroraInfo initialize(int argc, char* argv[], const AuroraConfig& config) noexce
     for (const auto backendType : PreferredBackendOrder) {
       selectedBackend = backendType;
       if (!window::create_window(selectedBackend)) {
+        rememberGraphicsError();
         continue;
       }
       if (webgpu::initialize(selectedBackend)) {
         windowCreated = true;
         break;
       } else {
+        rememberGraphicsError();
         window::destroy_window();
       }
     }
   }
 
-  ASSERT(windowCreated, "Error creating window: {}", SDL_GetError());
+  if (!windowCreated) {
+    if (firstGraphicsError.empty()) firstGraphicsError = "No supported graphics backend is available";
+    SDL_SetError("%s", firstGraphicsError.c_str());
+    Log.error("Graphics initialization failed: {}", firstGraphicsError);
+    return {
+        .initializationStatus = AURORA_INITIALIZATION_GRAPHICS_UNAVAILABLE,
+        .initializationError = SDL_GetError(),
+    };
+  }
   if (requestedBackend != BACKEND_AUTO && selectedBackend != requestedBackend) {
     Log.error("Graphics backend fallback in effect: video.graphics_api requested {}, "
               "running on {}",

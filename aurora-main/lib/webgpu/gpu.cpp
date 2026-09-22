@@ -570,12 +570,16 @@ bool initialize(AuroraBackend auroraBackend) {
             g_adapter = std::move(adapter);
           } else {
             Log.warn("Adapter request failed: {}", message);
+            const std::string_view reason{message};
+            SDL_SetError("Graphics adapter unavailable: %.*s",
+                         static_cast<int>(std::min<size_t>(reason.size(), 512)), reason.data());
           }
         });
     const auto status = g_instance.WaitAny(future, 5000000000);
     if (status != wgpu::WaitStatus::Success) {
       Log.error("Failed to create {} adapter: {}", magic_enum::enum_name(backend),
                 magic_enum::enum_name(status));
+      SDL_SetError("Graphics adapter request did not complete within its startup deadline");
       return false;
     }
     if (!g_adapter) {
@@ -738,11 +742,15 @@ bool initialize(AuroraBackend auroraBackend) {
                                     g_device = std::move(device);
                                   } else {
                                     Log.warn("Device request failed: {}", message);
+                                    const std::string_view reason{message};
+                                    SDL_SetError("Graphics device unavailable: %.*s",
+                                        static_cast<int>(std::min<size_t>(reason.size(), 512)), reason.data());
                                   }
                                 });
     const auto status = g_instance.WaitAny(future, 5000000000);
     if (status != wgpu::WaitStatus::Success) {
       Log.error("Failed to create device: {}", magic_enum::enum_name(status));
+      SDL_SetError("Graphics device request did not complete within its startup deadline");
       return false;
     }
     if (!g_device) {
