@@ -27,7 +27,8 @@ public sealed partial class CxxLinearCodeGenerator
         IReadOnlyDictionary<uint, GuestAbiContract> stateFreeAbiContracts,
         IReadOnlyDictionary<uint, string> stateFreeCallSymbols,
         IReadOnlyDictionary<GuestStateFreeCallSiteKey, GuestStateFreeCallVariant> stateFreeCallSiteVariants,
-        IReadOnlySet<uint> modOverridableCallTargets)
+        IReadOnlySet<uint> modOverridableCallTargets,
+        bool shareLrContinuationDispatch)
     {
         if (ins is IrPhi)
         {
@@ -410,11 +411,18 @@ public sealed partial class CxxLinearCodeGenerator
                             fallbackPad = IndentPad(indent + 1);
                         }
 
-                        EmitLocalLrContinuationDispatch(sb, fallbackPad, labelNames);
-                        sb.AppendLine($"{fallbackPad}if (TranslatedFunctionRegistry::FindByAddressPtr(ctx->lr) != nullptr) {{");
-                        sb.AppendLine($"{fallbackPad}    InvokeIndirectCpu(ctx->lr, ctx);");
-                        sb.AppendLine($"{fallbackPad}}}");
-                        sb.AppendLine($"{fallbackPad}return;");
+                        if (shareLrContinuationDispatch)
+                        {
+                            sb.AppendLine($"{fallbackPad}goto lr_continuation_dispatch;");
+                        }
+                        else
+                        {
+                            EmitLocalLrContinuationDispatch(sb, fallbackPad, labelNames);
+                            sb.AppendLine($"{fallbackPad}if (TranslatedFunctionRegistry::FindByAddressPtr(ctx->lr) != nullptr) {{");
+                            sb.AppendLine($"{fallbackPad}    InvokeIndirectCpu(ctx->lr, ctx);");
+                            sb.AppendLine($"{fallbackPad}}}");
+                            sb.AppendLine($"{fallbackPad}return;");
+                        }
                         if (localFallthroughLr.HasValue)
                         {
                             sb.AppendLine($"{pad}}}");
