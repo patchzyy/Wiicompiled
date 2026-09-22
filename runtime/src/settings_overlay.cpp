@@ -109,6 +109,9 @@ int g_displayMode = [] {
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
+#if defined(__APPLE__)
+bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
+#endif
 uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessingPaths(0);
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
@@ -991,13 +994,24 @@ void DrawAudioSettings() {
         MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
         RuntimeConfigFile::SetAttenuateMusicWhenMediaPlays(g_attenuateMusicWhenMediaPlays);
     }
+#if defined(__APPLE__)
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Detects other apps with active audio output on macOS 14.2 or later. "
+            "Apps that keep an output stream running silently may keep game music muted.");
+    }
+#endif
     if (g_attenuateMusicWhenMediaPlays) {
         if (MusicAttenuation::IsExternalMediaPlaying()) {
             ImGui::TextDisabled("External media is playing; game music is muted.");
         } else if (!MusicAttenuation::IsMediaControlInitializationComplete()) {
-            ImGui::TextDisabled("Waiting for media controls...");
+            ImGui::TextDisabled("Checking external audio...");
         } else if (!MusicAttenuation::IsMediaControlAvailable()) {
+#if defined(__APPLE__)
+            ImGui::TextDisabled("External audio detection unavailable (requires macOS 14.2 or later).");
+#else
             ImGui::TextDisabled("Media controls are unavailable.");
+#endif
         } else {
             ImGui::TextDisabled("No external media is currently playing.");
         }
@@ -1080,6 +1094,36 @@ void DrawGraphicsSettings() {
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
     ImGui::TextDisabled("Frame interpolation is experimental, you might find visual artifacts");
     ImGui::PopTextWrapPos();
+#if defined(__APPLE__)
+    const bool metalFxSupported = aurora_is_metalfx_spatial_supported();
+    ImGui::BeginDisabled(!metalFxSupported);
+    if (ImGui::Checkbox("MetalFX spatial upscaling", &g_metalFxSpatialUpscaling)) {
+        aurora_set_metalfx_spatial(g_metalFxSpatialUpscaling);
+        RuntimeConfigFile::SetMetalFxSpatialUpscaling(g_metalFxSpatialUpscaling);
+    }
+    ImGui::EndDisabled();
+    switch (aurora_get_metalfx_status()) {
+    case AURORA_METALFX_ACTIVE:
+        ImGui::TextDisabled("Active: upscaling the game image before the overlay.");
+        break;
+    case AURORA_METALFX_NOT_UPSCALING:
+        ImGui::TextDisabled("Choose a lower internal resolution to use MetalFX.");
+        break;
+    case AURORA_METALFX_UNSUPPORTED:
+        ImGui::TextDisabled("Requires macOS 13+, Metal, and a MetalFX-capable GPU.");
+        break;
+    case AURORA_METALFX_ERROR:
+        ImGui::TextDisabled("Unavailable after a renderer error; toggle off and on to retry.");
+        break;
+    case AURORA_METALFX_DISABLED:
+        if (metalFxSupported) {
+            ImGui::TextDisabled("Render below output resolution for sharper lower-cost output.");
+        } else {
+            ImGui::TextDisabled("MetalFX spatial upscaling is unavailable on this device.");
+        }
+        break;
+    }
+#endif
     if (ImGui::Checkbox("Disable copy filter", &g_disableCopyFilter)) {
         aurora_set_disable_copy_filter(g_disableCopyFilter);
         RuntimeConfigFile::SetDisableCopyFilter(g_disableCopyFilter);
@@ -1360,6 +1404,9 @@ void InitializeRuntimeSettings() noexcept {
     MusicAttenuation::SetVoicesVolume(static_cast<float>(g_voicesVolumePercent) / 100.0f);
     MusicAttenuation::SetEnabled(g_attenuateMusicWhenMediaPlays);
     RuntimeGameGraphicsOptions::SetDisabledPostProcessingPaths(g_disabledPostProcessingPaths);
+#if defined(__APPLE__)
+    aurora_set_metalfx_spatial(g_metalFxSpatialUpscaling);
+#endif
     const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
     LimitResolutionForFrameRate();
     aurora_set_frame_interpolation_fps(targetFps);
