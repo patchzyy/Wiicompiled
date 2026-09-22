@@ -7,9 +7,11 @@
 
 namespace aurora::gfx::efb_ram {
 
+inline constexpr size_t MaxAsyncReadbackSlots = 32;
+
 void schedule(void* dest, uint32_t width, uint32_t height, GXTexFmt format, TextureHandle texture) noexcept;
 bool has_pending(void* dest = nullptr) noexcept;
-bool prepare_downloads(void* dest = nullptr) noexcept;
+bool prepare_downloads(void* dest = nullptr);
 void encode_downloads(const wgpu::CommandEncoder& encoder, void* dest = nullptr) noexcept;
 bool complete_downloads() noexcept;
 void cancel() noexcept;

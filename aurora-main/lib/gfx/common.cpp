@@ -1,4 +1,5 @@
 #include "common.hpp"
+#include "staging_map.hpp"
 #include "../gx/shader_info.hpp"
 
 #include "clear.hpp"
@@ -36,10 +37,13 @@ using webgpu::g_device;
 using webgpu::g_instance;
 using webgpu::g_queue;
 
+struct DebugFrameData {
 #ifdef AURORA_GFX_DEBUG_GROUPS
-std::vector<std::string> g_debugGroupStack;
-std::vector<std::string> g_debugMarkers;
+  std::vector<std::string> groups;
+  std::vector<std::string> markers;
 #endif
+};
+DebugFrameData g_debugFrame;
 
 constexpr uint64_t StagingBufferSize = UniformBufferSize + VertexBufferSize + IndexBufferSize + StorageBufferSize +
                                        (UseTextureBuffer ? TextureUploadSize : 0);
@@ -128,12 +132,7 @@ wgpu::Buffer g_storageBuffer;
 constexpr size_t FrameSlotCount = 3;
 static std::array<wgpu::Buffer, FrameSlotCount> g_stagingBuffers;
 static size_t currentStagingBuffer = 0;
-enum class BufferMapState {
-  Unmapped,
-  Mapping,
-  Mapped,
-};
-static std::atomic s_mappingState{BufferMapState::Unmapped};
+static StagingMapState s_mappingState;
 static wgpu::Limits g_cachedLimits;
 // Advanced once per logical frame in the seal prologue, under the renderer GPU mutex and with the
 // producer blocked, so every later reader sees a value that no longer moves.
@@ -234,6 +233,8 @@ static void recycle_render_passes(std::vector<RenderPass>& passes) noexcept {
 }
 
 struct SealedFrameData {
+  depth_peek::FrameMapping depthMapping;
+  DebugFrameData debug;
   std::vector<RenderPass> passes;
 };
 
@@ -255,6 +256,51 @@ static std::atomic_bool g_inOffscreen{false};
 static std::optional<RenderPass> g_suspendedEfbPass;
 static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
+// Prefix referenced by a suspended EFB pass. Preserve its offsets across an
+// offscreen split, without rendering it before the bake it may sample finishes.
+static StagingSizes g_suspendedEfbBytes{};
+static constexpr StagingSizes PhysicalStagingCapacity{
+    VertexBufferSize, UniformBufferSize, IndexBufferSize, StorageBufferSize};
+static StagingSizes g_stagingCapacity = PhysicalStagingCapacity;
+static uint64_t g_stagingEpoch = 0;
+static uint64_t g_stagingSplitCount = 0;
+static StagingSizes g_stagingHighWater{};
+
+StagingSizes staging_usage() noexcept {
+  return {g_verts.size(), g_uniforms.size(), g_indices.size(), g_storage.size()};
+}
+StagingSizes staging_high_water() noexcept { return g_stagingHighWater; }
+uint64_t staging_epoch() noexcept { return g_stagingEpoch; }
+uint64_t staging_split_count() noexcept { return g_stagingSplitCount; }
+uint64_t staging_uniform_bytes(uint64_t bytes) {
+  return staging_padded(bytes, g_cachedLimits.minUniformBufferOffsetAlignment);
+}
+uint64_t staging_storage_bytes(uint64_t bytes) {
+  return staging_padded(bytes, g_cachedLimits.minStorageBufferOffsetAlignment);
+}
+void set_staging_capacity_limits_for_testing(const StagingSizes& limits) {
+  for (unsigned i = 0; i < limits.size(); ++i) {
+    if (limits[i] > PhysicalStagingCapacity[i])
+      throw StagingCapacityError("Test staging capacity exceeds physical buffer");
+  }
+  g_stagingCapacity = limits;
+  g_stagingHighWater = {};
+}
+bool staging_has_space(const StagingSizes& demand) {
+  // Async readback preparation runs in the worker's noexcept seal prologue.
+  // Reserve all 32 slots plus the uniform binding's 3840-byte trailing window.
+  const StagingSizes tail{0, gx::MaxUniformSize + efb_ram::MaxAsyncReadbackSlots * staging_uniform_bytes(48), 0, 0};
+  const StagingSizes retained = g_suspendedEfbPass ? g_suspendedEfbBytes : StagingSizes{};
+  if (!staging_fits(retained, demand, tail, g_stagingCapacity))
+    throw StagingCapacityError("GPU operation exceeds staging capacity including retained EFB data");
+  return staging_fits(staging_usage(), demand, tail, g_stagingCapacity);
+}
+void ensure_staging_space(const StagingSizes& demand) {
+  if (staging_has_space(demand)) return;
+  split_staging_batch();
+  if (!staging_has_space(demand))
+    throw StagingCapacityError("GPU operation still exceeds staging capacity after submission");
+}
 
 static void discard_suspended_efb_pass() noexcept {
   if (g_suspendedEfbPass) {
@@ -279,7 +325,8 @@ static size_t g_recordingSnapshotSlot = 0;
 static TextureHandle new_resolve_source_snapshot(wgpu::Extent3D size, wgpu::TextureFormat format) noexcept {
   const wgpu::TextureDescriptor textureDescriptor{
       .label = "GX Copy Source Snapshot",
-      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst,
+      .usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopySrc |
+               wgpu::TextureUsage::CopyDst,
       .dimension = wgpu::TextureDimension::e2D,
       .size = size,
       .format = format,
@@ -425,7 +472,7 @@ static inline void push_command(CommandType type, const Command::Data& data) {
   g_renderPasses[g_currentRenderPass].commands.push_back({
       .type = type,
 #ifdef AURORA_GFX_DEBUG_GROUPS
-      .debugGroupStack = g_debugGroupStack,
+      .debugGroupStack = g_debugFrame.groups,
 #endif
       .data = data,
   });
@@ -485,6 +532,7 @@ void set_scissor(const ClipRect& cmd) noexcept {
 template <>
 void push_draw_command(clear::DrawData data) {
   if (data.uniformRange.size == 0) {
+    ensure_staging_space({0, staging_uniform_bytes(16), 0, 0});
     const std::array clearUniform{
         std::clamp(data.depth, 0.f, 1.f),
         0.f,
@@ -511,6 +559,7 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     Log.warn("Dropping resolve pass without an active render pass");
     return;
   }
+  ensure_staging_space({0, 2 * staging_uniform_bytes(48), 0, 0});
   auto& prevPass = g_renderPasses[g_currentRenderPass];
   const auto targetWidth = static_cast<int32_t>(prevPass.targetSize.width);
   const auto targetHeight = static_cast<int32_t>(prevPass.targetSize.height);
@@ -543,7 +592,7 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
     sourceRect = {srcLeft, srcTop, std::max(srcRight - srcLeft, 1.0f), std::max(srcBottom - srcTop, 1.0f)};
   }
   prevPass.resolveTarget = std::move(texture);
-  prevPass.requireReadyPipelines = persistentCopy;
+  prevPass.requireReadyPipelines |= persistentCopy;
   prevPass.resolveRect = rect;
   prevPass.resolveSourceRect = sourceRect;
   prevPass.resolveFormat = resolveFormat;
@@ -739,6 +788,7 @@ void begin_offscreen(uint32_t width, uint32_t height) {
   if (!g_inOffscreen) {
     auto& currentPass = g_renderPasses[g_currentRenderPass];
     if (!currentPass.resolveTarget) {
+      g_suspendedEfbBytes = staging_usage();
       g_suspendedEfbPass = std::move(currentPass);
       g_renderPasses.pop_back();
       --g_currentRenderPass;
@@ -851,7 +901,7 @@ void initialize() {
                  label.c_str());
   }
   currentStagingBuffer = 0;
-  s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
+  s_mappingState.reset();
   map_staging_buffer();
 
   {
@@ -957,6 +1007,8 @@ void shutdown() {
   g_uniformBuffer = {};
   g_indexBuffer = {};
   g_storageBuffer = {};
+  // Invalidate outstanding callbacks before releasing their buffers.
+  s_mappingState.reset();
   g_stagingBuffers.fill({});
   for (auto& pool : g_resolveSourceSnapshotPools) {
     pool.entry.reset();
@@ -975,37 +1027,36 @@ void shutdown() {
   g_inOffscreen = false;
   g_frameIndex = UINT32_MAX;
   currentStagingBuffer = 0;
-  s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
 }
 
 void map_staging_buffer() {
-  auto expected = BufferMapState::Unmapped;
-  if (!s_mappingState.compare_exchange_strong(expected, BufferMapState::Mapping, std::memory_order_acq_rel,
-                                              std::memory_order_acquire)) {
+  const auto generation = s_mappingState.request();
+  if (generation == 0) {
     return;
   }
 
   g_stagingBuffers[currentStagingBuffer].MapAsync(
       wgpu::MapMode::Write, 0, StagingBufferSize, wgpu::CallbackMode::AllowSpontaneous,
-      [](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+      [generation](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+        const auto result = status == wgpu::MapAsyncStatus::Success
+            ? BufferMapState::Mapped : BufferMapState::Unmapped;
+        if (!s_mappingState.complete(generation, result)) return;
         if (status == wgpu::MapAsyncStatus::CallbackCancelled || status == wgpu::MapAsyncStatus::Aborted) {
           Log.warn("Buffer mapping {}: {}", magic_enum::enum_name(status), message);
-          s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
           return;
         }
         ASSERT(status == wgpu::MapAsyncStatus::Success, "Buffer mapping failed: {} {}", magic_enum::enum_name(status),
                message);
-        s_mappingState.store(BufferMapState::Mapped, std::memory_order_release);
       });
 }
 
-static bool begin_frame_impl(bool clearEfb) {
+static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
   {
     ZoneScopedN("Wait for buffer map");
     map_staging_buffer();
     while (true) {
-      const auto mappingState = s_mappingState.load(std::memory_order_acquire);
+      const auto mappingState = s_mappingState.state();
       if (mappingState == BufferMapState::Mapped) {
         break;
       }
@@ -1021,8 +1072,11 @@ static bool begin_frame_impl(bool clearEfb) {
         return false;
       }
       g_instance.ProcessEvents();
+      webgpu::fail_if_device_lost();
+      s_mappingState.wait_for_progress();
     }
   }
+  ++g_stagingEpoch;
   g_recordingSnapshotSlot = currentStagingBuffer;
   size_t bufferOffset = 0;
   const auto& stagingBuf = g_stagingBuffers[currentStagingBuffer];
@@ -1047,7 +1101,7 @@ static bool begin_frame_impl(bool clearEfb) {
     gx::begin_frame_interpolation();
   }
   discard_suspended_efb_pass();
-  webgpu::clear_present_source_override();
+  if (!capacityResume) webgpu::clear_present_source_override();
 
   push_render_pass(RenderPass{});
   set_efb_targets(g_renderPasses[0]);
@@ -1086,12 +1140,12 @@ void abort_frame() noexcept {
     g_textureUploads.clear();
     g_textureUpload.release();
   }
-  if (s_mappingState.load(std::memory_order_acquire) == BufferMapState::Mapped) {
+  if (s_mappingState.state() == BufferMapState::Mapped) {
     // Pending interpolation tasks hold raw pointers into the mapped staging
     // range; they must be dropped before the buffer is unmapped and rotated.
     gx::drop_pending_frame_interpolation_uniforms();
     g_stagingBuffers[currentStagingBuffer].Unmap();
-    s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
+    s_mappingState.reset();
     currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
     map_staging_buffer();
   }
@@ -1108,7 +1162,7 @@ void abort_frame() noexcept {
 
 static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   ZoneScoped;
-  ASSERT(!g_inOffscreen, "end_frame called while offscreen rendering is active");
+  ASSERT(!advanceFrame || !g_inOffscreen, "end_frame called while offscreen rendering is active");
   if (advanceFrame) {
     gx::finalize_frame_interpolation();
   } else {
@@ -1117,6 +1171,8 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
     gx::drop_pending_frame_interpolation_uniforms();
   }
   g_uniforms.append_zeroes(gx::MaxUniformSize); // Pad the end of the buffer
+  const auto used = staging_usage();
+  for (unsigned i = 0; i < used.size(); ++i) g_stagingHighWater[i] = std::max(g_stagingHighWater[i], used[i]);
   uint64_t bufferOffset = 0;
   const auto writeBuffer = [&](ByteBuffer& buf, wgpu::Buffer& out, uint64_t size, std::string_view label) {
     const auto writeSize = buf.size(); // Only need to copy this many bytes
@@ -1128,7 +1184,7 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
     return writeSize;
   };
   g_stagingBuffers[currentStagingBuffer].Unmap();
-  s_mappingState.store(BufferMapState::Unmapped, std::memory_order_release);
+  s_mappingState.reset();
   g_stats.drawCallCount = g_drawCallCount;
   g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
   g_stats.lastVertSize = writeBuffer(g_verts, g_vertexBuffer, VertexBufferSize, "Vertex");
@@ -1171,6 +1227,68 @@ void end_frame(const wgpu::CommandEncoder& cmd) { end_batch_impl(cmd, true); }
 
 void end_batch(const wgpu::CommandEncoder& cmd) { end_batch_impl(cmd, false); }
 
+void split_staging_batch() {
+  // Never called under the decoder's renderer lock: the worker needs that lock
+  // to reach DONE. FIFO admission yields its unconsumed command first.
+  aurora::wait_for_frame_worker();
+  std::lock_guard gpuLock(aurora::renderer_gpu_mutex());
+  if (!has_current_render_pass())
+    throw StagingCapacityError("Cannot split staging outside an active render pass");
+  gx::mark_frame_interpolation_replay_unsafe();
+  const bool offscreen = g_inOffscreen;
+  const auto viewport = g_cachedViewport;
+  const auto scissor = g_cachedScissor;
+  const auto renderViewport = gx::g_gxState.renderViewport;
+  const auto renderScissor = gx::g_gxState.renderScissor;
+  const auto& active = g_renderPasses[g_currentRenderPass];
+  RenderPass continuation{
+      .colorView = active.colorView, .resolveView = active.resolveView,
+      .depthView = active.depthView, .copySourceTexture = active.copySourceTexture,
+      .copySourceView = active.copySourceView, .copySourceDepthView = active.copySourceDepthView,
+      .targetSize = active.targetSize, .msaaSamples = active.msaaSamples,
+      .clearColor = false, .clearDepth = false,
+      .requireReadyPipelines = active.requireReadyPipelines || offscreen,
+  };
+  auto suspended = std::move(g_suspendedEfbPass);
+  g_suspendedEfbPass.reset();
+  std::array<std::vector<uint8_t>, 4> retained;
+  std::array<ByteBuffer*, 4> buffers{&g_verts, &g_uniforms, &g_indices, &g_storage};
+  if (suspended) {
+    for (unsigned i = 0; i < buffers.size(); ++i) {
+      if (g_suspendedEfbBytes[i])
+        retained[i].assign(buffers[i]->data(), buffers[i]->data() + g_suspendedEfbBytes[i]);
+    }
+  }
+  // GXCopyTex can capture the ordinary EFB as well as an explicit offscreen
+  // target. Its command may arrive in the next batch, after this prefix has
+  // already been submitted. Preserve every prefix; target kind cannot tell
+  // us whether the guest will later retain these pixels in a texture.
+  for (auto& pass : g_renderPasses) pass.requireReadyPipelines = true;
+  auto encoder = g_device.CreateCommandEncoder();
+  end_batch(encoder);
+  render(encoder);
+  aurora::submit_staging_commands(encoder.Finish());
+  after_submit();
+  if (!begin_frame_impl(false, true))
+    throw StagingCapacityError("Staging remap failed after capacity submission");
+  recycle_render_passes(g_renderPasses);
+  push_render_pass(std::move(continuation));
+  g_currentRenderPass = 0;
+  g_suspendedEfbPass = std::move(suspended);
+  for (unsigned i = 0; i < buffers.size(); ++i) {
+    if (!retained[i].empty()) buffers[i]->append(retained[i].data(), retained[i].size());
+  }
+  g_inOffscreen = offscreen;
+  g_cachedViewport = viewport;
+  g_cachedScissor = scissor;
+  gx::g_gxState.renderViewport = renderViewport;
+  gx::g_gxState.renderScissor = renderScissor;
+  gx::g_gxState.stateDirty = true;
+  push_command(CommandType::SetViewport, Command::Data{.setViewport = viewport});
+  push_command(CommandType::SetScissor, Command::Data{.setScissor = scissor});
+  ++g_stagingSplitCount;
+}
+
 uint32_t current_frame() noexcept { return g_frameIndex; }
 
 // The only place that erases from g_cachedBindGroups, whose handles the frame being encoded still
@@ -1203,10 +1321,10 @@ static const char* render_pass_label(u32 index) noexcept {
 }
 
 static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vector<RenderPass>& passes, u32 idx,
-                             int32_t interpolatedFrame);
+                             int32_t interpolatedFrame, DebugFrameData& debugFrame);
 
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
-                        bool finalize) {
+                        bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
   // Palette conversions, MSAA resolves and EFB copies depend on sealed frame state, not on the
   // interpolation weight, so encode them on the native render and let replay slots sample them.
@@ -1256,11 +1374,11 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
     };
 
     auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
-    render_pass_impl(pass, renderPasses, i, interpolatedFrame);
+    render_pass_impl(pass, renderPasses, i, interpolatedFrame, debugFrame);
     pass.End();
 
     if (finalize && i == renderPasses.size() - 1) {
-      depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples);
+      depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples, depthMapping);
     }
 
     if (passInfo.resolveTarget) {
@@ -1334,20 +1452,21 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
   }
 
 #if defined(AURORA_GFX_DEBUG_GROUPS)
-  if (finalize && !g_debugGroupStack.empty()) {
-    for (auto& it : std::ranges::reverse_view(g_debugGroupStack)) {
+  if (finalize && !debugFrame.groups.empty()) {
+    for (auto& it : std::ranges::reverse_view(debugFrame.groups)) {
       Log.warn("Debug group was not popped at end of frame: {}", it);
     }
-    g_debugGroupStack.clear();
+    debugFrame.groups.clear();
   }
 
-  if (finalize && g_debugMarkers.size() > 0) {
-    g_debugMarkers.clear();
+  if (finalize && debugFrame.markers.size() > 0) {
+    debugFrame.markers.clear();
   }
 #endif
 }
 
 void seal_frame(SealedFrame& out) noexcept {
+  out.data().depthMapping = depth_peek::capture_frame_mapping();
   ZoneScoped;
   // The encode that could still have been holding these has completed: the
   // producer joins the worker's DONE phase before it seals another frame.
@@ -1357,15 +1476,24 @@ void seal_frame(SealedFrame& out) noexcept {
   // capacity included, back to the producer.
   recycle_render_passes(passes);
   passes.swap(g_renderPasses);
+#ifdef AURORA_GFX_DEBUG_GROUPS
+  // Marker indices and unmatched-group warnings belong to these detached passes.
+  // The next producer frame must not modify strings still read by this encoder.
+  auto& debug = out.data().debug;
+  debug.groups.clear();
+  debug.markers.clear();
+  debug.groups.swap(g_debugFrame.groups);
+  debug.markers.swap(g_debugFrame.markers);
+#endif
   g_currentRenderPass = UINT32_MAX;
 }
 
 void render(SealedFrame& frame, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize) {
-  render_impl(frame.data().passes, cmd, interpolatedFrame, finalize);
+  render_impl(frame.data().passes, cmd, interpolatedFrame, finalize, frame.data().debug, frame.data().depthMapping);
 }
 
 void render(wgpu::CommandEncoder& cmd, int32_t interpolatedFrame, bool finalize) {
-  render_impl(g_renderPasses, cmd, interpolatedFrame, finalize);
+  render_impl(g_renderPasses, cmd, interpolatedFrame, finalize, g_debugFrame, depth_peek::capture_frame_mapping());
   if (finalize) {
     g_currentRenderPass = UINT32_MAX;
     expire_bind_group_cache();
@@ -1383,7 +1511,7 @@ void after_submit() noexcept {
 }
 
 static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vector<RenderPass>& renderPasses, u32 idx,
-                             int32_t interpolatedFrame) {
+                             int32_t interpolatedFrame, DebugFrameData& debugFrame) {
   // Per-invocation, not per-process: two encoders can be recording at once.
   gx::DrawEncodeState encodeState{};
   encodeState.boundTextureBindGroup = gx::g_emptyTextureBindGroup.Get();
@@ -1463,7 +1591,7 @@ static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vec
     } break;
     case CommandType::DebugMarker: {
 #if defined(AURORA_GFX_DEBUG_GROUPS)
-      pass.InsertDebugMarker(wgpu::StringView(g_debugMarkers[cmd.data.debugMarkerIndex]));
+      pass.InsertDebugMarker(wgpu::StringView(debugFrame.markers[cmd.data.debugMarkerIndex]));
 #endif
     } break;
     }
@@ -1486,8 +1614,8 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass, Pipelin
   if (!skip_unready_pipelines()) {
     pipelineReady = wait_pipeline(ref, pipeline);
   } else if (requireReady) {
-    // The pass resolves into a persistent texture (a one-shot bake such as MKW's minimap), so a
-    // skipped draw would never be re-issued. These run behind loads, not mid-race.
+    // Texture copies and capacity prefixes must retain complete draw results.
+    // A future display frame cannot repair a texture that already captured them.
     pipelineReady = wait_pipeline_for_persistent_pass(ref, pipeline);
   } else {
     pipelineReady = try_pipeline(ref, pipeline);
@@ -1616,8 +1744,8 @@ uint32_t align_uniform(uint32_t value) { return AURORA_ALIGN(value, g_cachedLimi
 
 void insert_debug_marker(std::string label) {
 #if defined(AURORA_GFX_DEBUG_GROUPS)
-  auto idx = g_debugMarkers.size();
-  g_debugMarkers.emplace_back(std::move(label));
+  auto idx = g_debugFrame.markers.size();
+  g_debugFrame.markers.emplace_back(std::move(label));
   push_command(CommandType::DebugMarker, {.debugMarkerIndex = idx});
 #endif
 }
@@ -1626,22 +1754,22 @@ void insert_debug_marker(std::string label) {
 
 void aurora::gfx::push_debug_group(std::string label) {
 #if defined(AURORA_GFX_DEBUG_GROUPS)
-  g_debugGroupStack.push_back(std::move(label));
+  g_debugFrame.groups.push_back(std::move(label));
 #endif
 }
 void aurora_push_debug_group(const char* label) {
 #ifdef AURORA_GFX_DEBUG_GROUPS
-  aurora::gfx::g_debugGroupStack.emplace_back(label);
+  aurora::gfx::g_debugFrame.groups.emplace_back(label);
 #endif
 }
 void aurora_pop_debug_group() {
 #ifdef AURORA_GFX_DEBUG_GROUPS
-  if (aurora::gfx::g_debugGroupStack.empty()) {
+  if (aurora::gfx::g_debugFrame.groups.empty()) {
     aurora::gfx::Log.error("Debug group stack underflowed!");
     return;
   }
 
-  aurora::gfx::g_debugGroupStack.pop_back();
+  aurora::gfx::g_debugFrame.groups.pop_back();
 #endif
 }
 

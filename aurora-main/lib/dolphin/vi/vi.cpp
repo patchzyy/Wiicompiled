@@ -7,11 +7,13 @@
 #include <algorithm>
 #include <atomic>
 #include <optional>
+#include <mutex>
 
 namespace aurora::vi {
 std::optional<GXRenderModeObj> g_renderMode;
 namespace {
 std::atomic<float> g_presentAspectCorrection{1.f};
+std::mutex g_renderModeMutex;
 
 float calculate_present_aspect_correction(const GXRenderModeObj& rm) noexcept {
   if (rm.viWidth == 0 || rm.viHeight == 0) {
@@ -29,9 +31,8 @@ float calculate_present_aspect_correction(const GXRenderModeObj& rm) noexcept {
   const float verticalFill = static_cast<float>(rm.viHeight) / nominalActiveHeight;
   return horizontalFill / verticalFill;
 }
-} // namespace
 
-Vec2<uint32_t> render_mode_size() noexcept {
+Vec2<uint32_t> render_mode_size_locked() noexcept {
   if (!g_renderMode) {
     return {640, 528};
   }
@@ -40,18 +41,31 @@ Vec2<uint32_t> render_mode_size() noexcept {
   return {std::max<uint32_t>(g_renderMode->fbWidth, 640), std::max<uint32_t>(g_renderMode->efbHeight, 528)};
 }
 
+} // namespace
+
+Vec2<uint32_t> render_mode_size() noexcept {
+  std::lock_guard lock(g_renderModeMutex);
+  return render_mode_size_locked();
+}
+
 void configure(const GXRenderModeObj* rm) noexcept {
-  const auto oldSize = render_mode_size();
-  if (rm == nullptr) {
-    g_renderMode.reset();
-  } else {
-    g_renderMode = *rm;
-    g_presentAspectCorrection.store(calculate_present_aspect_correction(*rm), std::memory_order_release);
+  bool sizeChanged = false;
+  {
+    std::lock_guard lock(g_renderModeMutex);
+    const auto oldSize = render_mode_size_locked();
+    if (rm == nullptr) {
+      g_renderMode.reset();
+    } else {
+      g_renderMode = *rm;
+      g_presentAspectCorrection.store(calculate_present_aspect_correction(*rm), std::memory_order_release);
+    }
+    if (rm == nullptr) {
+      g_presentAspectCorrection.store(1.f, std::memory_order_release);
+    }
+    sizeChanged = render_mode_size_locked() != oldSize;
   }
-  if (rm == nullptr) {
-    g_presentAspectCorrection.store(1.f, std::memory_order_release);
-  }
-  if (render_mode_size() != oldSize) {
+  // Never hold the mode lock across a resize request or a renderer callback.
+  if (sizeChanged) {
     window::request_frame_buffer_resize();
   }
 }
@@ -61,6 +75,7 @@ Vec2<uint32_t> configured_fb_size() noexcept {
 }
 
 Vec2<uint32_t> visible_fb_size() noexcept {
+  std::lock_guard lock(g_renderModeMutex);
   if (!g_renderMode) {
     return {640, 528};
   }

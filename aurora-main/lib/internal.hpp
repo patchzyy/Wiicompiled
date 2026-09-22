@@ -122,7 +122,10 @@ auto underlying(T value) -> std::underlying_type_t<T> {
 
 #define UNIMPLEMENTED() FATAL("UNIMPLEMENTED: {}", __FUNCTION__)
 
+namespace wgpu { class CommandBuffer; }
+
 namespace aurora {
+void submit_staging_commands(const wgpu::CommandBuffer& commands);
 extern AuroraConfig g_config;
 extern uint32_t g_sdlCustomEventsStart;
 extern char g_gameName[4];

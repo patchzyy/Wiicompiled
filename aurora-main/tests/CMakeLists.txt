@@ -18,6 +18,7 @@ if (AURORA_ENABLE_GX)
     gx_fifo_test.cpp
     gx_test_stubs.cpp
     texture_bind_group_cache_key_test.cpp
+    renderer_regression_test.cpp
     ../lib/gfx/efb_ram_encoder.cpp
     # GX API implementations (encoders)
     ../lib/dolphin/gx/GXBump.cpp
@@ -66,6 +67,18 @@ if (AURORA_ENABLE_GX)
   )
 
   gtest_discover_tests(gx_fifo_tests)
+
+  option(AURORA_BUILD_GPU_TESTS "Build renderer pixel tests requiring a graphics device" OFF)
+  if (AURORA_BUILD_GPU_TESTS)
+    add_executable(gx_readback_tests gpu_readback_test.cpp)
+    target_compile_features(gx_readback_tests PRIVATE cxx_std_20)
+    target_include_directories(gx_readback_tests PRIVATE ../lib)
+    target_link_libraries(gx_readback_tests PRIVATE
+      aurora::core aurora::gx aurora::pad aurora::vi aurora::mtx aurora::si
+      dawn::dawncpp_headers absl::flat_hash_map absl::btree TracyClient)
+    add_test(NAME gx_readback_tests COMMAND gx_readback_tests "${CMAKE_CURRENT_BINARY_DIR}/readback-cache")
+    set_tests_properties(gx_readback_tests PROPERTIES TIMEOUT 90)
+  endif ()
 endif () # AURORA_ENABLE_GX
 
 # DVD API tests

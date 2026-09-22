@@ -196,7 +196,8 @@ wgpu::BindGroupLayout create_bind_group_layout(const char* label) {
   return g_device.CreateBindGroupLayout(&descriptor);
 }
 
-Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize) noexcept {
+Params make_params(wgpu::Extent3D sourceSize, const FrameMapping& mapping) noexcept {
+  const auto dstSize = mapping.logicalSize;
   Params params{
       .dstWidth = dstSize.x,
       .dstHeight = dstSize.y,
@@ -204,16 +205,16 @@ Params make_params(wgpu::Extent3D sourceSize, Vec2<uint32_t> dstSize) noexcept {
       .srcHeight = sourceSize.height,
   };
 
-  if (gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
+  if (mapping.viewportPolicy == AURORA_VIEWPORT_NATIVE) {
     return params;
   }
 
-  const auto logicalSize = vi::configured_fb_size();
+  const auto logicalSize = mapping.logicalSize;
   if (logicalSize.x == 0 || logicalSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
     return params;
   }
 
-  const bool stretch = gx::g_gxState.viewportPolicy == AURORA_VIEWPORT_STRETCH;
+  const bool stretch = mapping.viewportPolicy == AURORA_VIEWPORT_STRETCH;
   const float scaleX = static_cast<float>(sourceSize.width) / static_cast<float>(logicalSize.x);
   const float scaleY = static_cast<float>(sourceSize.height) / static_cast<float>(logicalSize.y);
   const float scale = std::min(scaleX, scaleY);
@@ -336,8 +337,12 @@ void poll() noexcept {
   }
 }
 
+FrameMapping capture_frame_mapping() noexcept {
+  return {vi::configured_fb_size(), gx::g_gxState.viewportPolicy};
+}
+
 void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureView& depthView,
-                           wgpu::Extent3D sourceSize, uint32_t msaaSamples) noexcept {
+                           wgpu::Extent3D sourceSize, uint32_t msaaSamples, const FrameMapping& mapping) noexcept {
   ZoneScoped;
   const auto now = Clock::now();
   {
@@ -349,7 +354,7 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
     g_nextSnapshotTime = now + SnapshotInterval;
   }
 
-  const auto dstSize = vi::configured_fb_size();
+  const auto dstSize = mapping.logicalSize;
   if (!depthView || dstSize.x == 0 || dstSize.y == 0 || sourceSize.width == 0 || sourceSize.height == 0) {
     return;
   }
@@ -357,7 +362,7 @@ void encode_frame_snapshot(const wgpu::CommandEncoder& cmd, const wgpu::TextureV
     Log.fatal("Depth Peek from multisampled EFB targets is not supported");
   }
 
-  const Params params = make_params(sourceSize, dstSize);
+  const Params params = make_params(sourceSize, mapping);
   wgpu::Buffer storageBuffer;
   wgpu::Buffer readbackBuffer;
   wgpu::Buffer paramsBuffer;

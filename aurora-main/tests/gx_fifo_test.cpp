@@ -462,8 +462,18 @@ TEST(FrameInterpolationContract, IndexedPaletteHistoryKeepsAbsoluteVertexSlots) 
   std::array<uint8_t, uniformSize> changedSource{};
   aurora::gx::begin_frame_interpolation();
   const auto changedRanges = recordFrame(changedTopology, 91.0f, 9.0f, changedSource);
-  EXPECT_EQ(changedRanges[0].size, 0u);
+  // Staging may reserve a copy for sibling matching; the correctness contract
+  // is that an unmatched topology receives the current pose unchanged.
+  const auto expectedCurrent = changedSource;
   aurora::gx::finalize_frame_interpolation();
+  EXPECT_EQ(changedSource, expectedCurrent);
+  if (changedRanges[0].size != 0) {
+    // No replacement range also correctly selects the original current uniform.
+    ASSERT_EQ(changedRanges[0].size, uniformSize);
+    const auto& duplicated = aurora::gfx::testing::uniform_allocation(changedRanges[0].offset);
+    ASSERT_EQ(duplicated.size(), expectedCurrent.size());
+    EXPECT_EQ(std::memcmp(duplicated.data(), expectedCurrent.data(), expectedCurrent.size()), 0);
+  }
 
   aurora::gx::set_frame_interpolation_fps(0);
   aurora::gx::begin_frame_interpolation();
@@ -646,12 +656,34 @@ TEST(TevRegisterLivenessContract, PacksOneUniformWhenBothHalvesNeedInitialValue)
   auto config = baseline;
   config.tevStages[0].colorPass.a = GX_CC_C0;
   config.tevStages[0].alphaPass.a = GX_CA_A0;
+  config.tevStages[0].colorPass.b = GX_CC_KONST;
+  config.tevStages[0].kcSel = GX_TEV_KCSEL_K0;
 
-  const auto baselineInfo = aurora::gx::build_shader_info(baseline);
   const auto info = aurora::gx::build_shader_info(config);
   EXPECT_TRUE(info.loadsTevRegRgb.test(GX_TEVREG0));
   EXPECT_TRUE(info.loadsTevRegAlpha.test(GX_TEVREG0));
-  EXPECT_EQ(info.uniformSize, baselineInfo.uniformSize + sizeof(aurora::Vec4<float>));
+  // The final allocation is alignment-rounded, so adding one register need
+  // not increase it. Verify actual packing with a distinct following K color.
+  const auto savedReg = g_gxState.colorRegs[GX_TEVREG0];
+  const auto savedKColor = g_gxState.kcolors[GX_KCOLOR0];
+  g_gxState.colorRegs[GX_TEVREG0] = {11.f, 22.f, 33.f, 44.f};
+  g_gxState.kcolors[GX_KCOLOR0] = {55.f, 66.f, 77.f, 88.f};
+  EXPECT_TRUE(info.sampledKColors.test(GX_KCOLOR0));
+  aurora::gfx::testing::reset_uniform_allocations();
+  aurora::gx::build_uniform(info, 0, {}, {}, false);
+  const auto expectedReg = g_gxState.colorRegs[GX_TEVREG0];
+  const auto expectedKColor = g_gxState.kcolors[GX_KCOLOR0];
+  g_gxState.colorRegs[GX_TEVREG0] = savedReg;
+  g_gxState.kcolors[GX_KCOLOR0] = savedKColor;
+  const auto& bytes = aurora::gfx::testing::uniform_allocation(0);
+  const auto* reg = reinterpret_cast<const uint8_t*>(&expectedReg);
+  const auto found = std::search(bytes.begin(), bytes.end(), reg, reg + sizeof(aurora::Vec4<float>));
+  ASSERT_NE(found, bytes.end());
+  const size_t offset = static_cast<size_t>(found - bytes.begin());
+  ASSERT_LE(offset + 2 * sizeof(aurora::Vec4<float>), bytes.size());
+  EXPECT_EQ(std::memcmp(bytes.data() + offset + sizeof(aurora::Vec4<float>),
+                        &expectedKColor, sizeof(aurora::Vec4<float>)), 0);
+  aurora::gfx::testing::reset_uniform_allocations();
 }
 
 // BP registers (direct FIFO writes, no dirty state flush needed)
@@ -706,6 +738,52 @@ TEST_F(GXFifoTest, BlendMode_Logic) {
 
   EXPECT_EQ(g_gxState.blendMode, GX_BM_LOGIC);
   EXPECT_EQ(g_gxState.blendOp, GX_LO_XOR);
+}
+
+
+TEST_F(GXFifoTest, GenMode_FirstZeroWriteDecodesAndRepeatDeduplicates) {
+  reset_gx_state();
+  const auto before = g_gxState.pipelineStateGeneration;
+  decode_fifo(bp_cmd(0, 0));
+  EXPECT_EQ(g_gxState.numTevStages, 1u);
+  EXPECT_EQ(g_gxState.cullMode, GX_CULL_NONE);
+  EXPECT_EQ(g_gxState.numChans, 0u);
+  EXPECT_EQ(g_gxState.numTexGens, 0u);
+  EXPECT_EQ(g_gxState.numIndStages, 0u);
+  EXPECT_EQ(g_gxState.bpRegCache[0], 0u);
+  EXPECT_NE(g_gxState.pipelineStateGeneration, before);
+  const auto decoded = g_gxState.pipelineStateGeneration;
+  decode_fifo(bp_cmd(0, 0));
+  EXPECT_EQ(g_gxState.pipelineStateGeneration, decoded);
+}
+
+TEST_F(GXFifoTest, GenMode_FirstMaskedWritePreservesZeroResetBits) {
+  for (const u32 mask : {0u, 1u << 10}) {
+    reset_gx_state();
+    const auto before = g_gxState.pipelineStateGeneration;
+    decode_fifo(bp_cmd(0xFE, mask));
+    decode_fifo(bp_cmd(0, 0xFFFFFF));
+    EXPECT_EQ(g_gxState.bpRegCache[0], mask);
+    EXPECT_EQ(g_gxState.bpRegCache[0xFE], 0xFFFFFFu);
+    EXPECT_EQ(g_gxState.numTevStages, mask ? 2u : 1u);
+    EXPECT_EQ(g_gxState.cullMode, GX_CULL_NONE);
+    EXPECT_NE(g_gxState.pipelineStateGeneration, before);
+    decode_fifo(bp_cmd(0, 0));
+    EXPECT_EQ(g_gxState.numTevStages, 1u);
+    EXPECT_EQ(g_gxState.bpRegCache[0], 0u);
+  }
+}
+
+TEST_F(GXFifoTest, GenMode_ColdSingleStageApiSetupDecodes) {
+  reset_gx_state();
+  GXSetNumTevStages(1);
+  GXSetNumTexGens(0);
+  GXSetNumChans(0);
+  GXSetCullMode(GX_CULL_NONE);
+  const auto bytes = flush_and_capture();
+  decode_fifo(bytes);
+  EXPECT_EQ(g_gxState.numTevStages, 1u);
+  EXPECT_EQ(g_gxState.cullMode, GX_CULL_NONE);
 }
 
 TEST_F(GXFifoTest, BpMask_AppliesOnlyToNextWrite) {
@@ -2179,6 +2257,7 @@ TEST_F(GXFifoTest, DrawTopologyTemplatesPreserveExactGxIndexOrder) {
   const auto decodeAndReadIndices = [&](GXPrimitive primitive, u16 count) {
     std::vector<u8> fifo;
     append_test_draw(fifo, primitive, count);
+    aurora::gfx::testing::reset_vertex_push_record();
     decode_fifo(fifo);
     return aurora::gfx::testing::last_pushed_indices();
   };
@@ -2193,7 +2272,7 @@ TEST_F(GXFifoTest, DrawTopologyTemplatesPreserveExactGxIndexOrder) {
             (std::vector<u16>{0, 1, 2, 0, 2, 3, 0, 3, 4}));
   g_gxState.stateDirty = true;
   EXPECT_EQ(decodeAndReadIndices(GX_TRIANGLEFAN, 2),
-            (std::vector<u16>{0, 1}));
+            (std::vector<u16>{}));
   g_gxState.stateDirty = true;
   EXPECT_EQ(decodeAndReadIndices(GX_TRIANGLESTRIP, 6),
             (std::vector<u16>{0, 1, 2, 2, 1, 3, 2, 3, 4, 4, 3, 5}));
@@ -4166,7 +4245,9 @@ TEST_F(GXFifoTest, CopyTexClearTruePassesScratchRectAndUpdateMasksToResolve) {
   EXPECT_NEAR(resolve.clearColorValue.y(), 128.f / 255.f, 1.f / 255.f);
   EXPECT_NEAR(resolve.clearColorValue.z(), 192.f / 255.f, 1.f / 255.f);
   EXPECT_NEAR(resolve.clearColorValue.w(), 32.f / 255.f, 1.f / 255.f);
-  EXPECT_NEAR(resolve.clearDepthValue, 0x123456 / 16777216.f, 1.f / 16777216.f);
+  const float gxDepth = 0x123456 / 16777216.f;
+  EXPECT_NEAR(resolve.clearDepthValue, aurora::gx::UseReversedZ ? 1.f - gxDepth : gxDepth,
+              1.f / 16777216.f);
   EXPECT_EQ(resolve.resolveFormat, GX_TF_RGBA8);
   EXPECT_FALSE(resolve.halfScale);
   EXPECT_FALSE(resolve.forceOpaqueAlpha);
@@ -4186,7 +4267,7 @@ TEST_F(GXFifoTest, CopyTexColorFormatMarksResolvePersistent) {
   EXPECT_TRUE(records.front().persistentCopy);
 }
 
-TEST_F(GXFifoTest, RecurringColorCopyKeepsLaterResolveSkippable) {
+TEST_F(GXFifoTest, RecurringColorCopyPreservesEveryResolve) {
   std::array<u8, 152 * 114 * 4> image{};
   gxState().pixelFmt = GX_PF_RGBA6_Z24;
 
@@ -4200,7 +4281,7 @@ TEST_F(GXFifoTest, RecurringColorCopyKeepsLaterResolveSkippable) {
   const auto& records = aurora::gfx::testing::resolve_pass_records();
   ASSERT_EQ(records.size(), 2u);
   EXPECT_TRUE(records[0].persistentCopy);
-  EXPECT_FALSE(records[1].persistentCopy);
+  EXPECT_TRUE(records[1].persistentCopy);
 }
 
 TEST_F(GXFifoTest, ColorCopyAfterFrameGapRegainsPersistentProtection) {
@@ -4220,7 +4301,7 @@ TEST_F(GXFifoTest, ColorCopyAfterFrameGapRegainsPersistentProtection) {
   EXPECT_TRUE(records[1].persistentCopy);
 }
 
-TEST_F(GXFifoTest, CopyTexDepthFormatKeepsResolveSkippable) {
+TEST_F(GXFifoTest, CopyTexDepthFormatPreservesResolve) {
   std::array<u8, 4 * 4 * 4> image{};
   gxState().pixelFmt = GX_PF_RGBA6_Z24;
 
@@ -4230,7 +4311,7 @@ TEST_F(GXFifoTest, CopyTexDepthFormatKeepsResolveSkippable) {
 
   const auto& records = aurora::gfx::testing::resolve_pass_records();
   ASSERT_EQ(records.size(), 1u);
-  EXPECT_FALSE(records.front().persistentCopy);
+  EXPECT_TRUE(records.front().persistentCopy);
 }
 
 TEST_F(GXFifoTest, CopyDispResolveIsNotPersistent) {

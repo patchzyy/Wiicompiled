@@ -8,7 +8,9 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -27,7 +29,7 @@ using webgpu::g_instance;
 constexpr size_t kAsyncReadbackMaxBytes = 256;
 // Each destination keeps its readback buffer forever. Only a handful are expected, and the cap
 // stops an unexpected pattern of one-shot destinations from leaking GPU buffers.
-constexpr size_t kMaxAsyncSlots = 32;
+constexpr size_t kMaxAsyncSlots = MaxAsyncReadbackSlots;
 
 struct PendingCopy {
   void* dest = nullptr;
@@ -37,6 +39,7 @@ struct PendingCopy {
   TextureHandle texture;
   TextureHandle nativeTexture;
   Range nativeBlitUniform;
+  uint64_t nativeUniformEpoch = 0;
 };
 
 struct Download {
@@ -81,6 +84,7 @@ std::vector<PendingCopy> g_asyncSealed;
 std::mutex g_asyncMutex;
 std::unordered_map<void*, AsyncSlot> g_asyncSlots;
 uint32_t g_asyncMapsInFlight = 0;
+uint64_t g_asyncGeneration = 1;
 
 uint32_t align_to(uint32_t value, uint32_t alignment) noexcept { return (value + alignment - 1) & ~(alignment - 1); }
 
@@ -90,10 +94,10 @@ void ensure_native_texture(PendingCopy& pending, TextureHandle* cache = nullptr)
   if (pending.texture->size.width == pending.width && pending.texture->size.height == pending.height) {
     return;
   }
+  if (pending.nativeTexture && pending.nativeUniformEpoch == staging_epoch()) return;
   if (pending.nativeTexture) {
-    return;
-  }
-  if (cache != nullptr && *cache && (*cache)->size.width == pending.width &&
+    // Keep the texture; its old staging range belongs to a submitted batch.
+  } else if (cache != nullptr && *cache && (*cache)->size.width == pending.width &&
       (*cache)->size.height == pending.height) {
     pending.nativeTexture = *cache;
   } else {
@@ -102,10 +106,12 @@ void ensure_native_texture(PendingCopy& pending, TextureHandle* cache = nullptr)
       *cache = pending.nativeTexture;
     }
   }
+  // The shared blit shader clamps Y to flags.z/w; preserve the full source.
   const std::array nativeBlitUniform{
-      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 64.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.0f,
   };
   pending.nativeBlitUniform = push_uniform(nativeBlitUniform);
+  pending.nativeUniformEpoch = staging_epoch();
 }
 
 void encode_native_blit(const wgpu::CommandEncoder& encoder, const PendingCopy& pending) noexcept {
@@ -125,16 +131,17 @@ HostPixelOrder texture_pixel_order(const TextureHandle& texture) noexcept {
   return texture->format == wgpu::TextureFormat::BGRA8Unorm ? HostPixelOrder::BGRA : HostPixelOrder::RGBA;
 }
 
-void complete_async_slot(void* dest, wgpu::MapAsyncStatus status, wgpu::StringView message) noexcept {
+void complete_async_slot(void* dest, uint64_t generation, wgpu::MapAsyncStatus status,
+                         wgpu::StringView message) noexcept {
   std::lock_guard lock{g_asyncMutex};
-  if (g_asyncMapsInFlight > 0) {
-    --g_asyncMapsInFlight;
-  }
+  if (generation != g_asyncGeneration) return;
   const auto it = g_asyncSlots.find(dest);
   if (it == g_asyncSlots.end()) {
     return;
   }
   auto& slot = it->second;
+  if (slot.state != AsyncState::MapPending) return;
+  if (g_asyncMapsInFlight > 0) --g_asyncMapsInFlight;
   if (status == wgpu::MapAsyncStatus::Success) {
     const auto* pixels = static_cast<const uint8_t*>(slot.buffer.GetConstMappedRange(0, slot.bufferSize));
     if (pixels != nullptr) {
@@ -227,7 +234,14 @@ bool has_pending(void* dest) noexcept {
                      [dest](const Download& download) { return download.copy.dest == dest; });
 }
 
-bool prepare_downloads(void* dest) noexcept {
+bool prepare_downloads(void* dest) {
+  uint64_t copies = 0;
+  for (const auto& pending : g_pending) {
+    if (dest != nullptr && pending.dest != dest) continue;
+    if (pending.texture->size.width != pending.width || pending.texture->size.height != pending.height) ++copies;
+  }
+  // Reserve all copies, even already-prepared ones: a split retires their ranges.
+  ensure_staging_space({0, copies * staging_uniform_bytes(48), 0, 0});
   bool found = false;
   for (auto& pending : g_pending) {
     if (dest != nullptr && pending.dest != dest) continue;
@@ -290,15 +304,35 @@ void encode_downloads(const wgpu::CommandEncoder& encoder, void* dest) noexcept 
 bool complete_downloads() noexcept {
   bool success = true;
   for (auto& download : g_downloads) {
-    wgpu::MapAsyncStatus mapStatus = wgpu::MapAsyncStatus::CallbackCancelled;
-    wgpu::StringView mapMessage{};
+    // WaitAny may time out before Dawn delivers cancellation. The callback must
+    // own its result rather than retaining references to this stack frame.
+    struct MapResult {
+      std::mutex mutex;
+      wgpu::MapAsyncStatus status = wgpu::MapAsyncStatus::CallbackCancelled;
+      std::string message;
+    };
+    const auto result = std::make_shared<MapResult>();
     const auto future =
         download.buffer.MapAsync(wgpu::MapMode::Read, 0, download.bufferSize, wgpu::CallbackMode::WaitAnyOnly,
-                                 [&mapStatus, &mapMessage](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-                                   mapStatus = status;
-                                   mapMessage = message;
+                                 [result](wgpu::MapAsyncStatus status, wgpu::StringView message) {
+                                   std::lock_guard lock{result->mutex};
+                                   result->status = status;
+                                   if (message.data != nullptr) {
+                                     size_t length = 0;
+                                     while (length < 512 && length < message.length && message.data[length] != '\0') {
+                                       ++length;
+                                     }
+                                     result->message.assign(message.data, length);
+                                   }
                                  });
     const auto waitStatus = g_instance.WaitAny(future, 5000000000);
+    wgpu::MapAsyncStatus mapStatus;
+    std::string mapMessage;
+    {
+      std::lock_guard lock{result->mutex};
+      mapStatus = result->status;
+      mapMessage = result->message;
+    }
     if (waitStatus != wgpu::WaitStatus::Success || mapStatus != wgpu::MapAsyncStatus::Success) {
       Log.error("EFB RAM readback failed wait={} map={} message={}", magic_enum::enum_name(waitStatus),
                 magic_enum::enum_name(mapStatus), mapMessage);
@@ -412,6 +446,7 @@ void after_submit() noexcept {
     void* dest;
     wgpu::Buffer buffer;
     uint64_t bufferSize;
+    uint64_t generation;
   };
   std::vector<PendingMap> pendingMaps;
   {
@@ -422,14 +457,15 @@ void after_submit() noexcept {
       }
       slot.state = AsyncState::MapPending;
       ++g_asyncMapsInFlight;
-      pendingMaps.push_back({dest, slot.buffer, slot.bufferSize});
+      pendingMaps.push_back({dest, slot.buffer, slot.bufferSize, g_asyncGeneration});
     }
   }
 
   for (const auto& pending : pendingMaps) {
     pending.buffer.MapAsync(wgpu::MapMode::Read, 0, pending.bufferSize, wgpu::CallbackMode::AllowSpontaneous,
-                            [dest = pending.dest](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-                              complete_async_slot(dest, status, message);
+                            [dest = pending.dest, generation = pending.generation](wgpu::MapAsyncStatus status,
+                                                                                 wgpu::StringView message) {
+                              complete_async_slot(dest, generation, status, message);
                             });
   }
 
@@ -443,9 +479,15 @@ void abort_async() noexcept { g_asyncSealed.clear(); }
 void shutdown() noexcept {
   cancel();
   g_asyncSealed.clear();
-  std::lock_guard lock{g_asyncMutex};
-  g_asyncSlots.clear();
-  g_asyncMapsInFlight = 0;
+  // Retire callbacks before releasing buffers, and release outside their mutex:
+  // destruction may itself deliver an AllowSpontaneous cancellation callback.
+  decltype(g_asyncSlots) retiredSlots;
+  {
+    std::lock_guard lock{g_asyncMutex};
+    ++g_asyncGeneration;
+    retiredSlots.swap(g_asyncSlots);
+    g_asyncMapsInFlight = 0;
+  }
 }
 
 } // namespace aurora::gfx::efb_ram

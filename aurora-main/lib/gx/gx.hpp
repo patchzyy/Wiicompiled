@@ -436,6 +436,8 @@ struct GXState {
   u32 pipelineStateGeneration = next_gx_state_epoch();
   std::array<u32, 0x100> bpRegCache = [] {
     std::array<u32, 0x100> regs{};
+    // Force the first GEN_MODE decode without changing its masked reset value.
+    regs[0x00] = 0xFF000000;
     regs[0xFE] = 0x00FFFFFF;
     return regs;
   }();

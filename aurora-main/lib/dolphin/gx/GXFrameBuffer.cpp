@@ -520,9 +520,11 @@ void GXCopyTex(void* dest, GXBool clear) {
     clearState.clearAlpha = clear && alphaUpdate;
   }
   const auto copyFilter = combined_copy_filter_coefficients(g_gxState.copyFilterVFilter);
-  // Skip only recurring color copies so one-shot copies are never lost.
-  const bool producedConsecutively = handle.revision != 0 && currentFrame - handle.lastProducedFrame <= 1;
-  const bool persistentCopy = !aurora::gx::is_depth_format(texCopyFmt) && !producedConsecutively;
+  // Every GXCopyTex is observable texture data. Reusing a destination in this
+  // or the previous frame does not guarantee another redraw: menu thumbnail
+  // scratch targets can be reused and then retained. Depth copies have the
+  // same requirement. Only display presentation may skip unfinished draws.
+  const bool persistentCopy = true;
   aurora::gfx::resolve_pass(handle.handle, rect, clearState.clearColor, clearState.clearAlpha, clearState.clearDepth,
                             clearState.clearColorValue, aurora::gx::clear_depth_value(), resolveFmt,
                             &sourceRect.sampleRect, g_gxState.texCopyHalfScale, &copyFilter, forceOpaqueAlpha,

@@ -299,6 +299,10 @@ std::pair<ByteBuffer, Range> copy_uniform(Range source) {
   return map_uniform(source.size);
 }
 uint32_t align_uniform(uint32_t value) { return (value + 255u) & ~255u; }
+uint64_t staging_uniform_bytes(uint64_t value) { return staging_padded(value, 256); }
+uint64_t staging_storage_bytes(uint64_t value) { return staging_padded(value, 256); }
+bool staging_has_space(const StagingSizes&) { return true; }
+void split_staging_batch() { throw StagingCapacityError("Unexpected split in FIFO unit test"); }
 
 Vec2<uint32_t> get_render_target_size() noexcept { return s_renderTargetSize; }
 Vec2<uint32_t> get_frame_buffer_size() noexcept { return s_renderTargetSize; }

@@ -1,4 +1,5 @@
 #pragma once
+#include "staging_capacity.hpp"
 
 #include "../internal.hpp"
 #include "../webgpu/gpu.hpp"
@@ -394,6 +395,20 @@ wgpu::BindGroup& find_bind_group(BindGroupRef id);
 wgpu::Sampler& sampler_ref(const wgpu::SamplerDescriptor& descriptor);
 
 uint32_t align_uniform(uint32_t value);
+uint64_t staging_uniform_bytes(uint64_t bytes);
+uint64_t staging_storage_bytes(uint64_t bytes);
+// Admission does not allocate. A false result requires a producer-side split.
+// Oversized operations fail before mutating the current draw/pass.
+bool staging_has_space(const StagingSizes& demand);
+void ensure_staging_space(const StagingSizes& demand);
+void split_staging_batch();
+uint64_t staging_epoch() noexcept;
+StagingSizes staging_usage() noexcept;
+StagingSizes staging_high_water() noexcept;
+uint64_t staging_split_count() noexcept;
+// Internal integration-test seam: never increases the physical allocation.
+void set_staging_capacity_limits_for_testing(const StagingSizes& limits);
+
 
 Vec2<uint32_t> get_render_target_size() noexcept;
 // Same value as get_render_target_size() outside a render pass, but never
