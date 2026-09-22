@@ -2,6 +2,7 @@
 #include <cstring>
 #include <ctime>
 #include <mutex>
+#include <limits>
 #include <string>
 #include <filesystem>
 #include <vector>
@@ -286,8 +287,33 @@ size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valu
   if (ret == SQLITE_ROW) {
     // Hit
     const auto foundPtr = sqlite3_column_blob(load_stmt, 0);
-    foundSize = sqlite3_column_int64(load_stmt, 1);
-    const bool compressed = sqlite3_column_int(load_stmt, 2) != 0;
+    const auto declaredSize = sqlite3_column_int64(load_stmt, 1);
+    const auto storedSize = sqlite3_column_bytes(load_stmt, 0);
+    const auto compression = sqlite3_column_int(load_stmt, 2);
+    const bool compressed = compression == 1;
+    // Dawn asks for the size before allocating its destination. Validate here,
+    // not only during the copy: corrupt metadata must become a cache miss.
+    bool valid = declaredSize > 0 &&
+                 static_cast<uint64_t>(declaredSize) <= std::numeric_limits<size_t>::max() &&
+                 foundPtr != nullptr && storedSize > 0 && (compression == 0 || compression == 1);
+    if (valid && compressed) {
+#if defined(AURORA_CACHE_USE_ZSTD)
+      // Our writer uses ZSTD_compress, which records the original content size.
+      const auto frameSize = ZSTD_getFrameContentSize(foundPtr, static_cast<size_t>(storedSize));
+      valid = frameSize != ZSTD_CONTENTSIZE_ERROR && frameSize != ZSTD_CONTENTSIZE_UNKNOWN &&
+              frameSize == static_cast<uint64_t>(declaredSize);
+#else
+      valid = false;
+#endif
+    } else if (valid) {
+      valid = declaredSize == storedSize;
+    }
+    if (!valid) {
+      Log.error("Ignoring cache entry with inconsistent size or compression metadata");
+      check(sqlite3_reset(load_stmt));
+      return 0;
+    }
+    foundSize = static_cast<size_t>(declaredSize);
     if (value == nullptr) {
       g_hits.fetch_add(1, std::memory_order_relaxed);
     } else {
