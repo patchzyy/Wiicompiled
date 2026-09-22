@@ -143,6 +143,7 @@ private:
 };
 struct FrameTransformSnapshot {
   Mat4x4<float> projection{};
+  HashType viewportIdentity = 0;
   Mat3x4<float> position{};
   Mat3x4<float> normal{};
   uint16_t usedMatrixMask = 1;
@@ -1185,7 +1186,8 @@ void finalize_frame_interpolation() noexcept {
         if ((transform.usedMatrixMask & (1u << slot)) == 0) {
           continue;
         }
-        paletteSlotKeys.push_back({transform.indexedMatrices->slotHash[slot], palette, slot});
+        paletteSlotKeys.push_back({combine_identity(transform.indexedMatrices->slotHash[slot],
+                                                   transform.viewportIdentity), palette, slot});
       }
     }
     std::sort(paletteSlotKeys.begin(), paletteSlotKeys.end(),
@@ -1446,10 +1448,21 @@ void extend_interpolation_draw(uint16_t usedPnMtxMask) noexcept {
 }
 
 std::array<gfx::Range, MaxInterpolatedFrames> record_interpolation_draw(
-    const FrameInterpolationDrawIdentity& identity, const Mat4x4<float>& projection,
+    const FrameInterpolationDrawIdentity& drawIdentity, const Mat4x4<float>& projection,
     uint16_t usedPnMtxMask, const InterpolatedUniformLayout& uniformLayout) noexcept {
+  // Split-screen cameras can draw identical meshes in unrelated view spaces.
+  // Scope exact, material-only and sibling-palette history to the guest viewport.
+  // Logical coordinates keep render-scale changes out of the camera identity.
+  const auto& viewport = g_gxState.logicalViewport;
+  const std::array viewportValues{viewport.left, viewport.top, viewport.width,
+                                  viewport.height, viewport.znear, viewport.zfar};
+  const HashType viewportIdentity = xxh3_hash_s(viewportValues.data(), sizeof(viewportValues));
+  auto identity = drawIdentity;
+  identity.combined = combine_identity(identity.combined, viewportIdentity);
+  identity.pipeline = combine_identity(identity.pipeline, viewportIdentity);
   FrameTransformSnapshot snapshot{
       .projection = projection,
+      .viewportIdentity = viewportIdentity,
       .usedMatrixMask = usedPnMtxMask,
   };
   if (uniformLayout.indexedMatrices) {
