@@ -25,6 +25,7 @@ enum class Kind : uint8_t {
     RemoteWithNunchuk,
     RemoteWithClassic,
     WiiUPro,
+    IosMotionRemote,
 };
 
 // Must run before SDL's joystick subsystem is initialized (aurora does that

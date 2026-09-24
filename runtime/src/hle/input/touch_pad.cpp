@@ -1,6 +1,9 @@
 #include "touch_pad.h"
 #include "touch_art.h"
+#include "ios_motion_input.h"
+#include "ios_motion_steering.h"
 #include "runtime_config.h"
+#include "wii_remote_input.h"
 
 #include "hle/controller_status_contract.h"
 #include "settings_overlay.h"
@@ -124,6 +127,12 @@ struct Frame {
 // Owning finger, or 0. Single-threaded: guest fibers and the event pump share
 // the host main thread.
 SDL_FingerID g_stickFinger = 0;
+
+bool g_motionCentred = false;
+double g_motionCentreAngle = 0.0;
+bool g_shakeArmed = false;
+double g_lastShakeTimestamp = -1.0;
+uint8_t g_gestureFrames = 0;
 
 Frame SampleFingers(float aspect) {
     const Layout L = LayoutFor(aspect);
@@ -479,7 +488,204 @@ bool Read(std::array<PADStatus, 4>& statuses) {
     pad.stickY = static_cast<int8_t>(std::clamp(-frame.stickDy * 127.0f, -127.0f, 127.0f));
     pad.triggerL = frame.l ? 255 : 0;
     pad.triggerR = frame.r ? 255 : 0;
+#ifdef MKW_PLATFORM_IOS
+    if (MotionGameCubeActive()) {
+        IosMotionInput::Sample motion;
+        if (IosMotionInput::Read(motion)) {
+            float gravityX = 0.0f, gravityY = 0.0f;
+            IosMotionSteering::RotateForLandscape(IosMotionInput::CurrentLandscapeOrientation(), motion.gravity[0],
+                                                   motion.gravity[1], gravityX, gravityY);
+            double angle = 0.0;
+            if (IosMotionSteering::AngleFromGravity(gravityX, gravityY, angle)) {
+                if (!g_motionCentred) {
+                    g_motionCentreAngle = angle;
+                    g_motionCentred = true;
+                }
+                if (!frame.stickHeld) {
+                    const float steering = IosMotionSteering::SteeringValue(
+                        angle, g_motionCentreAngle, RuntimeConfigFile::IosMotionSensitivity(),
+                        RuntimeConfigFile::IosMotionInverted());
+                    pad.stickX = static_cast<int8_t>(std::clamp(steering * 127.0f, -127.0f, 127.0f));
+                }
+            }
+            const double magnitude = std::sqrt(motion.userAcceleration[0] * motion.userAcceleration[0] +
+                                               motion.userAcceleration[1] * motion.userAcceleration[1] +
+                                               motion.userAcceleration[2] * motion.userAcceleration[2]);
+            const auto shake = IosMotionSteering::ShakeActionForSample(
+                magnitude, motion.timestamp, g_shakeArmed, g_lastShakeTimestamp);
+            if (shake == IosMotionSteering::ShakeAction::Rearm) {
+                g_shakeArmed = true;
+            } else if (shake == IosMotionSteering::ShakeAction::Trigger) {
+                g_shakeArmed = false;
+                g_lastShakeTimestamp = motion.timestamp;
+                g_gestureFrames = 3;
+            }
+        }
+        if (g_gestureFrames != 0) {
+            pad.button |= PAD_BUTTON_UP;
+            --g_gestureFrames;
+        }
+    }
+#endif
     return true;
+}
+
+bool ReadMotionRemote(WiiRemoteInput::KpadSample& sample) {
+#ifdef MKW_PLATFORM_IOS
+    if (!MotionRemoteActive()) {
+        return false;
+    }
+    IosMotionInput::Start();
+    IosMotionInput::Sample motion;
+    if (!IosMotionInput::Read(motion)) {
+        return false;
+    }
+
+    float gravityX = 0.0f, gravityY = 0.0f;
+    IosMotionSteering::RotateForLandscape(IosMotionInput::CurrentLandscapeOrientation(), motion.gravity[0],
+                                           motion.gravity[1], gravityX, gravityY);
+    double angle = 0.0;
+    const bool hasSteeringGravity = IosMotionSteering::AngleFromGravity(gravityX, gravityY, angle);
+    float steering = 0.0f;
+    if (hasSteeringGravity) {
+        if (!g_motionCentred) {
+            g_motionCentreAngle = angle;
+            g_motionCentred = true;
+        }
+        steering = IosMotionSteering::SteeringValue(
+            angle, g_motionCentreAngle, RuntimeConfigFile::IosMotionSensitivity(), RuntimeConfigFile::IosMotionInverted());
+    }
+    const double shakeMagnitude = std::sqrt(motion.userAcceleration[0] * motion.userAcceleration[0] +
+                                            motion.userAcceleration[1] * motion.userAcceleration[1] +
+                                            motion.userAcceleration[2] * motion.userAcceleration[2]);
+    const IosMotionSteering::ShakeAction shake = IosMotionSteering::ShakeActionForSample(
+        shakeMagnitude, motion.timestamp, g_shakeArmed, g_lastShakeTimestamp);
+    if (shake == IosMotionSteering::ShakeAction::Rearm) {
+        g_shakeArmed = true;
+    } else if (shake == IosMotionSteering::ShakeAction::Trigger) {
+        g_shakeArmed = false;
+        g_lastShakeTimestamp = motion.timestamp;
+        // KPAD can be polled more than once during a game frame. Keep the
+        // gesture visible for several samples so a harmless status poll cannot
+        // consume the one motion event before Mario Kart reads race input.
+        g_gestureFrames = 3;
+    }
+    const Frame frame = SampleFingers(CurrentAspect());
+    UpdateAutoAccelerate(frame.a, CurrentTimeMs(), AutoAccelerateEnabled());
+
+    // A thumb on the on-screen stick is an optional fallback for one-handed
+    // play. It deliberately overrides only steering; the virtual Wii Remote
+    // still supplies its motion frame for tricks, POW dodges and wheelies.
+    if (frame.stickHeld) {
+        steering = frame.stickDx;
+    }
+
+    // The core Wii Remote is held sideways: a level wheel has +x gravity and
+    // turning it moves that gravity into z, matching the KPAD Wii Wheel frame.
+    // Keep its y axis neutral after a lift. Holding a synthetic raised pose
+    // there made the game keep a bike wheelie alive and fight the next turn.
+    const float remainingGravity = std::max(0.0f, 1.0f - steering * steering);
+    // CMMotion gravity is deliberately filtered. A real Wii Remote reports
+    // the unfiltered accelerometer too, and Mario Kart uses that brief pulse
+    // when the player lifts a Wii Wheel for a bike wheelie. Restore the
+    // screen-normal part of the phone's gravity-free acceleration here.
+    const float liftImpulse = std::clamp(-motion.userAcceleration[2], -1.5f, 1.5f);
+    sample = {};
+    sample.acc[0] = std::sqrt(remainingGravity);
+    sample.acc[1] = liftImpulse;
+    // The KPAD sideways-Remote axis has the opposite sign to the phone's
+    // landscape steering angle: leaning the phone left must steer left with
+    // the default setting.
+    sample.acc[2] = -steering;
+    if (g_gestureFrames != 0) {
+        sample.acc[1] += 1.5f;
+        // Pair the accelerometer impulse with the game's logical
+        // trick/wheelie action. The core Wii Remote has no extension D-pad,
+        // so use its Up bit directly; this is separate from the rotated
+        // on-screen menu D-pad below.
+        sample.hold |= 0x0008;
+        --g_gestureFrames;
+    }
+    const bool aActive = frame.a || s_gasLocked;
+    if (aActive) sample.hold |= 0x0100;       // 2: accelerate
+    if (frame.b) sample.hold |= 0x0200;       // 1: brake / reverse
+    if (frame.item) sample.hold |= 0x0800;    // A: use item
+    if (frame.r) sample.hold |= 0x0400;       // B: drift
+    if (frame.start) sample.hold |= 0x0010;   // +: pause
+    // Mario Kart rotates core-Wii-Remote menu directions for a sideways Wii
+    // Wheel. Rotate the screen D-pad in the opposite direction so its arrows
+    // remain literal: screen up opens/selects up, and so on.
+    if (frame.up) sample.hold |= 0x0002;
+    if (frame.down) sample.hold |= 0x0001;
+    if (frame.left) sample.hold |= 0x0008;
+    if (frame.right) sample.hold |= 0x0004;
+    return true;
+#else
+    (void)sample;
+    return false;
+#endif
+}
+
+bool MotionRemoteActive() {
+#ifdef MKW_PLATFORM_IOS
+    if (!RuntimeConfigFile::IosMotionControlsEnabled(false) || !IsActive()) {
+        IosMotionInput::Stop();
+        g_motionCentred = false;
+        g_shakeArmed = false;
+        g_lastShakeTimestamp = -1.0;
+        g_gestureFrames = 0;
+        return false;
+    }
+    // GameCube Motion owns the same Core Motion stream through Read(). Do not
+    // stop it merely because this Wii Remote routing probe is expected to fail.
+    if (RuntimeConfigFile::IosMotionGameCubeEnabled(false)) {
+        return false;
+    }
+    IosMotionInput::Start();
+    return IosMotionInput::IsAvailable();
+#else
+    return false;
+#endif
+}
+
+bool MotionGameCubeActive() {
+#ifdef MKW_PLATFORM_IOS
+    if (!RuntimeConfigFile::IosMotionControlsEnabled(false) || !RuntimeConfigFile::IosMotionGameCubeEnabled(false) || !IsActive()) {
+        return false;
+    }
+    IosMotionInput::Start();
+    return IosMotionInput::IsAvailable();
+#else
+    return false;
+#endif
+}
+
+void RecenterMotionRemote() {
+#ifdef MKW_PLATFORM_IOS
+    IosMotionInput::Sample motion;
+    double angle = 0.0;
+    float gravityX = 0.0f, gravityY = 0.0f;
+    if (IosMotionInput::Read(motion)) {
+        IosMotionSteering::RotateForLandscape(IosMotionInput::CurrentLandscapeOrientation(), motion.gravity[0],
+                                               motion.gravity[1], gravityX, gravityY);
+    }
+    if (IosMotionSteering::AngleFromGravity(gravityX, gravityY, angle)) {
+        g_motionCentreAngle = angle;
+        g_motionCentred = true;
+    } else {
+        g_motionCentred = false;
+    }
+#endif
+}
+
+void ResetMotionRemote() {
+#ifdef MKW_PLATFORM_IOS
+    IosMotionInput::Stop();
+    g_motionCentred = false;
+    g_shakeArmed = false;
+    g_lastShakeTimestamp = -1.0;
+    g_gestureFrames = 0;
+#endif
 }
 
 void Draw() {
@@ -507,24 +713,47 @@ void Draw() {
     const Frame frame = SampleFingers(size.x / size.y);
     ImDrawList* list = ImGui::GetBackgroundDrawList();
 
-    // Stick: outer ring plus a thumb dot showing current deflection.
-    // The glyph is the knob; nothing is drawn behind it.
-    const ImVec2 stickCentre{L.stick.x * size.x, L.stick.y * size.y};
-    const float stickRadius = L.stick.r * size.y;
-    const float knobRadius = stickRadius * 0.80f;
-    const float travel = stickRadius * 0.38f;
-    const Circle knob{(stickCentre.x + frame.stickDx * travel) / size.x,
-                      (stickCentre.y + frame.stickDy * travel) / size.y,
-                      knobRadius / size.y};
-    DrawCircle(list, knob, size, "", frame.stickHeld, kColStick, "control_stick");
-
+    const bool motionWheel = RuntimeConfigFile::IosMotionControlsEnabled(false) &&
+                             !RuntimeConfigFile::IosMotionGameCubeEnabled(false);
     const bool aPressed = frame.a || s_gasLocked;
-    DrawCircle(list, L.a, size, "A", aPressed, kColA, "a", s_gasLocked);
-    DrawCircle(list, L.b, size, "B", frame.b, kColB, "b");
-    DrawCircle(list, L.item, size, "Z", frame.item, kColZ, "right_bumper");
-    DrawCircle(list, L.start, size, "START", frame.start, kColGrey, "start_pause");
-    DrawCircle(list, L.shoulderL, size, "L", frame.l, kColGrey, "l_analog");
-    DrawCircle(list, L.shoulderR, size, "R", frame.r, kColGrey, "r_analog");
+    if (!motionWheel) {
+        // Stick: outer ring plus a thumb dot showing current deflection.
+        // The glyph is the knob; nothing is drawn behind it.
+        const ImVec2 stickCentre{L.stick.x * size.x, L.stick.y * size.y};
+        const float stickRadius = L.stick.r * size.y;
+        const float knobRadius = stickRadius * 0.80f;
+        const float travel = stickRadius * 0.38f;
+        const Circle knob{(stickCentre.x + frame.stickDx * travel) / size.x,
+                          (stickCentre.y + frame.stickDy * travel) / size.y,
+                          knobRadius / size.y};
+        DrawCircle(list, knob, size, "", frame.stickHeld, kColStick, "control_stick");
+        DrawCircle(list, L.a, size, "A", aPressed, kColA, "a", s_gasLocked);
+        DrawCircle(list, L.b, size, "B", frame.b, kColB, "b");
+        DrawCircle(list, L.item, size, "Z", frame.item, kColZ, "right_bumper");
+        DrawCircle(list, L.start, size, "START", frame.start, kColGrey, "start_pause");
+        DrawCircle(list, L.shoulderL, size, "L", frame.l, kColGrey, "l_analog");
+        DrawCircle(list, L.shoulderR, size, "R", frame.r, kColGrey, "r_analog");
+    } else {
+        // Wii Wheel mode sends a sideways core Remote through KPAD. Use plain
+        // glyphs instead of the GameCube artwork so the displayed controls
+        // exactly match the virtual buttons.
+        DrawCircle(list, L.a, size, "2", aPressed, kColA, nullptr, s_gasLocked);
+        DrawCircle(list, L.b, size, "1", frame.b, kColB, nullptr);
+        DrawCircle(list, L.item, size, "A", frame.item, kColZ, nullptr);
+        DrawCircle(list, L.start, size, "+", frame.start, kColGrey, nullptr);
+        DrawCircle(list, L.shoulderR, size, "B", frame.r, kColGrey, nullptr);
+
+        // Keep the familiar touch stick available above the D-pad. It is a
+        // temporary steering fallback, useful for menus and one-handed play.
+        const ImVec2 stickCentre{L.stick.x * size.x, L.stick.y * size.y};
+        const float stickRadius = L.stick.r * size.y;
+        const float knobRadius = stickRadius * 0.80f;
+        const float travel = stickRadius * 0.38f;
+        const Circle knob{(stickCentre.x + frame.stickDx * travel) / size.x,
+                          (stickCentre.y + frame.stickDy * travel) / size.y,
+                          knobRadius / size.y};
+        DrawCircle(list, knob, size, "", frame.stickHeld, kColStick, "control_stick");
+    }
     const bool dpadHeld = frame.up || frame.down || frame.left || frame.right;
     DrawCircle(list, L.dpad, size, "", dpadHeld, kColGrey, "d-pad");
 }

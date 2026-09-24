@@ -1,5 +1,7 @@
 #include "wii_remote_input.h"
 
+#include "touch_pad.h"
+
 #include "runtime_config.h"
 #include "runtime_log.h"
 
@@ -545,13 +547,15 @@ const char* KindLabel(Kind kind) {
     case Kind::RemoteWithNunchuk: return "Wii Remote + Nunchuk";
     case Kind::RemoteWithClassic: return "Wii Remote + Classic Controller";
     case Kind::WiiUPro: return "Wii U Pro Controller";
+    case Kind::IosMotionRemote: return "iPhone/iPad Wii Wheel";
     default: return "Not a Wii controller";
     }
 }
 
 // True for the kinds the game reads through KPAD.
 static bool IsKpadKind(Kind kind) {
-    return kind == Kind::Remote || kind == Kind::RemoteWithNunchuk || kind == Kind::RemoteWithClassic;
+    return kind == Kind::Remote || kind == Kind::RemoteWithNunchuk || kind == Kind::RemoteWithClassic ||
+           kind == Kind::IosMotionRemote;
 }
 
 // Live kind of the port, or the remembered one while a swap is in flight.
@@ -559,6 +563,11 @@ static bool IsKpadKind(Kind kind) {
 // overlay's Draw all run there), so the port memory needs no locking.
 Kind EffectiveKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
+#ifdef MKW_PLATFORM_IOS
+    if (chan == 0 && TouchPad::MotionRemoteActive()) {
+        return Kind::IosMotionRemote;
+    }
+#endif
     PortMemory& memory = g_ports[chan];
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
     const Kind live = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
@@ -618,6 +627,11 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
     if (chan >= PAD_MAX_CONTROLLERS) {
         return false;
     }
+#ifdef MKW_PLATFORM_IOS
+    if (chan == 0 && TouchPad::ReadMotionRemote(sample)) {
+        return true;
+    }
+#endif
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
     const Kind kind = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
     if (!IsKpadKind(kind)) {

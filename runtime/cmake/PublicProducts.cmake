@@ -25,9 +25,12 @@ if(EXISTS "${DATA_INIT_BLOB_ASM}")
 endif()
 list(REMOVE_DUPLICATES SOURCES)
 
-if(MKW_PLATFORM_MACOS)
+if(MKW_PLATFORM_MACOS AND NOT MKW_PLATFORM_IOS)
     find_library(MKW_IOKIT_FRAMEWORK IOKit REQUIRED)
     find_library(MKW_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+endif()
+if(MKW_PLATFORM_IOS)
+    find_library(MKW_COREMOTION_FRAMEWORK CoreMotion REQUIRED)
 endif()
 
 function(mkw_apply_common_compile_options target)
@@ -213,9 +216,12 @@ function(mkw_configure_product target)
 
     target_link_libraries(${target} PRIVATE
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
-    if(MKW_PLATFORM_MACOS)
+    if(MKW_PLATFORM_MACOS AND NOT MKW_PLATFORM_IOS)
         target_link_libraries(${target} PRIVATE
             "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}")
+    endif()
+    if(MKW_PLATFORM_IOS)
+        target_link_libraries(${target} PRIVATE "${MKW_COREMOTION_FRAMEWORK}")
     endif()
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")

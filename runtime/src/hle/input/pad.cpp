@@ -62,7 +62,7 @@ extern "C" uint32_t PAD__Read_HLE(uint32_t statusPtr)
     // since keyboard bindings report PAD_ERR_NONE with no controller attached.
     std::array<PADStatus, PAD_CHANMAX> touchStatuses{};
 #ifdef MKW_PLATFORM_IOS
-    if (!PADIsInputBlocked() && TouchPad::Read(touchStatuses)) {
+    if (!PADIsInputBlocked() && !WiiRemoteInput::IsRemoteChannel(0) && TouchPad::Read(touchStatuses)) {
         statuses[0] = touchStatuses[0];
     }
 #endif

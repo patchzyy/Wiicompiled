@@ -48,6 +48,20 @@ endif()
 
 set(CMAKE_CXX_STANDARD 17)
 
+# CMake's iOS platform module discovers AppleClang for Objective-C++ but does
+# not populate the generic language rules itself. Set them before Aurora is
+# added, because Aurora's iOS targets also contain Objective-C++ sources.
+if(MKW_PLATFORM_IOS)
+    enable_language(OBJCXX)
+    if(NOT CMAKE_OBJCXX_COMPILE_OBJECT)
+        set(CMAKE_OBJCXX_COMPILE_OBJECT
+            "<CMAKE_OBJCXX_COMPILER> <DEFINES> <INCLUDES> -x objective-c++ <FLAGS> -o <OBJECT> -c <SOURCE>")
+        set(CMAKE_OBJCXX_ARCHIVE_CREATE "<CMAKE_AR> qc <TARGET> <LINK_FLAGS> <OBJECTS>")
+        set(CMAKE_OBJCXX_ARCHIVE_APPEND "<CMAKE_AR> q <TARGET> <LINK_FLAGS> <OBJECTS>")
+        set(CMAKE_OBJCXX_ARCHIVE_FINISH "<CMAKE_RANLIB> <TARGET>")
+    endif()
+endif()
+
 # Declared before the vendored libraries so the third-party block below can
 # branch on it and so cmake/NativePrebuilt.cmake is included after the names it
 # must provide are known.
@@ -280,6 +294,12 @@ if(MKW_PLATFORM_MACOS)
     # and /tmp is outside the sandbox.
     if(MKW_PLATFORM_IOS)
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
+        # Core Motion is exposed through Objective-C++, kept in an iOS-only
+        # source so shared runtime code does not acquire an Apple framework
+        # dependency.
+        list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/ios/ios_motion_input.mm")
+        set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/platform/ios/ios_motion_input.mm"
+            PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
     else()
         list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_ios.cpp")
     endif()
@@ -311,6 +331,13 @@ add_executable(mkw_platform_paths_tests "${CMAKE_CURRENT_LIST_DIR}/tests/platfor
 target_link_libraries(mkw_platform_paths_tests PRIVATE mkw_platform)
 target_compile_features(mkw_platform_paths_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_platform_paths_tests COMMAND mkw_platform_paths_tests)
+
+add_executable(mkw_ios_motion_steering_tests
+    "${CMAKE_CURRENT_LIST_DIR}/tests/ios_motion_steering_tests.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/platform/ios/ios_motion_steering.cpp")
+target_include_directories(mkw_ios_motion_steering_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_features(mkw_ios_motion_steering_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_ios_motion_steering_tests COMMAND mkw_ios_motion_steering_tests)
 
 add_executable(mkw_touch_auto_accelerate_tests
     "${CMAKE_CURRENT_LIST_DIR}/tests/touch_auto_accelerate_tests.cpp"
