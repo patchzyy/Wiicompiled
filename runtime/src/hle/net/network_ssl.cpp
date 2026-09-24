@@ -795,7 +795,6 @@ static int32_t SslWrite(SslSession& ssl, const uint8_t* data, uint32_t size) {
         }
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             if (std::chrono::steady_clock::now() >= writeDeadline) {
-                DeleteWiiSocket(ssl.socketFd);
                 return SSL_ERR_FAILED;
             }
             continue;

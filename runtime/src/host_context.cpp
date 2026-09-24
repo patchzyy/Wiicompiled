@@ -14,7 +14,7 @@
 
 extern "C" void mkw_co_switch(void** targetSp, void** sourceSp);
 extern "C" void* mkw_co_init(void* stackTop, void (*entry)(void*), void* argument);
-#elif defined(__linux__)
+#elif defined(__linux__) || (defined(__APPLE__) && defined(__x86_64__))
 #include <libco.h>
 
 #include <cstdlib>
@@ -158,7 +158,7 @@ void Switch(Handle target)
     g_current = source;
 }
 
-#elif defined(__linux__)
+#elif defined(__linux__) || (defined(__APPLE__) && defined(__x86_64__))
 
 namespace {
 struct Context {

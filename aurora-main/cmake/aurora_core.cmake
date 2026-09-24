@@ -41,7 +41,9 @@ if (AURORA_ENABLE_GX)
         target_compile_definitions(aurora_core PRIVATE DAWN_ENABLE_BACKEND_METAL)
         target_sources(aurora_core PRIVATE lib/dawn/MetalBinding.mm)
         set_source_files_properties(lib/dawn/MetalBinding.mm PROPERTIES COMPILE_FLAGS -fobjc-arc)
-        target_link_options(aurora_core PUBLIC "LINKER:-weak_framework,Metal")
+        target_link_options(aurora_core PUBLIC
+            "LINKER:-weak_framework,Metal"
+            "LINKER:-U,_OBJC_CLASS_$_MTLLogStateDescriptor")
     endif ()
     if (DAWN_ENABLE_D3D11)
         target_compile_definitions(aurora_core PRIVATE DAWN_ENABLE_BACKEND_D3D11)

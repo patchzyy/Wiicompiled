@@ -22,7 +22,7 @@ Usage: local-build-macos.command --output-dir DIR [options]
   --retro-rewind-package-dir DIR  RetroRewind6 directory (required for Retro Rewind)
   --retro-wfc-offline-dir DIR     Directory containing binary/payload.RMCPD00.bin
   --skip-retro-wfc-payload        Build Retro Rewind without the shared Retro-WFC payload
-  --force-clean-build             Delete local generated and native-build-macos caches
+  --force-clean-build             Delete local generated and current-architecture native build caches
   --parallel N                    Pin translation and build parallelism
   --cmake PATH --ninja PATH       Override build tools
   --dotnet PATH                   Override dotnet
@@ -56,7 +56,9 @@ while (($#)); do
 done
 
 [[ $(uname -s) == Darwin ]] || fail 'this build script is for macOS only'
-[[ $(uname -m) == arm64 ]] || fail 'the current macOS product target is Apple Silicon only'
+macos_arch=$(uname -m)
+case "$macos_arch" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: $macos_arch" ;; esac
+macos_deployment_target=12.0
 workspace=$(cd "$workspace" && pwd)
 [[ -n "$output_dir" ]] || fail '--output-dir is required'
 case "$profile" in base|retro-rewind|both) ;; *) fail '--profile must be base, retro-rewind, or both' ;; esac
@@ -73,7 +75,8 @@ for tool in "$cmake_bin" "$ninja_bin" clang clang++ shasum; do command -v "$tool
 
 project="$workspace/projects/mkwii/recomp.yml"; assets="$workspace/Assets"; generated="$workspace/generated"
 functions="$generated/functions"; metadata="$generated/base_translation_output.json"; manifest_dir="$workspace/build/base"
-manifest="$manifest_dir/mkwii_base_manifest.json"; shards="$generated/build_shards"; native_build="$workspace/native-build-macos"
+manifest="$manifest_dir/mkwii_base_manifest.json"; shards="$generated/build_shards"
+native_build="$workspace/native-build-macos-$macos_arch"
 assert_file "$project" 'translation project'
 if [[ -n "$game" ]]; then "$script_dir/macos/extract-disc.command" --game "$game" --assets-dir "$assets" --nodtool "$nodtool"; fi
 assert_file "$assets/main.dol" 'extracted main.dol'; assert_file "$assets/StaticR.rel" 'extracted StaticR.rel'
@@ -131,9 +134,9 @@ if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatc
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 
 step configure-native 'Configuring the native toolchain'
-"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
+"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DAURORA_SDL3_PROVIDER=vendor -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"
-if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}"; fi
-if (( builds_retro )); then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product RetroRewind --output-dir "$output_dir"; fi
+if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi
+if (( builds_retro )); then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product RetroRewind --output-dir "$output_dir" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi
 printf 'MKWCBUILD:OUTPUT=%s\n' "$output_dir"

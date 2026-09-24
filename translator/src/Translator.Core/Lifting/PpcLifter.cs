@@ -1943,21 +1943,6 @@ public sealed partial class PpcLifter
                 };
 
             case "bltl":
-                {
-                    var crField = "cr0";
-                    if (ops.Count > 0 && ops[0] is PpcConditionRegisterOperand crOp)
-                    {
-                        crField = NormalizeRegister(crOp.Name);
-                    }
-
-                    return new IrInstruction[]
-                    {
-                        new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)),
-                        new IrBranch("blt", TargetLabel(ins, validAddresses, preferFallthrough: false),
-                            $"0x{ins.EndAddress:X8}", crField)
-                    };
-                }
-
             case "bcl":
                 {
                     var rawInstr = ReadRawInstruction(ins);
@@ -1971,6 +1956,7 @@ public sealed partial class PpcLifter
                     {
                         instructions.Add(new IrBinary("ctr", IrValue.Register("ctr"), IrValue.Imm(-1), "add"));
                     }
+                    instructions.Add(new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)));
                     instructions.Add(new IrBranch("raw", linkedTarget, fallthrough, BuildBoConditionExpression(bo, bi, allowCtr: true)));
                     return instructions;
                 }

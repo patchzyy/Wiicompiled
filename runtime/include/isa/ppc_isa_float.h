@@ -607,7 +607,18 @@ inline double PPC_PsMulNoNiInline(double lhs, double rhs)
 inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multiplier, PpcPairVec addend)
 {
 #if defined(__x86_64__)
+#if defined(__FMA__)
     return _mm_fmadd_ps(multiplicand, multiplier, addend);
+#else
+    // x86-64-v2 has SSE4.2 but no FMA. Preserve the one rounding point per
+    // lane through the scalar C++ FMA rather than decomposing into mul+add.
+    const double a = PpcM128ToPsInline(multiplicand);
+    const double c = PpcM128ToPsInline(multiplier);
+    const double b = PpcM128ToPsInline(addend);
+    return PpcPsToM128Inline(PpcPackPairedInline(
+        PpcAccuratePsMaddLaneNoNiInline<false>(PpcGetPs0Inline(a), PpcGetPs0Inline(c), PpcGetPs0Inline(b)),
+        PpcAccuratePsMaddLaneNoNiInline<false>(PpcGetPs1Inline(a), PpcGetPs1Inline(c), PpcGetPs1Inline(b))));
+#endif
 #elif defined(__aarch64__)
     const PpcPairVec result = vfma_f32(addend, multiplicand, multiplier);
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
@@ -619,7 +630,16 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
 inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multiplier, PpcPairVec subtractor)
 {
 #if defined(__x86_64__)
+#if defined(__FMA__)
     return _mm_fmsub_ps(multiplicand, multiplier, subtractor);
+#else
+    const double a = PpcM128ToPsInline(multiplicand);
+    const double c = PpcM128ToPsInline(multiplier);
+    const double b = PpcM128ToPsInline(subtractor);
+    return PpcPsToM128Inline(PpcPackPairedInline(
+        PpcAccuratePsMaddLaneNoNiInline<true>(PpcGetPs0Inline(a), PpcGetPs0Inline(c), PpcGetPs0Inline(b)),
+        PpcAccuratePsMaddLaneNoNiInline<true>(PpcGetPs1Inline(a), PpcGetPs1Inline(c), PpcGetPs1Inline(b))));
+#endif
 #elif defined(__aarch64__)
     const PpcPairVec result = vfma_f32(vneg_f32(subtractor), multiplicand, multiplier);
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
