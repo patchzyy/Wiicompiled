@@ -1942,6 +1942,22 @@ public sealed partial class PpcLifter
                     new IrCall(string.Empty, TargetLabel(ins, validAddresses, preferFallthrough: false), blArgs) 
                 };
 
+            case "bltl":
+                {
+                    var crField = "cr0";
+                    if (ops.Count > 0 && ops[0] is PpcConditionRegisterOperand crOp)
+                    {
+                        crField = NormalizeRegister(crOp.Name);
+                    }
+
+                    return new IrInstruction[]
+                    {
+                        new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)),
+                        new IrBranch("blt", TargetLabel(ins, validAddresses, preferFallthrough: false),
+                            $"0x{ins.EndAddress:X8}", crField)
+                    };
+                }
+
             case "bcl":
                 {
                     var rawInstr = ReadRawInstruction(ins);
