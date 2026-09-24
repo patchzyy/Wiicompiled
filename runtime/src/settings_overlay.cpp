@@ -1186,6 +1186,12 @@ void DrawStartupScreen() {
         const float startY = std::max(0.0f, (viewport->Size.y - titleSize.y) * 0.5f);
         ImGui::SetCursorPos(ImVec2(titleX, startY));
         ImGui::TextUnformatted(kTitle);
+        constexpr const char* kHint = "Press F10 to open settings";
+        const ImVec2 hintSize = ImGui::CalcTextSize(kHint);
+        ImGui::SetWindowFontScale(0.8f);
+        ImGui::SetCursorPos(ImVec2(std::max(0.0f, (viewport->Size.x - hintSize.x) * 0.5f),
+                                   startY + titleSize.y + 12.0f));
+        ImGui::TextUnformatted(kHint);
     }
     ImGui::End();
     ImGui::PopStyleVar();
