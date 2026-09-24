@@ -190,6 +190,30 @@ assert_file "$project" "Translation project"
 assert_file "$assets/main.dol" "Extracted main.dol (see translator/README.md - owning the game is required)"
 assert_file "$assets/StaticR.rel" "Extracted StaticR.rel (see translator/README.md - owning the game is required)"
 
+# The AppImage bundles Clang, but Linux startup objects and the C/C++ link runtimes
+# still come from the host. Check them before the expensive translation so a missing
+# development package produces a useful error instead of CMake's generic exit 1.
+link_probe_dir=$(mktemp -d)
+link_probe_flags=()
+[[ -z "$sysroot" ]] || link_probe_flags+=(--sysroot="$sysroot")
+[[ -z "$fuse_ld_override" ]] || link_probe_flags+=(-fuse-ld="$fuse_ld_override")
+printf 'int main(void) { return 0; }\n' > "$link_probe_dir/probe.c"
+cat > "$link_probe_dir/probe.cpp" <<'EOF'
+#include <vector>
+int main() { std::vector<int> values{1}; return values.front() - 1; }
+EOF
+if ! "$cc_bin" "${link_probe_flags[@]}" "$link_probe_dir/probe.c" -o "$link_probe_dir/probe-c" > "$link_probe_dir/error" 2>&1; then
+    cat "$link_probe_dir/error" >&2
+    rm -rf "$link_probe_dir"
+    fail "The C compiler cannot link a test program. Linux needs C development files (glibc startup objects and a compiler runtime) in addition to bundled Clang. Install your distribution's development packages, or on SteamOS run WiiCompiled through the Wheel Wizard Flatpak."
+fi
+if ! "$cxx_bin" "${link_probe_flags[@]}" "$link_probe_dir/probe.cpp" -o "$link_probe_dir/probe-cxx" > "$link_probe_dir/error" 2>&1; then
+    cat "$link_probe_dir/error" >&2
+    rm -rf "$link_probe_dir"
+    fail "The C++ compiler cannot link a test program. Install your distribution's C++ development packages, or on SteamOS run WiiCompiled through the Wheel Wizard Flatpak."
+fi
+rm -rf "$link_probe_dir"
+
 # Literal line matching against the manifest's fixed shape, not a YAML dependency - the same
 # approach NativeBuildFlags.ps1's Get-MkwProjectPins uses on Windows, kept here only for the one
 # field this script actually needs from the manifest.
