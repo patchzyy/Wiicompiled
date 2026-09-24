@@ -24,7 +24,7 @@ extern std::atomic<bool> g_interrupts_enabled;
 // observable state, not just bookkeeping.
 extern std::atomic<uint32_t> g_interrupt_mask;
 
-constexpr uint32_t kInterruptHandlerTablePtrAddr = 0x803868f8u;
+constexpr uint32_t kInterruptHandlerTablePtrAddr = MKW_GADDR(803868f8);
 constexpr uint32_t kInterruptHandlerTableAddr = 0x80003040u;
 constexpr size_t kInterruptHandlerTableBytes = 0x80u;
 constexpr uint32_t kInterruptMaskLoAddr = 0x800000c4u;
@@ -36,17 +36,19 @@ constexpr uint32_t kThreadListHeadAddr = 0x800000dcu;    // First thread in thre
 constexpr uint32_t kThreadListTailAddr = 0x800000e0u;    // Last added thread (tail of thread list)
 constexpr uint32_t kOSRunningContextAddr = 0x800000e4u;  // Currently running thread context
 
-constexpr uint32_t kDefaultThreadContextAddr = 0x80347498u;
-constexpr uint32_t kIdleThreadContextAddr = 0x803478b0u;
-constexpr uint32_t kThreadQueueArrayAddr = 0x803477b0u;
+constexpr uint32_t kDefaultThreadContextAddr = MKW_GADDR(80347498);
+constexpr uint32_t kIdleThreadContextAddr = MKW_GADDR(803478b0);
+constexpr uint32_t kThreadQueueArrayAddr = MKW_GADDR(803477b0);
 constexpr size_t kThreadQueueArrayBytes = 0x100u;
-constexpr uint32_t kSwitchThreadCallbackPtrAddr = 0x80385ae0u;
-constexpr uint32_t kSchedulerReschedCounterAddr = 0x8038691cu;
-constexpr uint32_t kSchedulerPendingFlagAddr = 0x80386920u;
+constexpr uint32_t kSwitchThreadCallbackPtrAddr = MKW_GADDR(80385ae0);
+constexpr uint32_t kSchedulerReschedCounterAddr = MKW_GADDR(8038691c);
+constexpr uint32_t kSchedulerPendingFlagAddr = MKW_GADDR(80386920);
 // RVL OS uses this as the OSDisableScheduler/OSEnableScheduler nesting count.
 // SelectThread exits early while the count is non-zero.
-constexpr uint32_t kSchedulerIdleFlagAddr = 0x80386918u;
-constexpr uint32_t kAlarmQueueOffsetFromR13 = 0x6360u;
+constexpr uint32_t kSchedulerIdleFlagAddr = MKW_GADDR(80386918);
+// OSAlarmQueue. Named by identity, not by an r13 offset: RMCK01 keeps this part of .sbss
+// 0x20 lower, so PAL's r13-0x6360 lands in a string table there and the queue walk faults.
+constexpr uint32_t kAlarmQueueAddr = MKW_GADDR(803868A0);
 
 constexpr uint32_t kThreadStateOffset = 0x2C8u;
 constexpr uint32_t kThreadAttrOffset = 0x2CAu;

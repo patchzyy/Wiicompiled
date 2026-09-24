@@ -54,6 +54,10 @@ $translator = 'translator/src/Translator.Cli/bin/Release/net8.0/Translator.Cli.d
 (`lis`/`ori` pairs in `__init_registers`). Required by any command that writes `RuntimeConfig.h`;
 the translator does not guess them.
 -  `translation.function_map.path` - optional symbol map used as the discovery oracle.
+-  `runtime.guest_address_table` - the region header (`runtime/include/region/<game>.h`) the
+runtime's PAL-spelled guest addresses resolve through for this executable. The translator applies
+the same table to `runtime/src` before it scans for native registrations, and records it in
+`RuntimeConfig.h` so the runtime build binds to the same executable. See `tools/region/README.md`.
 -  `translation.allow_unsupported_instructions` - off by default; enabling it emits runtime traps
 instead of failing, and such a build can never ship.
 

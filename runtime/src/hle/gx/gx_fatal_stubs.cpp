@@ -27,8 +27,10 @@ namespace {
 // deliberately still spelled out per entry so the translator's runtime-native
 // index sees the literal PPC_NATIVE_OVERRIDE_VOID invocation. Hiding it inside
 // this macro would leave the index unable to associate an address with the stub.
+// addr is the PAL identity token. The stub keeps that spelling in its C name (the override on
+// the same line names it literally); the address it reports is the built region's.
 #define GX_FATAL_STUB(addr, sym) \
-    extern "C" void gx_stub_##addr(CpuContext* ctx) { (void)ctx; HaltGX(0x##addr, sym); }
+    extern "C" void gx_stub_##addr(CpuContext* ctx) { (void)ctx; HaltGX(MKW_GADDR(addr), sym); }
 
 GX_FATAL_STUB(8016b49c, "__GX__DefaultTexRegionCallback_8016b49c") PPC_NATIVE_OVERRIDE_VOID(8016b49c, gx_stub_8016b49c, (CpuContext* ctx), (ctx));
 GX_FATAL_STUB(8016b590, "__GX__DefaultTlutRegionCallback_8016b590") PPC_NATIVE_OVERRIDE_VOID(8016b590, gx_stub_8016b590, (CpuContext* ctx), (ctx));

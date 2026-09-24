@@ -158,8 +158,48 @@ $toolchainBin = Join-Path $toolchain 'llvm-mingw\bin'
 $cc = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang.exe'
 $cxx = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang++.exe'
 $windres = Join-Path $toolchainBin 'x86_64-w64-mingw32-windres.exe'
-$project = Join-Path $Workspace 'projects\mkwii\recomp.yml'
 $assets = Join-Path $Workspace 'Assets'
+$mainDol = Join-Path $assets 'main.dol'
+$staticRel = Join-Path $assets 'StaticR.rel'
+$bootBin = Join-Path $assets 'DATA\sys\boot.bin'
+
+$project = Join-Path $Workspace 'projects\mkwii\recomp.yml'
+$expectedRelSha = '16d9d146112541fefea701ecb5bc1a496f9d50e4a752fbb5b6778e7c6399f67d'
+$expectedLetter = 'P'
+
+if (Test-Path -LiteralPath $mainDol) {
+    $dolSha = Get-MkwFileSha256 $mainDol
+    if ($dolSha -eq 'd2beec1b1645fcd134efe9e7e63774b546667764ed8d431029daccd725995694') {
+        $project = Join-Path $Workspace 'projects\mkwii-ntsc-u\recomp.yml'
+        $expectedRelSha = '1168107f8fdef27a356df76036db55afe4fbf7752606dbac991726701133a617'
+        $expectedLetter = 'E'
+    } elseif ($dolSha -eq '1b9621ef7c5d97dada103e50e5389730e67f3c2545dda592edd4b5843655af91') {
+        $project = Join-Path $Workspace 'projects\mkwii-ntsc-j\recomp.yml'
+        $expectedRelSha = '88539012d357a1420724e51dc7e351192ce696da4b0045994895518a3fad6fae'
+        $expectedLetter = 'J'
+    } elseif ($dolSha -eq '3098a1e9259b4915e32a4ccb5a1f124823f2a0914db29cd2476e10bdb01a77da') {
+        $project = Join-Path $Workspace 'projects\mkwii-ntsc-k\recomp.yml'
+        $expectedRelSha = 'f441b08e4ccc2d64aadcac8429973f10ea6b1cc8f175500fc084983775f7b3e5'
+        $expectedLetter = 'K'
+    } elseif ($dolSha -ne '80d18895b39c63bd80f457398bfcbb91b7d16ac116a41a88967e954080155b05') {
+        throw "main.dol sha256 ($dolSha) does not match any supported clean Mario Kart Wii release."
+    }
+}
+
+if (Test-Path -LiteralPath $staticRel) {
+    $relSha = Get-MkwFileSha256 $staticRel
+    if ($relSha -cne $expectedRelSha) {
+        throw "StaticR.rel sha256 does not match the clean revision for region $expectedLetter."
+    }
+}
+
+if (Test-Path -LiteralPath $bootBin) {
+    $bytes = [IO.File]::ReadAllBytes($bootBin)
+    $gameId = [Text.Encoding]::ASCII.GetString($bytes, 0, [Math]::Min(6, $bytes.Length))
+    if ($gameId.Length -ge 4 -and $gameId[3] -cne $expectedLetter) {
+        throw "DATA\sys\boot.bin is for disc $gameId, but main.dol is region $expectedLetter. Stale disc assets detected; re-extract your game."
+    }
+}
 $generated = Join-Path $Workspace 'generated'
 $functions = Join-Path $generated 'functions'
 $baseMetadata = Join-Path $generated 'base_translation_output.json'
@@ -304,7 +344,7 @@ try {
 
             Invoke-Checked $translator @(
                 'emit-base-manifest', '--project', $project, '--out', $baseManifestDir,
-                '--functions-dir', $functions, '--translation-output-metadata', $baseMetadata, '--region', 'P'
+                '--functions-dir', $functions, '--translation-output-metadata', $baseMetadata, '--region', $expectedLetter
             ) 'Creating the local base translation manifest' -StepId 'emit-base-manifest'
 
             if (-not [string]::IsNullOrWhiteSpace($TranslationFingerprint)) {
@@ -321,7 +361,7 @@ try {
                 'translate-mod', '--project', $project, '--profile', 'retro-rewind',
                 '--base-manifest', $baseManifest, '--base-translation-output-metadata', $baseMetadata,
                 '--code-pul', $codePul, '--mod-root', $retroRoot, '--mod-name', 'Retro Rewind',
-                '--region', 'P', '--out', $retroOut, '--prefer-cached-inputs', '--emit-cpp',
+                '--region', $expectedLetter, '--out', $retroOut, '--prefer-cached-inputs', '--emit-cpp',
                 '--threads', $translatorThreads
             )
             if ($SkipRetroWfcPayload) {

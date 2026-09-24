@@ -240,8 +240,8 @@ PPC_NATIVE_OVERRIDE(801A661C, OS____InterruptInit_801a661c, uint32_t, (uint32_t 
 PPC_NATIVE_OVERRIDE(801A66E0, SetInterruptMask_801a66e0, uint32_t, (uint32_t mask, uint32_t enable), (mask, enable));
 PPC_NATIVE_OVERRIDE(801A00E0, OS__ExceptionInit_801a00e0, uint32_t, (uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint32_t r7, uint32_t r8, uint32_t r20), (r3, r4, r5, r6, r7, r8, r20));
 PPC_NATIVE_OVERRIDE(80168FA0, EXIInit_80168fa0, uint32_t, (), ());
-REGISTER_NATIVE_FUNCTION(0x801A65F8, __OSSetInterruptHandler_801a65f8_hle);
-REGISTER_NATIVE_FUNCTION(0x801A69BC, __OSUnmaskInterrupts_801a69bc_hle);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(801A65F8), __OSSetInterruptHandler_801a65f8_hle);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(801A69BC), __OSUnmaskInterrupts_801a69bc_hle);
 
 // OS____MaskInterrupts (0x801a693c): stubbed out because its verification loop reads MMIO
 // registers we don't emulate, which would spin forever.
@@ -391,14 +391,13 @@ extern "C" uint32_t OSSetPowerCallback_801ab75c(CpuContext* ctx)
     if (!cpu) return 0;
 
     const uint32_t newCallback = cpu->gpr[3];
-    const uint32_t r13 = cpu->gpr[13];
 
-    // Assembly defines the default callback address as (0x801b0000 - 0x43f4)
-    constexpr uint32_t kDefaultCallbackAddr = 0x801b0000u - 0x43f4u; // 0x801abc0c
-
-    // Offsets from R13 (SDA2)
-    const uint32_t kCallbackPtrAddr = r13 - 0x62b8u;
-    const uint32_t kHandlerActiveAddr = r13 - 0x62c0u;
+    // The SDK's default power callback (PAL 0x801abc0c) and the two STM globals the real
+    // function keeps in small data: the registered callback pointer and the "event handler
+    // registered" flag. Named by identity: their r13 offsets are not the same in every region.
+    constexpr uint32_t kDefaultCallbackAddr = MKW_GADDR(801ABC0C);
+    constexpr uint32_t kCallbackPtrAddr = MKW_GADDR(80386948);
+    constexpr uint32_t kHandlerActiveAddr = MKW_GADDR(80386940);
 
     RT_LOG(RT_TAG_OS) << "OSSetPowerCallback_801ab75c called: newCB=0x"
               << std::hex << newCallback << std::dec << std::endl;
@@ -489,12 +488,14 @@ extern "C" int32_t IPCCltInit_80193478(CpuContext* ctx)
     RT_LOG(RT_TAG_OS) << "IPCCltInit_80193478 called: calling IPCInit for buffer setup" << std::endl;
     
     // Sets 0x803867EC/F0/E8 (IPC buffer lo/hi + init flag) from __OSGetIPCBufferLo/Hi.
-    InvokeIndirectCpu(0x80192F7Cu, ctx);
+    InvokeIndirectCpu(MKW_GADDR(80192F7C), ctx);
 
     // Advance the buffer lo pointer by 0x1000 (iosHeap size), matching real IPCCltInit.
-    uint32_t bufferLo = Memory::Read32(ctx->gpr[13] + -25620); // 0x803867EC at r13-0x6414
+    // Named by identity: the r13 offset of this global is not the same in every region.
+    constexpr uint32_t kIpcBufferLoGlobal = MKW_GADDR(803867EC);
+    uint32_t bufferLo = Memory::Read32(kIpcBufferLoGlobal);
     uint32_t newBufLo = bufferLo + 0x1000; // Advance by 4KB for iosHeap
-    Memory::Write32(ctx->gpr[13] + -25620, newBufLo);
+    Memory::Write32(kIpcBufferLoGlobal, newBufLo);
     
     RT_LOG(RT_TAG_OS) << "IPCCltInit: IPC buffer lo advanced from 0x" << std::hex << bufferLo
               << " to 0x" << newBufLo << std::dec << std::endl;

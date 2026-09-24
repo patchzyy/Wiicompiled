@@ -18,7 +18,7 @@ Usage: local-build-macos.command --output-dir DIR [options]
   --profile {base|retro-rewind|both}  Product to build (default: base)
   --output-dir DIR                Output .app directory (required; Retro Rewind for both)
   --base-output-dir DIR           Base .app directory (required with --profile both)
-  --game IMAGE --nodtool PATH     Extract and verify a clean PAL RMCP01 disc image first
+  --game IMAGE --nodtool PATH     Extract and verify a clean Mario Kart Wii disc image first
   --retro-rewind-package-dir DIR  RetroRewind6 directory (required for Retro Rewind)
   --retro-wfc-offline-dir DIR     Directory containing binary/payload.RMCPD00.bin
   --skip-retro-wfc-payload        Build Retro Rewind without the shared Retro-WFC payload
@@ -71,12 +71,49 @@ if (( builds_retro )); then
 fi
 for tool in "$cmake_bin" "$ninja_bin" clang clang++ shasum; do command -v "$tool" >/dev/null || fail "required tool not found: $tool"; done
 
-project="$workspace/projects/mkwii/recomp.yml"; assets="$workspace/Assets"; generated="$workspace/generated"
+assets="$workspace/Assets"; generated="$workspace/generated"
 functions="$generated/functions"; metadata="$generated/base_translation_output.json"; manifest_dir="$workspace/build/base"
 manifest="$manifest_dir/mkwii_base_manifest.json"; shards="$generated/build_shards"; native_build="$workspace/native-build-macos"
-assert_file "$project" 'translation project'
 if [[ -n "$game" ]]; then "$script_dir/macos/extract-disc.command" --game "$game" --assets-dir "$assets" --nodtool "$nodtool"; fi
 assert_file "$assets/main.dol" 'extracted main.dol'; assert_file "$assets/StaticR.rel" 'extracted StaticR.rel'
+
+dol_hash=$(sha256 "$assets/main.dol")
+case "$dol_hash" in
+    d2beec1b1645fcd134efe9e7e63774b546667764ed8d431029daccd725995694)
+        project="$workspace/projects/mkwii-ntsc-u/recomp.yml"
+        expected_rel="1168107f8fdef27a356df76036db55afe4fbf7752606dbac991726701133a617"
+        expected_letter="E"
+        ;;
+    1b9621ef7c5d97dada103e50e5389730e67f3c2545dda592edd4b5843655af91)
+        project="$workspace/projects/mkwii-ntsc-j/recomp.yml"
+        expected_rel="88539012d357a1420724e51dc7e351192ce696da4b0045994895518a3fad6fae"
+        expected_letter="J"
+        ;;
+    3098a1e9259b4915e32a4ccb5a1f124823f2a0914db29cd2476e10bdb01a77da)
+        project="$workspace/projects/mkwii-ntsc-k/recomp.yml"
+        expected_rel="f441b08e4ccc2d64aadcac8429973f10ea6b1cc8f175500fc084983775f7b3e5"
+        expected_letter="K"
+        ;;
+    80d18895b39c63bd80f457398bfcbb91b7d16ac116a41a88967e954080155b05)
+        project="$workspace/projects/mkwii/recomp.yml"
+        expected_rel="16d9d146112541fefea701ecb5bc1a496f9d50e4a752fbb5b6778e7c6399f67d"
+        expected_letter="P"
+        ;;
+    *)
+        fail "Assets/main.dol sha256 ($dol_hash) does not match any supported clean Mario Kart Wii release"
+        ;;
+esac
+
+rel_hash=$(sha256 "$assets/StaticR.rel")
+[[ "$rel_hash" == "$expected_rel" ]] || fail "Assets/StaticR.rel sha256 does not match the clean revision for region $expected_letter"
+
+if [[ -f "$assets/DATA/sys/boot.bin" ]]; then
+    boot_id=$(head -c 6 "$assets/DATA/sys/boot.bin" 2>/dev/null || true)
+    if [[ ${#boot_id} -ge 4 && "${boot_id:3:1}" != "$expected_letter" ]]; then
+        fail "Assets/DATA/sys/boot.bin is for disc $boot_id, but main.dol is region $expected_letter. Stale disc assets detected; re-extract your game."
+    fi
+fi
+assert_file "$project" 'translation project'
 
 if (( force_clean )); then
     step force-clean 'Discarding translation and native build caches'
@@ -119,9 +156,9 @@ step translate-base 'Translating the user-owned base game'
 rm -rf "$functions" "$metadata" "$manifest_dir"; mkdir -p "$functions" "$manifest_dir"
 translator translate-recursive "$entry_point" --project "$project" --outdir "$functions" --output-metadata "$metadata" --production-source-bundle "$generated/base_translation_sources.bin" --no-function-files --prune-stale --threads "$translator_threads"
 step emit-base-manifest 'Creating the local base translation manifest'
-translator emit-base-manifest --project "$project" --out "$manifest_dir" --functions-dir "$functions" --translation-output-metadata "$metadata" --region P
+translator emit-base-manifest --project "$project" --out "$manifest_dir" --functions-dir "$functions" --translation-output-metadata "$metadata" --region "$expected_letter"
 if (( builds_retro )); then
-    mod_out="$workspace/build/mods/retro_rewind_full_cpp"; args=(translate-mod --project "$project" --profile retro-rewind --base-manifest "$manifest" --base-translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul" --mod-root "$retro_root" --mod-name 'Retro Rewind' --region P --out "$mod_out" --prefer-cached-inputs --emit-cpp --threads "$translator_threads")
+    mod_out="$workspace/build/mods/retro_rewind_full_cpp"; args=(translate-mod --project "$project" --profile retro-rewind --base-manifest "$manifest" --base-translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul" --mod-root "$retro_root" --mod-name 'Retro Rewind' --region "$expected_letter" --out "$mod_out" --prefer-cached-inputs --emit-cpp --threads "$translator_threads")
     if (( skip_retro_wfc )); then args+=(--skip-retro-wfc); else offline_payload="$retro_wfc/binary/payload.RMCPD00.bin"; assert_file "$offline_payload" 'Offline Retro-WFC payload'; args+=(--retro-wfc-payload "$offline_payload"); fi
     step translate-mod 'Translating Retro Rewind'; translator "${args[@]}"
 fi

@@ -173,7 +173,6 @@ if [[ -n "$native_prebuilt_dir" ]]; then
     assert_file "$native_prebuilt_dir/native_prebuilt.cmake" "Native prebuilt package"
 fi
 
-project=$workspace/projects/mkwii/recomp.yml
 assets=$workspace/Assets
 generated=$workspace/generated
 functions=$generated/functions
@@ -185,6 +184,43 @@ build=$workspace/native-build
 translation_provenance=$generated/translation-provenance.json
 toolchain_provenance=$build/toolchain-provenance.json
 retro_root=${retro_rewind_package_dir:-$workspace/PulsarPacks/completed/RetroRewind/RetroRewind6}
+
+dol_hash=$(sha256_of "$assets/main.dol")
+case "$dol_hash" in
+    d2beec1b1645fcd134efe9e7e63774b546667764ed8d431029daccd725995694)
+        project=$workspace/projects/mkwii-ntsc-u/recomp.yml
+        expected_rel="1168107f8fdef27a356df76036db55afe4fbf7752606dbac991726701133a617"
+        expected_letter="E"
+        ;;
+    1b9621ef7c5d97dada103e50e5389730e67f3c2545dda592edd4b5843655af91)
+        project=$workspace/projects/mkwii-ntsc-j/recomp.yml
+        expected_rel="88539012d357a1420724e51dc7e351192ce696da4b0045994895518a3fad6fae"
+        expected_letter="J"
+        ;;
+    3098a1e9259b4915e32a4ccb5a1f124823f2a0914db29cd2476e10bdb01a77da)
+        project=$workspace/projects/mkwii-ntsc-k/recomp.yml
+        expected_rel="f441b08e4ccc2d64aadcac8429973f10ea6b1cc8f175500fc084983775f7b3e5"
+        expected_letter="K"
+        ;;
+    80d18895b39c63bd80f457398bfcbb91b7d16ac116a41a88967e954080155b05)
+        project=$workspace/projects/mkwii/recomp.yml
+        expected_rel="16d9d146112541fefea701ecb5bc1a496f9d50e4a752fbb5b6778e7c6399f67d"
+        expected_letter="P"
+        ;;
+    *)
+        fail "Assets/main.dol sha256 ($dol_hash) does not match any supported clean Mario Kart Wii release"
+        ;;
+esac
+
+rel_hash=$(sha256_of "$assets/StaticR.rel")
+[[ "$rel_hash" == "$expected_rel" ]] || fail "Assets/StaticR.rel sha256 does not match the clean revision for region $expected_letter"
+
+if [[ -f "$assets/DATA/sys/boot.bin" ]]; then
+    boot_id=$(head -c 6 "$assets/DATA/sys/boot.bin" 2>/dev/null || true)
+    if [[ ${#boot_id} -ge 4 && "${boot_id:3:1}" != "$expected_letter" ]]; then
+        fail "Assets/DATA/sys/boot.bin is for disc $boot_id, but main.dol is region $expected_letter. Stale disc assets detected; re-extract your game."
+    fi
+fi
 
 assert_file "$project" "Translation project"
 assert_file "$assets/main.dol" "Extracted main.dol (see translator/README.md - owning the game is required)"
@@ -329,7 +365,7 @@ else
 
     log_step emit-base-manifest "Creating the local base translation manifest"
     translator emit-base-manifest --project "$project" --out "$base_manifest_dir" \
-        --functions-dir "$functions" --translation-output-metadata "$base_metadata" --region P
+        --functions-dir "$functions" --translation-output-metadata "$base_metadata" --region "$expected_letter"
 
     printf '{"SchemaVersion":1,"TranslationFingerprint":"%s"}' "$translation_fingerprint" \
         > "$translation_provenance"
@@ -342,7 +378,7 @@ if (( builds_retro )); then
     translate_mod_args=(translate-mod --project "$project" --profile retro-rewind
         --base-manifest "$base_manifest" --base-translation-output-metadata "$base_metadata"
         --code-pul "$code_pul" --mod-root "$retro_root" --mod-name "Retro Rewind"
-        --region P --out "$retro_out" --prefer-cached-inputs --emit-cpp
+        --region "$expected_letter" --out "$retro_out" --prefer-cached-inputs --emit-cpp
         --threads "$translator_threads")
     if (( skip_retro_wfc_payload )); then
         translate_mod_args+=(--skip-retro-wfc)

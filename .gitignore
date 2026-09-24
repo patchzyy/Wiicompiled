@@ -65,7 +65,9 @@ project.lock.json
 /.vs/
 /.vscode/
 /.idea/
-/tools/
+/tools/*
+!/tools/region/
+__pycache__/
 /TEMP/
 /tmp/
 /test_output/

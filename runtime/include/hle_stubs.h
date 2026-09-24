@@ -38,10 +38,13 @@ extern "C" void OS_HLE_EndDeferredGuestCallbacks();
 // renaming requires updating Translator.Cli/Program.cs, RuntimeNativeGuestEffectAnalyzer.cs,
 // TranslatedBuildShardEmitter.cs and RuntimeNativeFunctionAbiProvider.cs together.
 
+// addr_hex is the PAL identity of the guest function (see region/guest_region.h). Both forms it
+// needs - the translated function's symbol and its address - come straight from the region
+// header, so there is nothing to assemble here.
 #define PPC_NATIVE_OVERRIDE(addr_hex, name, ret_type, arg_list, call_list) \
-    extern "C" ret_type func_##addr_hex arg_list { return name call_list; } \
-    REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)
+    extern "C" ret_type MKW_GUEST_FUNC(addr_hex) arg_list { return name call_list; } \
+    REGISTER_NATIVE_FUNCTION(MKW_GADDR(addr_hex), name)
 
 #define PPC_NATIVE_OVERRIDE_VOID(addr_hex, name, arg_list, call_list) \
-    extern "C" void func_##addr_hex arg_list { name call_list; } \
-    REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)
+    extern "C" void MKW_GUEST_FUNC(addr_hex) arg_list { name call_list; } \
+    REGISTER_NATIVE_FUNCTION(MKW_GADDR(addr_hex), name)

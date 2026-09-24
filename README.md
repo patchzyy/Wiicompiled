@@ -98,14 +98,13 @@ Known limitations of the Wii Remote path:
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
 - macOS 14 (Sonoma) or later on Apple Silicon
 - On macOS, Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
-- A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
+- A clean, unmodified disc image of Mario Kart Wii (PAL `RMCP01`, NTSC-U `RMCE01`, NTSC-J `RMCJ01`, or NTSC-K `RMCK01`), dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
 > [!NOTE]
 > GPU/CPU minimums are set by driver support and D3D12/Vulkan feature requirements, not by the game's actual demands.
 
-Only the clean PAL revision will work. Anything else (other
-regions, patched executables) is rejected outright.
+Only clean retail revisions will work. Modified or patched executables are rejected outright.
 
 > [!NOTE]
 > Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
@@ -176,8 +175,11 @@ don't want to risk it right now, setup has to run a static recompiler over the w
 and then throw a C++ compiler at the result. It's a **one-time cost** on your machine.
 
 **Which game version works?**
-Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
-them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
+Clean retail discs for PAL (`RMCP01`), NTSC-U (`RMCE01`), NTSC-J (`RMCJ01`), or NTSC-K (`RMCK01`).
+Modified executables are rejected to prevent subtle, hard-to-debug issues.
+
+> [!NOTE]
+> Prebuilt Windows release packages (`WiiCompiled-Setup.exe`) currently target PAL `RMCP01`. Compiling other regions on Windows is supported from source via `Launcher/LocalBuild.ps1`.
 
 **Can I recompile other GameCube/Wii games with it?**
 The translator itself handles DOLs and RELs generically, see

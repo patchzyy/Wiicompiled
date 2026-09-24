@@ -1,0 +1,691 @@
+{
+  "source_region": "P",
+  "target_region": "J",
+  "generator": "tools/region/port_map.py",
+  "attribution": "chunk table and section layouts vendored from the mkw-sp project (port.py, MIT license)",
+  "port_rule": "if src_start <= a < src_end then a - src_start + dst_start",
+  "address_format": "hex strings",
+  "chunks": [
+    [
+      "0x80004000",
+      "0x80008024",
+      "0x80004000"
+    ],
+    [
+      "0x800080E8",
+      "0x8000ADC0",
+      "0x80008044"
+    ],
+    [
+      "0x8000AF08",
+      "0x80021BAC",
+      "0x8000AE2C"
+    ],
+    [
+      "0x80021BAC",
+      "0x80244DE0",
+      "0x80021ACC"
+    ],
+    [
+      "0x802A4080",
+      "0x8038917C",
+      "0x802A3A00"
+    ],
+    [
+      "0x805103B4",
+      "0x805CC0A8",
+      "0x8050FD34"
+    ],
+    [
+      "0x805CC1B4",
+      "0x805FA33C",
+      "0x805CBA90"
+    ],
+    [
+      "0x805FA344",
+      "0x805FF6E8",
+      "0x805F9C20"
+    ],
+    [
+      "0x805FFD70",
+      "0x806003E8",
+      "0x805FF528"
+    ],
+    [
+      "0x80600C78",
+      "0x80620CB4",
+      "0x806003EC"
+    ],
+    [
+      "0x80620D7C",
+      "0x80637A24",
+      "0x806204C8"
+    ],
+    [
+      "0x80637A80",
+      "0x8063BCF8",
+      "0x8063716C"
+    ],
+    [
+      "0x8063BE40",
+      "0x8088F400",
+      "0x8063B4AC"
+    ],
+    [
+      "0x808913C0",
+      "0x808913C4",
+      "0x80890A10"
+    ],
+    [
+      "0x80895238",
+      "0x808952B8",
+      "0x80894888"
+    ],
+    [
+      "0x808AD3C4",
+      "0x808AD3C8",
+      "0x808AC524"
+    ],
+    [
+      "0x808B3984",
+      "0x808B3988",
+      "0x808B2AE4"
+    ],
+    [
+      "0x808B5B1C",
+      "0x808B5B20",
+      "0x808B4C7C"
+    ],
+    [
+      "0x808B5C78",
+      "0x808B5C7C",
+      "0x808B4DD8"
+    ],
+    [
+      "0x808BB034",
+      "0x808BB098",
+      "0x808BA184"
+    ],
+    [
+      "0x808CB550",
+      "0x808CB554",
+      "0x808CA6A0"
+    ],
+    [
+      "0x808D3698",
+      "0x808D369C",
+      "0x808D27E8"
+    ],
+    [
+      "0x808D36CC",
+      "0x808D36D0",
+      "0x808D281C"
+    ],
+    [
+      "0x808D36D4",
+      "0x808D36D8",
+      "0x808D2824"
+    ],
+    [
+      "0x808D3744",
+      "0x808D3748",
+      "0x808D2894"
+    ],
+    [
+      "0x808D374C",
+      "0x808D3750",
+      "0x808D289C"
+    ],
+    [
+      "0x808D3E14",
+      "0x808D3E18",
+      "0x808D2F64"
+    ],
+    [
+      "0x808DA070",
+      "0x808DA080",
+      "0x808D91C0"
+    ],
+    [
+      "0x808DA318",
+      "0x808DA368",
+      "0x808D9468"
+    ],
+    [
+      "0x809BD6E8",
+      "0x809BD74C",
+      "0x809BC748"
+    ],
+    [
+      "0x809C1830",
+      "0x809C1834",
+      "0x809C0890"
+    ],
+    [
+      "0x809C1874",
+      "0x809C1878",
+      "0x809C08D4"
+    ],
+    [
+      "0x809C18F8",
+      "0x809C18FC",
+      "0x809C0958"
+    ],
+    [
+      "0x809C1988",
+      "0x809C198C",
+      "0x809C09E8"
+    ],
+    [
+      "0x809C19A0",
+      "0x809C19BC",
+      "0x809C0A00"
+    ],
+    [
+      "0x809C1E38",
+      "0x809C1E3C",
+      "0x809C0E98"
+    ],
+    [
+      "0x809C21D0",
+      "0x809C21D4",
+      "0x809C1230"
+    ],
+    [
+      "0x809C21D8",
+      "0x809C21DC",
+      "0x809C1238"
+    ],
+    [
+      "0x809C2328",
+      "0x809C232C",
+      "0x809C1388"
+    ],
+    [
+      "0x809C27F0",
+      "0x809C27FC",
+      "0x809C1850"
+    ],
+    [
+      "0x809C282C",
+      "0x809C2854",
+      "0x809C188C"
+    ],
+    [
+      "0x809C28B8",
+      "0x809C28BC",
+      "0x809C1918"
+    ],
+    [
+      "0x809C2BE8",
+      "0x809C2BEC",
+      "0x809C1C48"
+    ],
+    [
+      "0x809C2EF0",
+      "0x809C2EF4",
+      "0x809C1F50"
+    ],
+    [
+      "0x809C2F38",
+      "0x809C2F40",
+      "0x809C1F98"
+    ],
+    [
+      "0x809C2F44",
+      "0x809C2F48",
+      "0x809C1FA4"
+    ],
+    [
+      "0x809C3618",
+      "0x809C361C",
+      "0x809C2678"
+    ],
+    [
+      "0x809C38B8",
+      "0x809C38BC",
+      "0x809C2918"
+    ],
+    [
+      "0x809C4330",
+      "0x809C4334",
+      "0x809C3390"
+    ],
+    [
+      "0x809C4680",
+      "0x809C4684",
+      "0x809C36E0"
+    ],
+    [
+      "0x809C4740",
+      "0x809C474C",
+      "0x809C37A0"
+    ],
+    [
+      "0x809C496C",
+      "0x809C4970",
+      "0x809C39CC"
+    ]
+  ],
+  "rel_load_address": {
+    "P": "0x805102E0",
+    "E": "0x8050BF60",
+    "J": "0x8050FC60",
+    "K": "0x804FE300"
+  },
+  "dol_sections": {
+    "P": [
+      {
+        "name": "init",
+        "start": "0x80004000",
+        "end": "0x80006460"
+      },
+      {
+        "name": "extab",
+        "start": "0x80006460",
+        "end": "0x80006A20"
+      },
+      {
+        "name": "extabindex",
+        "start": "0x80006A20",
+        "end": "0x800072C0"
+      },
+      {
+        "name": "text",
+        "start": "0x800072C0",
+        "end": "0x80244DE0"
+      },
+      {
+        "name": "ctors",
+        "start": "0x80244DE0",
+        "end": "0x80244EA0"
+      },
+      {
+        "name": "dtors",
+        "start": "0x80244EA0",
+        "end": "0x80244EC0"
+      },
+      {
+        "name": "rodata",
+        "start": "0x80244EC0",
+        "end": "0x80258580"
+      },
+      {
+        "name": "data",
+        "start": "0x80258580",
+        "end": "0x802A4040"
+      },
+      {
+        "name": "bss",
+        "start": "0x802A4080",
+        "end": "0x80384C00"
+      },
+      {
+        "name": "sdata",
+        "start": "0x80384C00",
+        "end": "0x80385FC0"
+      },
+      {
+        "name": "sbss",
+        "start": "0x80385FC0",
+        "end": "0x80386FA0"
+      },
+      {
+        "name": "sdata2",
+        "start": "0x80386FA0",
+        "end": "0x80389140"
+      },
+      {
+        "name": "sbss2",
+        "start": "0x80389140",
+        "end": "0x8038917C"
+      }
+    ],
+    "E": [
+      {
+        "name": "init",
+        "start": "0x80004000",
+        "end": "0x80006460"
+      },
+      {
+        "name": "extab",
+        "start": "0x80006460",
+        "end": "0x80006A20"
+      },
+      {
+        "name": "extabindex",
+        "start": "0x80006A20",
+        "end": "0x800072C0"
+      },
+      {
+        "name": "text",
+        "start": "0x800072C0",
+        "end": "0x80244D40"
+      },
+      {
+        "name": "ctors",
+        "start": "0x80244D40",
+        "end": "0x80244E00"
+      },
+      {
+        "name": "dtors",
+        "start": "0x80244E00",
+        "end": "0x80244E20"
+      },
+      {
+        "name": "rodata",
+        "start": "0x80244E40",
+        "end": "0x80258260"
+      },
+      {
+        "name": "data",
+        "start": "0x80258260",
+        "end": "0x8029FD00"
+      },
+      {
+        "name": "bss",
+        "start": "0x8029FD00",
+        "end": "0x80380880"
+      },
+      {
+        "name": "sdata",
+        "start": "0x80380880",
+        "end": "0x80381C40"
+      },
+      {
+        "name": "sbss",
+        "start": "0x80381C40",
+        "end": "0x80382C20"
+      },
+      {
+        "name": "sdata2",
+        "start": "0x80382C20",
+        "end": "0x80384DC0"
+      },
+      {
+        "name": "sbss2",
+        "start": "0x80384DC0",
+        "end": "0x80384DFC"
+      }
+    ],
+    "J": [
+      {
+        "name": "init",
+        "start": "0x80004000",
+        "end": "0x80006460"
+      },
+      {
+        "name": "extab",
+        "start": "0x80006460",
+        "end": "0x80006A20"
+      },
+      {
+        "name": "extabindex",
+        "start": "0x80006A20",
+        "end": "0x800072C0"
+      },
+      {
+        "name": "text",
+        "start": "0x800072C0",
+        "end": "0x80244D00"
+      },
+      {
+        "name": "ctors",
+        "start": "0x80244D00",
+        "end": "0x80244DC0"
+      },
+      {
+        "name": "dtors",
+        "start": "0x80244DC0",
+        "end": "0x80244DE0"
+      },
+      {
+        "name": "rodata",
+        "start": "0x80244E00",
+        "end": "0x80257F20"
+      },
+      {
+        "name": "data",
+        "start": "0x80257F20",
+        "end": "0x802A39E0"
+      },
+      {
+        "name": "bss",
+        "start": "0x802A3A00",
+        "end": "0x80384580"
+      },
+      {
+        "name": "sdata",
+        "start": "0x80384580",
+        "end": "0x80385940"
+      },
+      {
+        "name": "sbss",
+        "start": "0x80385940",
+        "end": "0x80386920"
+      },
+      {
+        "name": "sdata2",
+        "start": "0x80386920",
+        "end": "0x80388AC0"
+      },
+      {
+        "name": "sbss2",
+        "start": "0x80388AC0",
+        "end": "0x80388AFC"
+      }
+    ],
+    "K": [
+      {
+        "name": "init",
+        "start": "0x80004000",
+        "end": "0x80006460"
+      },
+      {
+        "name": "extab",
+        "start": "0x80006460",
+        "end": "0x80006A20"
+      },
+      {
+        "name": "extabindex",
+        "start": "0x80006A20",
+        "end": "0x800072C0"
+      },
+      {
+        "name": "text",
+        "start": "0x800072C0",
+        "end": "0x80245160"
+      },
+      {
+        "name": "ctors",
+        "start": "0x80245160",
+        "end": "0x80245220"
+      },
+      {
+        "name": "dtors",
+        "start": "0x80245220",
+        "end": "0x80245240"
+      },
+      {
+        "name": "rodata",
+        "start": "0x80245240",
+        "end": "0x80258340"
+      },
+      {
+        "name": "data",
+        "start": "0x80258340",
+        "end": "0x80292040"
+      },
+      {
+        "name": "bss",
+        "start": "0x80292080",
+        "end": "0x80372C00"
+      },
+      {
+        "name": "sdata",
+        "start": "0x80372C00",
+        "end": "0x80373FE0"
+      },
+      {
+        "name": "sbss",
+        "start": "0x80373FE0",
+        "end": "0x80374FC0"
+      },
+      {
+        "name": "sdata2",
+        "start": "0x80374FC0",
+        "end": "0x80377160"
+      },
+      {
+        "name": "sbss2",
+        "start": "0x80377160",
+        "end": "0x8037719C"
+      }
+    ]
+  },
+  "rel_sections": {
+    "P": [
+      {
+        "name": "text",
+        "start": "0x805103B4",
+        "end": "0x8088F400"
+      },
+      {
+        "name": "ctors",
+        "start": "0x8088F400",
+        "end": "0x8088F704"
+      },
+      {
+        "name": "dtors",
+        "start": "0x8088F704",
+        "end": "0x8088F710"
+      },
+      {
+        "name": "rodata",
+        "start": "0x8088F720",
+        "end": "0x808B2BD0"
+      },
+      {
+        "name": "data",
+        "start": "0x808B2BD0",
+        "end": "0x808DD3D4"
+      },
+      {
+        "name": "bss",
+        "start": "0x809BD6E0",
+        "end": "0x809C4F90"
+      }
+    ],
+    "E": [
+      {
+        "name": "text",
+        "start": "0x8050C034",
+        "end": "0x8088AFD0"
+      },
+      {
+        "name": "ctors",
+        "start": "0x8088AFD0",
+        "end": "0x8088B2D4"
+      },
+      {
+        "name": "dtors",
+        "start": "0x8088B2D4",
+        "end": "0x8088B2E0"
+      },
+      {
+        "name": "rodata",
+        "start": "0x8088B2E0",
+        "end": "0x808AE520"
+      },
+      {
+        "name": "data",
+        "start": "0x808AE520",
+        "end": "0x808D8C7C"
+      },
+      {
+        "name": "bss",
+        "start": "0x809B8F20",
+        "end": "0x809C07D0"
+      }
+    ],
+    "J": [
+      {
+        "name": "text",
+        "start": "0x8050FD34",
+        "end": "0x8088EA6C"
+      },
+      {
+        "name": "ctors",
+        "start": "0x8088EA6C",
+        "end": "0x8088ED70"
+      },
+      {
+        "name": "dtors",
+        "start": "0x8088ED70",
+        "end": "0x8088ED7C"
+      },
+      {
+        "name": "rodata",
+        "start": "0x8088ED80",
+        "end": "0x808B1D30"
+      },
+      {
+        "name": "data",
+        "start": "0x808B1D30",
+        "end": "0x808DC524"
+      },
+      {
+        "name": "bss",
+        "start": "0x809BC740",
+        "end": "0x809C3FF0"
+      }
+    ],
+    "K": [
+      {
+        "name": "text",
+        "start": "0x804FE3D4",
+        "end": "0x8087D7C0"
+      },
+      {
+        "name": "ctors",
+        "start": "0x8087D7C0",
+        "end": "0x8087DAC4"
+      },
+      {
+        "name": "dtors",
+        "start": "0x8087DAC4",
+        "end": "0x8087DAD0"
+      },
+      {
+        "name": "rodata",
+        "start": "0x8087DAE0",
+        "end": "0x808A1030"
+      },
+      {
+        "name": "data",
+        "start": "0x808A1030",
+        "end": "0x808CB86C"
+      },
+      {
+        "name": "bss",
+        "start": "0x809ABD20",
+        "end": "0x809B35D0"
+      }
+    ]
+  },
+  "validated_against": {
+    "dol": {
+      "path": "main.dol",
+      "sha256": "1b9621ef7c5d97dada103e50e5389730e67f3c2545dda592edd4b5843655af91",
+      "entry": "0x800060A4"
+    },
+    "rel": {
+      "path": "StaticR.rel",
+      "sha256": "88539012d357a1420724e51dc7e351192ce696da4b0045994895518a3fad6fae",
+      "module_id": 1,
+      "prolog": "0x80554C9C",
+      "epilog": "0x80554CE8",
+      "unresolved": "0x80554D30"
+    }
+  }
+}

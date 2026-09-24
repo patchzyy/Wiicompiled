@@ -38,7 +38,7 @@ done
 
 if [[ -z "$game" ]]; then
     game=$(/usr/bin/osascript <<'APPLESCRIPT'
-set selectedFile to choose file with prompt "Choose your clean Mario Kart Wii PAL (RMCP01) disc image"
+set selectedFile to choose file with prompt "Choose your clean Mario Kart Wii disc image (PAL, NTSC-U, NTSC-J, or NTSC-K)"
 POSIX path of selectedFile
 APPLESCRIPT
 ) || exit 0

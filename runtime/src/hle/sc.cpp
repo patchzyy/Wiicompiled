@@ -14,27 +14,36 @@
 
 namespace {
 
-// Use the SDK's own value tables, including its unknown-region result.
-uint32_t LookupProductRegion(uint32_t table, uint32_t stride, uint32_t count,
-                             const std::string& value) {
-    for (uint32_t index = 0; index < count; ++index) {
-        const uint32_t entry = table + index * stride;
-        if (!Memory::Contains(entry, stride)) {
-            break;
+// Maps standard Wii setting.txt AREA string to SC area index (RVL SDK SCGetProductArea).
+uint32_t LookupProductArea(const std::string& area) {
+    static const std::pair<const char*, uint32_t> kAreas[] = {
+        {"JPN", 0}, {"USA", 1}, {"EUR", 2}, {"AUS", 3}, {"BRA", 4},
+        {"TWN", 5}, {"ROC", 5}, {"KOR", 6}, {"HKG", 7}, {"ASI", 8},
+        {"LTN", 9}, {"SAF", 10},
+    };
+    for (const auto& [name, index] : kAreas) {
+        if (area == name) {
+            return index;
         }
-        const auto* bytes = static_cast<const uint8_t*>(Memory::GetPointer(entry, stride));
-        if (bytes[0] == 0xFF) {
-            break;
-        }
-        if (value.size() < stride - 1 &&
-            std::memcmp(bytes + 1, value.c_str(), value.size() + 1) == 0) {
-            return bytes[0];
+    }
+    return 0xFFFFFFFFu;
+}
+
+// Maps standard Wii setting.txt GAME string to SC game region index (RVL SDK SCGetProductGameRegion).
+uint32_t LookupProductGameRegion(const std::string& gameRegion) {
+    static const std::pair<const char*, uint32_t> kGameRegions[] = {
+        {"JP", 0}, {"US", 1}, {"EU", 2}, {"KR", 3},
+    };
+    for (const auto& [name, index] : kGameRegions) {
+        if (gameRegion == name) {
+            return index;
         }
     }
     return 0xFFFFFFFFu;
 }
 
 } // namespace
+
 
 // SCCheckStatus is polled in OSInit's busy loop (while(SCCheckStatus()==1) waits on async SYSCONF
 // load via NAND IPC); we have no async IPC callbacks, so return 0 (SUCCESS) immediately.
@@ -74,23 +83,23 @@ PPC_NATIVE_OVERRIDE(801B1CAC, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductArea_HLE()
 {
-    return LookupProductRegion(0x8029CEB0u, 5, 13,
-                               RuntimeConsoleIdentity::Current().area);
+    const std::string& area = RuntimeConsoleIdentity::Current().area;
+    return !area.empty() ? LookupProductArea(area) : MKW_REGION_SC_AREA;
 }
 
 PPC_NATIVE_OVERRIDE(801B23A0, SCGetProductArea_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductCode_HLE()
 {
-    // Original PAL SC storage for the six-byte CODE value.
-    constexpr uint32_t kProductCodeAddress = 0x803869E0u;
-    const std::string& productCode = RuntimeConsoleIdentity::Current().productCode;
-    const size_t size = productCode.size() + 1;
+    // Original SC storage for the six-byte CODE value (PAL identity 0x803869E0).
+    constexpr uint32_t kProductCodeAddress = MKW_GADDR(803869E0);
+    const std::string& customCode = RuntimeConsoleIdentity::Current().productCode;
+    const char* code = !customCode.empty() ? customCode.c_str() : MKW_REGION_SC_PRODUCT_CODE;
+    const size_t size = std::strlen(code) + 1;
     if (!Memory::Contains(kProductCodeAddress, size)) {
         return 0;
     }
-    std::memcpy(Memory::GetPointer(kProductCodeAddress, size),
-                productCode.c_str(), size);
+    std::memcpy(Memory::GetPointer(kProductCodeAddress, size), code, size);
     return kProductCodeAddress;
 }
 
@@ -108,8 +117,8 @@ PPC_NATIVE_OVERRIDE(801B2460, SCGetProductSN_HLE, uint32_t, (uint32_t serialAddr
 
 extern "C" uint32_t SCGetProductGameRegion_HLE()
 {
-    return LookupProductRegion(0x8029CEF8u, 4, 4,
-                               RuntimeConsoleIdentity::Current().gameRegion);
+    const std::string& gameRegion = RuntimeConsoleIdentity::Current().gameRegion;
+    return !gameRegion.empty() ? LookupProductGameRegion(gameRegion) : MKW_REGION_SC_GAME_REGION;
 }
 
 PPC_NATIVE_OVERRIDE(801B24C8, SCGetProductGameRegion_HLE, uint32_t, (), ());
