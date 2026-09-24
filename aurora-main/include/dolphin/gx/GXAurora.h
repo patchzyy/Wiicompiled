@@ -88,6 +88,7 @@ typedef enum _AuroraViewportPolicy {
   AURORA_VIEWPORT_FIT = 0,     // Preserve logical aspect in the content framebuffer
   AURORA_VIEWPORT_STRETCH = 1, // Match content framebuffer aspect to the native surface
   AURORA_VIEWPORT_NATIVE = 2,  // Use active framebuffer pixels directly
+  AURORA_VIEWPORT_16_9 = 3,    // Fixed 16:9 content with bars on other surfaces
 } AuroraViewportPolicy;
 
 /**

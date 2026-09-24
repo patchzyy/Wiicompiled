@@ -9,6 +9,7 @@
 #include <cstring>
 #include "memory.h"
 #include "runtime_config.h"
+#include "aurora_events.h"
 #include "runtime_log.h"
 
 namespace {
@@ -52,7 +53,7 @@ PPC_NATIVE_OVERRIDE(801B0220, SCCheckStatus_HLE, uint32_t, (), ());
 // Returns: 0 = 4:3, 1 = 16:9
 extern "C" uint32_t SCGetAspectRatio_HLE()
 {
-    return RuntimeConfigFile::WidescreenEnabled(true) ? 1u : 0u;
+    return (RuntimeConfigFile::WidescreenEnabled(true) || MkwForceAspect169Requested()) ? 1u : 0u;
 }
 
 PPC_NATIVE_OVERRIDE(801B1BE4, SCGetAspectRatio_HLE, uint32_t, (), ());

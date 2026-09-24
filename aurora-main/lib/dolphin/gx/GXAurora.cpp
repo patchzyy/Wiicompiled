@@ -46,6 +46,7 @@ void AuroraSetViewportPolicy(AuroraViewportPolicy policy) {
   }
   g_gxState.viewportPolicy = policy;
   aurora::window::set_frame_buffer_aspect_fit(policy == AURORA_VIEWPORT_FIT);
+  aurora::window::set_force_aspect_16_9(policy == AURORA_VIEWPORT_16_9);
   aurora::window::set_present_surface_fill(policy == AURORA_VIEWPORT_STRETCH);
   if (changed) {
     // Reapply the guest viewport and scissor after a resize.

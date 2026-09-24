@@ -16,7 +16,9 @@
 #endif
 
 extern "C" bool g_dynamicAspectRatioEnabled;
-void ConfigureMkwDynamicAspect(bool widescreen, uint32_t surfaceWidth, uint32_t surfaceHeight);
+void ConfigureMkwDynamicAspect(bool widescreen, bool forceAspect169, uint32_t surfaceWidth, uint32_t surfaceHeight);
+void SetMkwForceAspect169(bool enabled);
+bool MkwForceAspect169Requested();
 void UpdateMkwDynamicAspectSurface(uint32_t surfaceWidth, uint32_t surfaceHeight);
 // Arms the "keep EGG::Frustum's projection scale" flag on every screen that
 // renders to a fixed-size offscreen target. Cheap and idempotent; called from
