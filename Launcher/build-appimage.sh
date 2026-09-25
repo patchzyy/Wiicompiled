@@ -129,31 +129,11 @@ cp -a "$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch
 # Precompiled aurora + third-party package (see Prepare-NativePrebuilt.sh) so a user's own
 # local-build.sh never has to compile aurora itself (~43% of local build CPU time). Re-harvesting
 # recompiles the whole aurora/Crypto++ closure with the toolchain above, so this is skipped unless
-# --print-fingerprint-only (a fast, build-free check) says the existing package no longer matches
-# the current compiler/flags/aurora/third_party sources.
+# --check (a fast, build-free python3 check inside Prepare-NativePrebuilt.sh) says the existing
+# package no longer matches the current compiler/flags/aurora/third_party sources.
 native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$appimagetool_arch"
 echo "Checking whether the precompiled aurora + third-party package ($appimagetool_arch) is current..."
-current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch" --print-fingerprint-only)
-package_current=0
-if [[ -f "$native_prebuilt_dir/provenance.json" ]]; then
-    package_current=$(CURRENT_FINGERPRINT="$current_fingerprint" python3 - "$native_prebuilt_dir/provenance.json" <<'PY'
-import json
-import os
-import sys
-
-provenance = json.load(open(sys.argv[1], encoding="utf-8"))
-current = dict(line.split("=", 1) for line in os.environ["CURRENT_FINGERPRINT"].splitlines() if line)
-fields = {
-    "compiler_sha256": "CompilerSha256",
-    "flag_fingerprint": "FlagFingerprint",
-    "aurora_fingerprint": "AuroraSourceFingerprint",
-    "third_party_fingerprint": "ThirdPartySourceFingerprint",
-}
-print(1 if all(provenance.get(v) == current.get(k) for k, v in fields.items()) else 0)
-PY
-    )
-fi
-if [[ "$package_current" == "1" ]]; then
+if bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch" --check "$native_prebuilt_dir"; then
     echo "Native prebuilt package is current; reusing $native_prebuilt_dir"
 else
     echo "Native prebuilt package is missing or stale; harvesting a fresh one (compiles aurora once, can take a while)..."

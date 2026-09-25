@@ -1,0 +1,387 @@
+# Flatpak-builder manifest for the self-hosted WiiCompiled bundle.
+#
+# The app runs on org.freedesktop.Platform (not Sdk), because the game is compiled at *install
+# time* inside the running sandbox by a bundled clang/lld toolchain that needs glibc/CRT headers,
+# the libstdc++ header tree, and the crt object files / linker scripts that only the SDK ships.
+# The dev-files module copies exactly those SDK subtrees into /app/usr, and the bundled toolchain
+# is pointed at them with --sysroot=/app (see the sandbox entrypoint in
+# Launcher/flatpak/files/wiicompiled-setup), so the installed app is self-contained on the much
+# smaller ~600 MiB Platform runtime.
+#
+# The toolchain (clang/lld/llvm-ar, CMake, Ninja) is pruned into /app/usr/toolchain from the
+# official pinned releases the same way Launcher/prepare-portable-tools.sh does on a build host,
+# including the lld host libs the official release resolves on Ubuntu 22.04 (libxml2, ICU 70),
+# which the Platform runtime does not provide. The precompiled aurora + third-party package is
+# harvested up front by Launcher/Prepare-NativePrebuilt.sh (an immutable, fingerprint-pinned
+# artifact - it is compiled once per toolchain/flag set, verified by provenance.json, and never
+# differs between users), and the native-prebuilt module copies that verified harvest into place.
+#
+# Only archives with pinned sha256 are fetched at build time. The lld host libs join as ordinary
+# sha256-pinned file sources, so for a future Flathub submission the URLs must come from a source
+# Flathub accepts (current debs are self-hosted). This bundle is distributed as a GitHub Release
+# .flatpak asset, installed from the local file.
+
+app-id: io.github.TeamWheelWizard.Wiicompiled
+runtime: org.freedesktop.Platform
+runtime-version: '@RUNTIME_BRANCH@'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.dotnet8
+command: wiicompiled-gui
+separate-locales: false
+
+# --device=dri: Vulkan / GL hardware rendering.
+# --device=input: evdev + hidraw game controllers (joypads, rumble, hotplug).
+# --socket=session-bus: Steam controller D-Bus features / Bluetooth controller
+#   enumeration where SDL3 falls back to session-bus over direct evdev.
+# --filesystem=home: the user's game dump ISO / --install-dir / --retro-dir
+#   paths resolve under $HOME; the game compiles at install time and the
+#   output lands in XDG_DATA_HOME.
+finish-args:
+  - --device=dri
+  - --device=input
+  - --share=network
+  - --socket=wayland
+  - --socket=x11
+  - --socket=pulseaudio
+  - --socket=session-bus
+  - --filesystem=home
+
+build-options:
+  env:
+    DOTNET_NOLOGO: '1'
+    DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
+modules:
+  # -------------------------------------------------------------------------
+  # Minimal compile+link toolchain pruned from the official pinned releases, in
+  # the same layout prepare-portable-tools.sh produces for build hosts. The
+  # app's own compile consumes /app/usr/toolchain at install time.
+  # -------------------------------------------------------------------------
+  - name: toolchain
+    buildsystem: simple
+    sources:
+      - type: archive
+        url: https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/LLVM-22.1.8-Linux-@LLVM_RELEASE_ARCH@.tar.xz
+        sha256: '@LLVM_SHA256@'
+        dest: llvm
+      - type: archive
+        url: https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-linux-@CMAKE_RELEASE_ARCH@.tar.gz
+        sha256: '@CMAKE_SHA256@'
+        dest: cmake
+      - type: archive
+        url: https://github.com/ninja-build/ninja/releases/download/v1.13.2/@NINJA_ASSET@
+        sha256: '@NINJA_SHA256@'
+        dest: ninja
+      - type: file
+        url: '@LLD_DEB_ICU_URL@'
+        sha256: '@LLD_DEB_ICU_SHA@'
+      - type: file
+        url: '@LLD_DEB_XML_URL@'
+        sha256: '@LLD_DEB_XML_SHA@'
+    build-commands:
+      - |
+        set -euo pipefail
+        case "$(uname -m)" in
+            x86_64) libdir=x86_64-linux-gnu; ltrip=x86_64-unknown-linux-gnu ;;
+            aarch64) libdir=aarch64-linux-gnu; ltrip=aarch64-unknown-linux-gnu ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+        esac
+        llvm_src=llvm
+        cmake_src=cmake
+
+        mkdir -p work/bin work/lib work/include
+        cp -a "$llvm_src/bin/clang-22" work/bin/ && strip work/bin/clang-22
+        ln -s clang-22 work/bin/clang
+        ln -s clang work/bin/clang++
+        cp -a "$llvm_src/bin/lld" work/bin/ && strip work/bin/lld
+        ln -s lld work/bin/ld.lld
+        cp -a "$llvm_src/bin/llvm-ar" work/bin/ && strip work/bin/llvm-ar
+        ln -s llvm-ar work/bin/llvm-ranlib
+        cp -a "$llvm_src/lib/clang" work/lib/
+        cp -a "$llvm_src/include/c++" work/include/
+        # Bundled libc++/libc++abi/libunwind: gives --stdlib=libc++ the same option
+        # the prepare-portable-tools.sh toolchain carries; libstdc++ remains the
+        # default (its headers join via the devroot's /usr/include, not the SDK).
+        mkdir -p "work/include/$ltrip/c++/v1"
+        mkdir -p "work/lib/$ltrip"
+        cp -a "$llvm_src/include/$ltrip/c++/v1/__config_site" "work/include/$ltrip/c++/v1/"
+        cp -a "$llvm_src/lib/$ltrip"/libc++.a "$llvm_src/lib/$ltrip"/libc++abi.a "$llvm_src/lib/$ltrip"/libunwind.a "work/lib/$ltrip"/
+        cp -a "$llvm_src/lib/$ltrip"/libc++.so* "$llvm_src/lib/$ltrip"/libc++abi.so* "$llvm_src/lib/$ltrip"/libunwind.so* "work/lib/$ltrip"/
+
+        cmake_share=4.3
+        mkdir -p "work/share/cmake-$cmake_share"
+        cp -a "$cmake_src/bin/cmake" work/bin/
+        cp -a "$cmake_src/share/cmake-$cmake_share/Modules" "$cmake_src/share/cmake-$cmake_share/Templates" work/share/cmake-$cmake_share/
+        cp -a ninja/ninja work/bin/ninja && chmod +x work/bin/ninja
+
+        # lld host libs the official release links against (resolved on Ubuntu 22.04
+        # at release build time). The Platform runtime ships none of these SONAMEs, so
+        # they ride along in the bundled toolchain's lib dir and LD_LIBRARY_PATH.
+        mkdir -p debwork
+        ( cd debwork && ar x ../libicu70_*.deb && tar --zstd -xf data.tar.zst && ar x ../libxml2_*.deb && tar --zstd -xf data.tar.zst )
+        cp -a debwork/usr/lib/$libdir/libicuuc.so* debwork/usr/lib/$libdir/libicudata.so* debwork/usr/lib/$libdir/libxml2.so* work/lib/
+        for f in work/lib/libicuuc.so* work/lib/libicudata.so* work/lib/libxml2.so*; do
+            [ -f "$f" ] && [ ! -L "$f" ] && strip "$f" || :
+        done
+
+        install -d /app/usr/toolchain
+        cp -a work/. /app/usr/toolchain/
+
+        cat > /app/usr/toolchain/LICENSE.txt <<'EOF'
+        Portable build tools bundled by WiiCompiled
+        clang/lld/llvm-ar 22.1.8 (pruned from the official LLVM release): https://github.com/llvm/llvm-project (Apache 2.0 with LLVM Exceptions)
+        CMake 4.3.3 (https://github.com/Kitware/CMake, BSD 3-Clause)
+        Ninja 1.13.2 (https://github.com/ninja-build/ninja, Apache 2.0)
+        lld host libs: libxml2 2.9.13 + ICU 70.1 (Ubuntu 22.04, LGPL/ICU licence)
+        EOF
+
+        # Smoke-test the bundle: a clang++ compile+run through the pruned lld, plus
+        # CMake+Ninja together exactly as local-build.sh drives them.
+        export LD_LIBRARY_PATH=/app/usr/toolchain/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+        probe=$(mktemp -d)
+        cat > "$probe/t.cpp" <<'CPP'
+        #include <vector>
+        #include <cstdio>
+        int main(){ std::vector<int> v{1,2,3}; std::printf("%d", v[2]); return v[2]==3?0:1; }
+        CPP
+        cat > "$probe/CMakeLists.txt" <<'CML'
+        cmake_minimum_required(VERSION 3.16)
+        project(t CXX)
+        add_executable(t t.cpp)
+        CML
+        /app/usr/toolchain/bin/clang++ -std=c++20 -fuse-ld=lld "$probe/t.cpp" -o "$probe/t"
+        "$probe/t"
+        /app/usr/toolchain/bin/cmake -S "$probe" -B "$probe/build" -G Ninja \
+            -DCMAKE_MAKE_PROGRAM=/app/usr/toolchain/bin/ninja \
+            -DCMAKE_CXX_COMPILER=/app/usr/toolchain/bin/clang++ >/dev/null
+        /app/usr/toolchain/bin/cmake --build "$probe/build" >/dev/null
+        "$probe/build/t"
+        rm -rf "$probe"
+
+  # -------------------------------------------------------------------------
+  # The self-contained installer, translator, and bundled nodtool, all produced
+  # by real `dotnet publish` invocations against the app source tree.
+  # -------------------------------------------------------------------------
+  - name: dotnet-apps
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/dotnet8/bin
+      append-ld-library-path: /usr/lib/sdk/dotnet8/lib
+      env:
+        DOTNET_ROOT: /usr/lib/sdk/dotnet8
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+        DOTNET_NOLOGO: '1'
+    sources:
+      - type: dir
+        path: '@SOURCE_TREE@'
+      # Offline NuGet feeds (build sandbox has no network): YamlDotNet for Translator.Cli
+      # is fetched from the public NuGet feed up front by flatpak-builder and rides in as a
+      # flat-folder feed, and the SDK extension itself ships an offline feed of the runtime
+      # packs / ILLink.Tasks that self-contained publish restores from.
+      - type: file
+        url: 'https://api.nuget.org/v3-flatcontainer/yamldotnet/15.1.2/yamldotnet.15.1.2.nupkg'
+        sha256: cabbd01bf40c20430e302bf89adaf3589e7374549812c4911e592acd24a1cedb
+        dest: nuget-feed
+      # nodtool (encounter/nod): the sandbox cannot download it at build time, so the pinned
+      # prebuilt release is fetched with the archive sources and bundled. Version pin lives in
+      # Launcher/WiiCompiled.Setup.Common/NodToolProvider.cs -- keep the two in sync.
+      - type: file
+        url: '@NODTOOL_URL@'
+        sha256: '@NODTOOL_SHA256@'
+    build-commands:
+      - |
+        set -euo pipefail
+        export HOME="$PWD" NUGET_PACKAGES="$PWD/.nuget"
+        # nuget.config sources only the two offline feeds (SDK packs + bundled YamlDotNet);
+        # the sandbox has no network, so anything unreachable there is an explicit error.
+        cat > nuget.config <<'NUGET'
+        <?xml version="1.0" encoding="utf-8"?>
+        <configuration>
+          <packageSources>
+            <clear />
+            <add key="sdk-packs" value="/usr/lib/sdk/dotnet8/nuget/packages" />
+            <add key="bundled" value="nuget-feed" />
+          </packageSources>
+        </configuration>
+        NUGET
+        case "$(uname -m)" in
+            x86_64) rid=linux-x64 ;;
+            aarch64) rid=linux-arm64 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+        esac
+        mkdir -p _out
+        dotnet publish Launcher/WiiCompiled.Setup.Linux -c Release -r "$rid" \
+            --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
+            -p:NuGetAudit=false \
+            -o _out/setup
+        dotnet publish translator/src/Translator.Cli -c Release -r "$rid" \
+            --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
+            -p:NuGetAudit=false \
+            -o _out/translator
+        install -Dm755 _out/setup/WiiCompiled.Setup.Linux /app/libexec/wiicompiled-setup
+        install -Dm755 _out/translator/Translator.Cli /app/libexec/translator-cli
+        install -Dm755 nodtool-linux-* /app/libexec/nodtool
+
+  # -------------------------------------------------------------------------
+  # The graphical launcher: a small GTK3 frontend that shells out to the
+  # wiicompiled-setup entrypoint (game picker via check-products, compile log
+  # via install --game --progress-json, play via launch-base). It builds
+  # against the SDK's GTK3 and runs against the Platform's - no extra toolkit
+  # is bundled.
+  # -------------------------------------------------------------------------
+  - name: gtk-gui
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: '@SOURCE_TREE@/Launcher/gtk-gui'
+    build-commands:
+      - |
+        set -euo pipefail
+        c++ -std=c++20 -O2 -o wiicompiled-gui wiicompiled-gui.cpp $(pkg-config --cflags --libs gtk+-3.0)
+        install -Dm755 wiicompiled-gui /app/bin/wiicompiled-gui
+
+  # -------------------------------------------------------------------------
+  # The fingerprint-pinned precompiled aurora + third-party package. Harvested on
+  # the build host by Prepare-NativePrebuilt.sh (a real compile, guarded by
+  # provenance.json against toolchain/flag/source drift); this module verifies and
+  # imports that immutable artifact into the bundle.
+  # -------------------------------------------------------------------------
+  - name: native-prebuilt
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: '@NATIVE_PREBUILT_DIR@'
+    build-commands:
+      - |
+        set -euo pipefail
+        test -f provenance.json || { echo "missing provenance.json - run Launcher/build-flatpak.sh to let it harvest the native prebuilt first" >&2; exit 1; }
+        python3 -c "import json,sys; data=json.load(open('provenance.json')); assert all(k in data for k in ('CompilerSha256','FlagFingerprint','AuroraSourceFingerprint','ThirdPartySourceFingerprint')), 'malformed provenance.json'"
+        mkdir -p /app/native-prebuilt
+        cp -a ./ /app/native-prebuilt/
+        rm -f /app/native-prebuilt/provenance.json
+
+  # -------------------------------------------------------------------------
+  # The compile-time dev files the bundled toolchain resolves against at install
+  # time, mirrored from the SDK (which is the build sandbox) under --sysroot=/app:
+  #   - the full /usr/include tree (glibc headers + libstdc++ 15.2.0 headers)
+  #   - the gcc subtree: crtbegin/crtend.o, libgcc.a, intrinsics (include-fixed)
+  #   - the multiarch dev set: crt1/Scrt1/crti/crtn.o, libc.a-family stubs, and
+  #     the versioned runtime libc/libm/libz/libstdc++/libgcc copies plus their
+  #     linker scripts, which the driver probes under the sysroot.
+  # lld prepends --sysroot to absolute GROUP members found under it, so the vendor
+  # scripts keep their original /usr/... members (they resolve to the mirrored
+  # /app/usr copies); only the /lib64/ld-linux-* member needs a mirror at /app/lib64.
+  # The Platform runtime and the SDK are the same base distro for a given branch,
+  # so on-disk libs at link time stay the matching ~600 MiB Platform versions and
+  # only the header/object/script half is bundled.
+  # -------------------------------------------------------------------------
+  - name: dev-files
+    buildsystem: simple
+    build-commands:
+      - |
+        set -euo pipefail
+        case "$(uname -m)" in
+            x86_64) libdir=x86_64-linux-gnu; ld_linux=ld-linux-x86-64.so.2 ;;
+            aarch64) libdir=aarch64-linux-gnu; ld_linux=ld-linux-aarch64.so.1 ;;
+            *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
+        esac
+        mkdir -p /app/usr/lib/gcc /app/usr/lib/$libdir /app/usr/local/include
+        # Header tree (glibc + C headers + libstdc++ 15.2.0 include/c++).
+        cp -a /usr/include/. /app/usr/include/
+        # The multiarch glibc split (bits/wordsize.h, asm/, ...) lives in the SDK under
+        # lib/$libdir/include, with /usr/include/$libdir a symlink to it from the copy above.
+        cp -a "/usr/lib/$libdir/include/." "/app/usr/lib/$libdir/include/"
+        # gcc crt objects, libgcc.a/libgcc_eh.a, and the intrinsic headers.
+        find /usr/lib/gcc -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' d; do
+            cp -a "$d" /app/usr/lib/gcc/
+        done
+        # crt objects, static stubs, versioned libs and linker scripts the driver probes.
+        for f in crt1.o Scrt1.o crti.o crtn.o libc.so libc.so.6 libc_nonshared.a libdl.a libpthread.a \
+                 librt.a libutil.a libanl.a libm.so libm.so.6 libmvec.so.1 libgcc_s.so libgcc_s.so.1 \
+                 libz.so libz.so.1 libz.so.1.3.1 \
+                 libstdc++.so libstdc++.so.6 libstdc++.so.6.0.34; do
+            cp -a "/usr/lib/$libdir/$f" "/app/usr/lib/$libdir/" || { echo "missing SDK dev file: $f" >&2; exit 1; }
+        done
+        # libc.so's script GROUP members keep their original absolute /usr/... paths: lld
+        # prepends --sysroot when it loads a script from under it, so they map onto the
+        # bundled /app/usr/lib/$libdir copies above. The one member that does not live
+        # there is the loader (AS_NEEDED /lib64/ld-linux-*), so mirror it under /app/lib64.
+        install -Dm755 "/usr/lib/$libdir/$ld_linux" "/app/lib64/$ld_linux"
+
+  # -------------------------------------------------------------------------
+  # The workspace snapshot the sandbox compiles against: the game/dolphin runtime
+  # sources, aurora-main (headers only - the compiled part is native-prebuilt),
+  # the game project templates, and local-build.sh.
+  # -------------------------------------------------------------------------
+  - name: workspace-snapshot
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: '@SOURCE_TREE@'
+    build-commands:
+      - |
+        set -euo pipefail
+        mkdir -p /app/workspace
+        for dir in runtime aurora-main projects; do
+            cp -a "$dir" /app/workspace/
+        done
+        find /app/workspace/aurora-main/extern -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || :
+        rm -rf /app/workspace/runtime/build
+        mkdir -p /app/workspace/Launcher
+        install -m755 Launcher/local-build.sh /app/workspace/Launcher/local-build.sh
+        # Bundle-version stamp: the entrypoint only re-syncs the writable workspace cache
+        # when this changes, so it must change whenever the bundled contents did.
+        printf '%s\n' '@BUNDLE_VERSION@' > /app/workspace/.bundle-version
+
+  # -------------------------------------------------------------------------
+  # Small static runtime files: the sandbox entrypoint, the desktop entry, the
+  # AppStream metainfo, and the icon. The PNG icon is generated (a solid-colour
+  # placeholder) so the repo needs no binary blob; the SVG is the real icon.
+  # -------------------------------------------------------------------------
+  - name: runtime-files
+    buildsystem: simple
+    sources:
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/wiicompiled-setup'
+        sha256: b2ccf90252214aca0895b8b538cdc0b7bf06002754adaf444e401866b983f9d0
+        dest: bin
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.desktop'
+        sha256: 9067d8af10dddfb201b849253d80e852290d0121e1822ea5f5094b99610ccfa1
+        dest: share/applications
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.metainfo.xml'
+        sha256: d67e447a05ad5bae47557c717fe6c24c04107a5ae915ae747d63ed51f669ba8d
+        dest: share/metainfo
+      - type: file
+        url: 'file://@SOURCE_TREE@/Launcher/flatpak/files/io.github.TeamWheelWizard.Wiicompiled.svg'
+        sha256: eeb728bee2ff94d9d2ed49d5aebde52b409ec8d74699f8907f742740a0b5034a
+        dest: share/icons/hicolor/scalable/apps
+    build-commands:
+      - |
+        set -euo pipefail
+        install -Dm755 bin/wiicompiled-setup /app/bin/wiicompiled-setup
+        install -Dm644 "share/applications/@APP_ID@.desktop" /app/share/applications/@APP_ID@.desktop
+        install -Dm644 "share/metainfo/@APP_ID@.metainfo.xml" /app/share/metainfo/@APP_ID@.metainfo.xml
+        install -Dm644 "share/icons/hicolor/scalable/apps/@APP_ID@.svg" /app/share/icons/hicolor/scalable/apps/@APP_ID@.svg
+        mkdir -p /app/share/icons/hicolor/512x512/apps
+        python3 - /app/share/icons/hicolor/512x512/apps/@APP_ID@.png <<'PY'
+        import struct
+        import sys
+        import zlib
+
+        def chunk(tag: bytes, data: bytes) -> bytes:
+            return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+        path = sys.argv[1]
+        width = height = 512
+        row = b"\x00" + bytes([0x3A, 0x5F, 0x8F, 0xFF]) * width
+        raw = row * height
+        ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+        with open(path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+            handle.write(chunk(b"IHDR", ihdr))
+            handle.write(chunk(b"IDAT", zlib.compress(raw, 9)))
+            handle.write(chunk(b"IEND", b""))
+        PY
