@@ -1202,9 +1202,19 @@ void DrawStartupScreen() {
 void DrawExitPrompt() {
     constexpr const char* kTitle = "Exit";
     if (g_exitPromptOpen && !ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
-    if (!ImGui::BeginPopupModal(kTitle, &g_exitPromptOpen, ImGuiWindowFlags_AlwaysAutoResize)) return;
+    static bool restartFailed = false;
+    if (!ImGui::BeginPopupModal(kTitle, &g_exitPromptOpen, ImGuiWindowFlags_AlwaysAutoResize)) {
+        restartFailed = false;
+        return;
+    }
     ImGui::TextUnformatted("Quit the game?");
+    if (restartFailed) ImGui::TextDisabled("Could not restart.");
     if (ImGui::Button("Exit", ImVec2(120.0f, 0.0f))) ExitForAuroraWindowClose();
+    ImGui::SameLine();
+    if (ImGui::Button("Restart", ImVec2(120.0f, 0.0f))) {
+        RestartForAuroraWindowClose();
+        restartFailed = true;
+    }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) g_exitPromptOpen = false;
     if (!g_exitPromptOpen) ImGui::CloseCurrentPopup();
@@ -1423,7 +1433,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     }
 }
 
-void ReleaseControllers() noexcept {
+void ReleaseControllers(bool resetLeds) noexcept {
     // Aurora drives the LED white on first PADRead and never clears it, and the
     // exit paths terminate the process outright, so do it here.
     bool queued = false;
@@ -1431,7 +1441,7 @@ void ReleaseControllers() noexcept {
         const s32 index = PADGetIndexForPort(port);
         if (index < 0) continue;
         if (SDL_Gamepad* pad = PADGetSDLGamepadForIndex(static_cast<u32>(index))) {
-            SDL_SetGamepadLED(pad, 0, 0, 0);
+            if (resetLeds) SDL_SetGamepadLED(pad, 0, 0, 0);
             queued = true;
         }
     }
