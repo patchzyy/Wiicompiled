@@ -110,8 +110,7 @@ internal sealed class ProductRepairService
                     InputValidation.CurrentRetroWfcPayloadUri, payloadScratch, cancellationToken);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested &&
-                                       ex is HttpRequestException or IOException or InvalidDataException
-                                           or InvalidOperationException or OperationCanceledException)
+                                       ex is HttpRequestException or TimeoutException or IOException)
             {
                 payloadSnapshot = RecoverInstalledRetroWfcPayload(toolkitFingerprint,
                     Path.Combine(scratchRoot, "retro-wfc-payload-recovered"), ex, cancellationToken);

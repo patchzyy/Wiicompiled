@@ -77,26 +77,40 @@ if [[ -n "$retro_dir" ]]; then
     # verify its pinned signature before publishing it into the local cache.
     retro_wfc_dir="$support_root/RetroWfcPayload"
     retro_wfc_payload="$retro_wfc_dir/binary/payload.RMCPD00.bin"
-    if [[ -f "$retro_wfc_payload" ]] && ! "$translator" validate-retro-wfc-payload --directory "$retro_wfc_dir"; then
-        printf 'Discarding an invalid cached Retro-WFC payload...\n' >&2
-        rm -f "$retro_wfc_payload"
+    cached_payload_valid=0
+    if [[ -f "$retro_wfc_payload" ]]; then
+        if "$translator" validate-retro-wfc-payload --directory "$retro_wfc_dir"; then
+            cached_payload_valid=1
+        else
+            printf 'Discarding an invalid cached Retro-WFC payload...\n' >&2
+            rm -f "$retro_wfc_payload"
+        fi
     fi
-    if [[ ! -f "$retro_wfc_payload" ]]; then
-        printf 'Downloading the Retro-WFC payload needed for online play...\n'
-        mkdir -p "$retro_wfc_dir"
-        payload_stage=$(mktemp -d "$retro_wfc_dir/.payload-download.XXXXXX")
-        temporary_payload="$payload_stage/binary/payload.RMCPD00.bin"
-        mkdir -p "$(dirname "$temporary_payload")"
-        trap 'rm -rf "$payload_stage"' EXIT
-        /usr/bin/curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
-            --retry 1 --output "$temporary_payload" \
-            'https://rwfc.net/api/wfc/payload?g=RMCPD00' || fail 'could not download the Retro-WFC payload needed for online play'
+
+    # A signed cache may still be an older vulnerable revision, so always attempt to replace it
+    # with the current signed snapshot. A transport failure may fall back to the verified cache;
+    # a downloaded snapshot with an invalid signature remains a hard failure.
+    printf 'Downloading the current Retro-WFC payload needed for online play...\n'
+    mkdir -p "$retro_wfc_dir"
+    payload_stage=$(mktemp -d "$retro_wfc_dir/.payload-download.XXXXXX")
+    temporary_payload="$payload_stage/binary/payload.RMCPD00.bin"
+    mkdir -p "$(dirname "$temporary_payload")"
+    trap 'rm -rf "$payload_stage"' EXIT
+    if /usr/bin/curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+        --retry 1 --output "$temporary_payload" \
+        'https://rwfc.net/api/wfc/payload?g=RMCPD00'; then
         "$translator" validate-retro-wfc-payload --directory "$payload_stage" || \
             fail 'downloaded Retro-WFC payload failed signature validation'
         mkdir -p "$retro_wfc_dir/binary"
         mv "$temporary_payload" "$retro_wfc_payload"
         rmdir "$payload_stage/binary" "$payload_stage"
         trap - EXIT
+    elif (( cached_payload_valid )); then
+        printf 'Could not download the current Retro-WFC payload; using the previously verified cached payload.\n' >&2
+        rm -rf "$payload_stage"
+        trap - EXIT
+    else
+        fail 'could not download the current Retro-WFC payload and no valid cached payload is available'
     fi
     build_args+=(--profile both --base-output-dir "$products" --retro-rewind-package-dir "$retro_dir" --retro-wfc-offline-dir "$retro_wfc_dir")
 fi

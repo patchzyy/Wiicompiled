@@ -127,18 +127,39 @@ internal static class Program
         string? retroWfcOfflineDir = null;
         if (downloadPayload)
         {
-            // Reused if a previous install already downloaded and it's still valid - matches
-            // Windows's own reuse-if-valid behavior instead of re-downloading on every install.
             var cacheDir = Path.Combine(workspace, "generated", "retro-wfc-payload");
-            reporter.Progress(InstallStages.Validate, "Preparing the Retro-WFC payload", 1);
+            reporter.Progress(InstallStages.Validate,
+                "Downloading the current Retro-WFC payload", 1);
             try
             {
-                RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir);
-            }
-            catch (InvalidDataException)
-            {
+                // A valid signature authenticates a payload, but does not prove it is the latest
+                // signed revision. Always ask the fixed endpoint for the current snapshot; the
+                // downloader verifies it before atomically replacing the cache.
                 await RetroWfcPayload.DownloadRetroWfcPayloadAsync(
                     RetroWfcPayload.CurrentRetroWfcPayloadUri, cacheDir, token);
+            }
+            catch (Exception downloadFailure) when (!token.IsCancellationRequested &&
+                                                     downloadFailure is HttpRequestException or TimeoutException
+                                                         or IOException)
+            {
+                // Offline installs may continue with a previously authenticated snapshot. Do not
+                // use this path for a newly downloaded payload that failed signature validation:
+                // that must remain a hard failure instead of hiding possible endpoint tampering.
+                try
+                {
+                    RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir);
+                }
+                catch (Exception cacheFailure) when (cacheFailure is IOException or
+                                                     UnauthorizedAccessException or InvalidDataException)
+                {
+                    throw new InvalidOperationException(
+                        "The current Retro-WFC payload could not be downloaded and no valid cached " +
+                        $"payload is available ({cacheFailure.Message.TrimEnd('.')}).", downloadFailure);
+                }
+
+                reporter.Diagnostic(
+                    "The current Retro-WFC payload could not be downloaded; using the previously " +
+                    $"verified cached payload instead ({downloadFailure.Message.TrimEnd('.')}).");
             }
             retroWfcOfflineDir = cacheDir;
         }
