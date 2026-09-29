@@ -22,11 +22,17 @@ workspace=$(cd "$script_dir/.." && pwd)
 
 arch=""
 output_dir=""
+toolchain_dir=""
+ninja_bin=""
+cmake_bin=""
+llvm_dir=""
+sysroot=""
 stage_dir="$workspace/build/native-prebuilt-stage"
 keep_stage=0
 reuse_stage=0
 parallel=0
 print_fingerprint_only=0
+disconnected=0
 
 usage() {
     cat <<'EOF'
@@ -55,6 +61,12 @@ while [[ $# -gt 0 ]]; do
         --reuse-stage) reuse_stage=1; shift ;;
         --parallel) parallel=$2; shift 2 ;;
         --print-fingerprint-only) print_fingerprint_only=1; shift ;;
+        --toolchain-dir) toolchain_dir=$2; shift 2 ;;
+        --ninja-bin) ninja_bin=$2; shift 2 ;;
+        --cmake-bin) cmake_bin=$2; shift 2 ;;
+        --llvm-dir) llvm_dir=$2; shift 2 ;;
+        --sysroot) sysroot=$2; shift 2 ;;
+        --disconnected) disconnected=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Prepare-NativePrebuilt.sh: unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -71,14 +83,22 @@ assert_dir() { [[ -d "$1" ]] || fail "$2 is missing: $1"; }
 sha256_of() { sha256sum "$1" | awk '{print $1}'; }
 normalize() { readlink -f "$1"; }
 
+# Environment check: Ensure the `SOURCE_DATE_EPOCH` value is not invalid
+# before trying to build anything (fail-fast)
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]] && ! python3 -c \
+    'import datetime, os; datetime.datetime.fromtimestamp(int(os.environ.get("SOURCE_DATE_EPOCH")), datetime.timezone.utc)'
+then
+    fail "SOURCE_DATE_EPOCH must be a valid UNIX timestamp"
+fi
+
 [[ -n "$output_dir" ]] || output_dir="$script_dir/artifacts/native-prebuilt-$arch"
 [[ "$stage_dir" = /* ]] || stage_dir="$workspace/$stage_dir"
 
-toolchain_dir="$script_dir/artifacts/portable-tools/toolchain-$arch"
-cc="$toolchain_dir/bin/clang"
-cxx="$toolchain_dir/bin/clang++"
-cmake_bin="$toolchain_dir/bin/cmake"
-ninja_bin="$toolchain_dir/bin/ninja"
+toolchain_dir="${toolchain_dir:-$script_dir/artifacts/portable-tools/toolchain-$arch}"
+cc="${llvm_dir:-$toolchain_dir}/bin/clang"
+cxx="${llvm_dir:-$toolchain_dir}/bin/clang++"
+cmake_bin="${cmake_bin:-$toolchain_dir/bin/cmake}"
+ninja_bin="${ninja_bin:-$toolchain_dir/bin/ninja}"
 runtime_source="$workspace/runtime"
 aurora_source="$workspace/aurora-main"
 
@@ -87,7 +107,7 @@ assert_file "$ninja_bin" "Portable Ninja"
 assert_file "$cc" "Portable C compiler"
 assert_file "$cxx" "Portable C++ compiler"
 assert_dir "$aurora_source" "aurora-main source tree"
-clang_binary=$(normalize "$toolchain_dir/bin/clang-22")
+clang_binary=$(normalize "${llvm_dir:-$toolchain_dir}/bin/clang-22")
 assert_file "$clang_binary" "Portable clang driver binary"
 
 (( parallel > 0 )) || parallel=$(nproc)
@@ -142,6 +162,16 @@ fixed_configure_flags=(
     -DFT_DISABLE_BZIP2=ON
     -DCMAKE_POLICY_DEFAULT_CMP0168=NEW
 )
+if [[ "$disconnected" -eq 1 ]]; then
+    fixed_configure_flags+=(
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+    )
+fi
+if [[ -n "$sysroot" ]]; then
+    fixed_configure_flags+=(
+        -DCMAKE_SYSROOT="$sysroot"
+    )
+fi
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
 # extern/ is excluded because the payload ships that tree separately (aurora-main/extern is bundled
@@ -154,7 +184,12 @@ third_party_fingerprint=$(fingerprint_tree "$runtime_source/third_party")
 [[ -n "$third_party_fingerprint" ]] || fail "The vendored third-party tree could not be fingerprinted: $runtime_source/third_party"
 mbedtls_fingerprint=$(sha256_of "$runtime_source/cmake/MbedTLSPin.cmake")
 
-compiler_sha256=$(sha256_of "$clang_binary")
+compiler_sha256=$(sha256_of "$cc")
+cxx_sha256=$(sha256_of "$cxx")
+# Append the CXX SHA256 if it doesn't match the hash of CC
+if [[ "${cxx_sha256}" != "${compiler_sha256}" ]]; then
+    compiler_sha256="${compiler_sha256}:${cxx_sha256}"
+fi
 
 if [[ "$print_fingerprint_only" -eq 1 ]]; then
     printf 'compiler_sha256=%s\n' "$compiler_sha256"
@@ -582,9 +617,21 @@ for root, dirs, files in os.walk(output_dir):
         contents.append({"Path": rel, "Bytes": os.path.getsize(path), "Sha256": digest})
 contents.sort(key=lambda c: c["Path"])
 
+source_date_epoch = os.environ.get("SOURCE_DATE_EPOCH") or None
+utc = datetime.timezone.utc
+if source_date_epoch is not None:
+    built_utc = datetime.datetime.fromtimestamp(
+        int(source_date_epoch),
+        utc
+    )
+else:
+    built_utc = datetime.datetime.now(utc)
+
+built_utc = built_utc.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
 provenance = {
     "SchemaVersion": 1,
-    "BuiltUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    "BuiltUtc": built_utc,
     "CompilerSha256": compiler_sha256,
     "CompilerVersion": compiler_version,
     "FlagFingerprint": flag_fingerprint,
