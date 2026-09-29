@@ -132,7 +132,7 @@ trees themselves (fetched by `Launcher/Prepare-Dependencies.ps1`) so end-user bu
 | Abseil | LTS 20240722.0 | Apache-2.0 | <https://github.com/abseil/abseil-cpp> |
 | Dear ImGui | 1.91.9b-docking | MIT | <https://github.com/ocornut/imgui> |
 | {fmt} | 11.1.4 | MIT | <https://github.com/fmtlib/fmt> |
-| xxHash | 0.8.3 | BSD-2-Clause | <https://github.com/Cyan4973/xxHash> |
+| xxHash | 0.8.4 | BSD-2-Clause | <https://github.com/Cyan4973/xxHash> |
 | zlib | 1.3.2 | zlib | <https://github.com/madler/zlib> |
 | libpng | 1.6.58 | PNG Reference Library License v2 | <https://github.com/pnggroup/libpng> |
 | FreeType | 2.14.3 | **FreeType License (FTL)** - see below | <https://freetype.org/> |

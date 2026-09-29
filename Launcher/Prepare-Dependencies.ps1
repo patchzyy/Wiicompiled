@@ -82,9 +82,9 @@ $packages = @(
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/wolfpld/tracy/archive/a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz' })
     },
     [pscustomobject]@{
-        Name = 'xxhash'; File = 'xxHash-0.8.3.tar.gz'
-        Uris = @('https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz' })
+        Name = 'xxhash'; File = 'xxHash-0.8.4.tar.gz'
+        Uris = @('https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz')
+        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'zlib'; File = 'zlib-1.3.2.tar.gz'

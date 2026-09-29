@@ -52,9 +52,9 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/../cmake/AuroraSDL3Provider.cmake)
 if (NOT TARGET xxhash)
   message(STATUS "aurora: Fetching xxhash")
   FetchContent_Declare(xxhash
-    URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz
-    URL_HASH SHA256=aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
-    SOURCE_SUBDIR cmake_unofficial
+    URL https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz
+    URL_HASH SHA256=5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32
+    SOURCE_SUBDIR build/cmake
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     EXCLUDE_FROM_ALL
   )
