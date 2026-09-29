@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds the redistributable precompiled aurora + third-party package for native Linux: aurora
-# (~43% of local build CPU time per Prepare-NativePrebuilt.ps1) and vendored Crypto++ are identical
+# (~43% of local build CPU time per Prepare-NativePrebuilt.ps1), Crypto++ and mbed TLS are identical
 # for every user under the pinned toolchain prepare-portable-tools.sh bundles, so this configures
 # runtime/ against that toolchain, builds just that closure, and harvests the archives plus a
 # generated CMake description into an output package - the Linux counterpart to
@@ -39,8 +39,7 @@ Usage: Prepare-NativePrebuilt.sh --arch {x86_64|aarch64} [options]
   --reuse-stage           Reuse an existing staging build directory (maintainer iteration aid: a
                           re-harvest does not recompile aurora from scratch)
   --parallel N            Ninja build parallelism (default: nproc)
-  --print-fingerprint-only  Print the four provenance inputs (compiler_sha256, flag_fingerprint,
-                          aurora_fingerprint, third_party_fingerprint) as "key=value" lines and
+  --print-fingerprint-only  Print the provenance inputs as "key=value" lines and
                           exit, without configuring/building/harvesting anything - lets a caller
                           (build-appimage.sh) decide whether an existing package is still current
                           without paying for a full aurora rebuild just to find out.
@@ -131,6 +130,8 @@ fixed_configure_flags=(
     -DCMAKE_DISABLE_FIND_PACKAGE_absl=ON
     -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON
     -DCMAKE_DISABLE_FIND_PACKAGE_Freetype=ON
+    -DUSE_STATIC_MBEDTLS_LIBRARY=ON
+    -DUSE_SHARED_MBEDTLS_LIBRARY=OFF
     # Freetype's own vendored CMakeLists.txt separately probes for system BZip2 (optional
     # bzip2-compressed-font support aurora-main never asked for) regardless of the Freetype
     # find_package disable above, since that only stops aurora's own outer find_package(Freetype)
@@ -148,11 +149,10 @@ flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk
 aurora_fingerprint=$(fingerprint_tree "$aurora_source" extern build)
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
-# The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted
-# for the same reason as aurora above. No exclusions: unlike aurora's extern/, nothing under
-# runtime/third_party is shipped separately.
+# The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted.
 third_party_fingerprint=$(fingerprint_tree "$runtime_source/third_party")
 [[ -n "$third_party_fingerprint" ]] || fail "The vendored third-party tree could not be fingerprinted: $runtime_source/third_party"
+mbedtls_fingerprint=$(sha256_of "$runtime_source/cmake/MbedTLSPin.cmake")
 
 compiler_sha256=$(sha256_of "$clang_binary")
 
@@ -161,6 +161,7 @@ if [[ "$print_fingerprint_only" -eq 1 ]]; then
     printf 'flag_fingerprint=%s\n' "$flag_fingerprint"
     printf 'aurora_fingerprint=%s\n' "$aurora_fingerprint"
     printf 'third_party_fingerprint=%s\n' "$third_party_fingerprint"
+    printf 'mbedtls_fingerprint=%s\n' "$mbedtls_fingerprint"
     exit 0
 fi
 
@@ -361,6 +362,21 @@ while IFS='|' read -r name type file linkerfile; do
         linker_file_to_reference["$linkerfile"]="@PKG@/$relative_linker"
     fi
 done < "$targets_txt"
+mbedtls_refs=()
+mbedtls_txt="$export_dir/mbedtls.txt"
+assert_file "$mbedtls_txt" "Mbed TLS export targets list"
+while IFS='|' read -r name linkerfile; do
+    [[ -n "$name" ]] || continue
+    linkerfile=$(normalize "$linkerfile")
+    ref=${linker_file_to_reference["$linkerfile"]:-}
+    [[ -n "$ref" ]] || fail "Mbed TLS archive was not harvested: $name ($linkerfile)"
+    mbedtls_refs+=("$ref")
+done < "$mbedtls_txt"
+[[ ${#mbedtls_refs[@]} -eq 3 ]] || fail "Expected three Mbed TLS archives, got ${#mbedtls_refs[@]}"
+mbedtls_source_dir=$(get_meta mbedtls_source_dir)
+assert_dir "$mbedtls_source_dir/include/mbedtls" "Mbed TLS headers"
+mkdir -p "$output_dir/include/mbedtls"
+cp -a "$mbedtls_source_dir/include/." "$output_dir/include/mbedtls/"
 # Unlike Windows (SDL/zlib/libpng ship as DLLs by default), everything here was forced static above
 # and Dawn's own Linux package (verified directly) ships libwebgpu_dawn.a, also static - so zero
 # shared imports is the expected, normal outcome, not a failure.
@@ -426,6 +442,9 @@ for item in "${link_items[@]}"; do
     if [[ "$item" = /* ]]; then item_abs=$(normalize "$item"); else item_abs=$(normalize "$stage_dir/$item"); fi
     ref=${linker_file_to_reference["$item_abs"]:-}
     if [[ -n "$ref" ]]; then
+        for mbedtls_ref in "${mbedtls_refs[@]}"; do
+            [[ "$ref" == "$mbedtls_ref" ]] && continue 2
+        done
         package_link_items+=("$ref")
         continue
     fi
@@ -505,6 +524,9 @@ generated_cmake="$output_dir/native_prebuilt.cmake"
     format_cmake_block MKW_NP_COMPILE_DEFINITIONS "${package_definitions[@]}"
     format_cmake_block MKW_NP_COMPILE_OPTIONS "${package_compile_options[@]}"
     format_cmake_block MKW_NP_LINK_LIBRARIES "${package_link_items[@]}"
+    format_cmake_block MKW_NP_MBEDTLS_LIBRARIES "${mbedtls_refs[@]}"
+    echo 'set(MKW_NP_MBEDTLS_INCLUDE_DIR "@PKG@/include/mbedtls")'
+    printf 'set(MKW_NP_MBEDTLS_FINGERPRINT "%s")\n' "$mbedtls_fingerprint"
     format_cmake_block MKW_NP_AURORA_TARGETS "aurora::gx" "aurora::pad" "aurora::si" "aurora::vi" "aurora::mtx"
     echo ""
     printf 'set(MKW_NP_DAWN_CONFIG_DIR "%s")\n' "$dawn_config_token"
@@ -540,12 +562,12 @@ harvested_count=${#linker_file_to_reference[@]}
 
 python3 - "$output_dir" "$compiler_sha256" "$compiler_version" "$flag_fingerprint" \
     "$dawn_version" "$dawn_runtime_sha256" "$aurora_fingerprint" "$third_party_fingerprint" \
-    "$sdl3_target" "$harvested_count" <<'PY'
+    "$sdl3_target" "$harvested_count" "$mbedtls_fingerprint" <<'PY'
 import hashlib, json, os, sys, datetime
 
 (output_dir, compiler_sha256, compiler_version, flag_fingerprint, dawn_version,
  dawn_runtime_sha256, aurora_fingerprint, third_party_fingerprint, sdl3_target,
- harvested_count) = sys.argv[1:]
+ harvested_count, mbedtls_fingerprint) = sys.argv[1:]
 
 contents = []
 for root, dirs, files in os.walk(output_dir):
@@ -570,6 +592,7 @@ provenance = {
     "DawnRuntimeSha256": dawn_runtime_sha256,
     "AuroraSourceFingerprint": aurora_fingerprint,
     "ThirdPartySourceFingerprint": third_party_fingerprint,
+    "MbedTlsFingerprint": mbedtls_fingerprint,
     "Sdl3Target": sdl3_target,
     "HarvestedLibraryCount": int(harvested_count),
     "Contents": contents,

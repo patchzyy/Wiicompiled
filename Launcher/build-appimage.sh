@@ -128,9 +128,9 @@ cp -a "$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch
 
 # Precompiled aurora + third-party package (see Prepare-NativePrebuilt.sh) so a user's own
 # local-build.sh never has to compile aurora itself (~43% of local build CPU time). Re-harvesting
-# recompiles the whole aurora/Crypto++ closure with the toolchain above, so this is skipped unless
+# recompiles the aurora/Crypto++/mbed TLS closure with the toolchain above, so this is skipped unless
 # --print-fingerprint-only (a fast, build-free check) says the existing package no longer matches
-# the current compiler/flags/aurora/third_party sources.
+# the current compiler, flags, source trees or mbed TLS pin.
 native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$appimagetool_arch"
 echo "Checking whether the precompiled aurora + third-party package ($appimagetool_arch) is current..."
 current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch" --print-fingerprint-only)
@@ -148,6 +148,7 @@ fields = {
     "flag_fingerprint": "FlagFingerprint",
     "aurora_fingerprint": "AuroraSourceFingerprint",
     "third_party_fingerprint": "ThirdPartySourceFingerprint",
+    "mbedtls_fingerprint": "MbedTlsFingerprint",
 }
 print(1 if all(provenance.get(v) == current.get(k) for k, v in fields.items()) else 0)
 PY
