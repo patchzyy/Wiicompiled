@@ -120,7 +120,7 @@ elseif (_aurora_nod_provider STREQUAL "package")
   include(FetchContent)
   FetchContent_Declare(nod_prebuilt
     URL "${AURORA_NOD_PACKAGE_URL}"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     EXCLUDE_FROM_ALL
   )
   FetchContent_MakeAvailable(nod_prebuilt)

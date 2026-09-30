@@ -92,7 +92,7 @@ elseif (_aurora_sdl3_provider STREQUAL "package")
   include(FetchContent)
   FetchContent_Declare(sdl3_prebuilt
     URL "${AURORA_SDL3_PACKAGE_URL}"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
   )
   FetchContent_MakeAvailable(sdl3_prebuilt)
 
@@ -145,7 +145,7 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
     endif ()
     FetchContent_Declare(SDL
       URL "https://github.com/libsdl-org/SDL/releases/download/release-${AURORA_SDL3_VERSION}/SDL3-${AURORA_SDL3_VERSION}.tar.gz"
-      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+      DOWNLOAD_EXTRACT_TIMESTAMP FALSE
       PATCH_COMMAND "${CMAKE_COMMAND}" -DSDL_SOURCE_DIR=<SOURCE_DIR> -P "${_aurora_sdl3_patches}"
       EXCLUDE_FROM_ALL
     )

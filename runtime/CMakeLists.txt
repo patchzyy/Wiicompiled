@@ -133,7 +133,7 @@ if(NOT MKW_PLATFORM_WINDOWS)
         FetchContent_Declare(mkw_mbedtls_upstream
             URL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MKW_MBEDTLS_VERSION}/mbedtls-${MKW_MBEDTLS_VERSION}.tar.bz2"
             URL_HASH SHA256=${MKW_MBEDTLS_SHA256}
-            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            DOWNLOAD_EXTRACT_TIMESTAMP FALSE
         )
         # Subproject mode already disables testing and codegen; it still enables programs.
         set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
