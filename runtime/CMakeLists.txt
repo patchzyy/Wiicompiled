@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.16)
+﻿cmake_minimum_required(VERSION 3.25)
 project(mkw_recompiled)
 
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -132,7 +132,9 @@ if(NOT MKW_PLATFORM_WINDOWS)
         include(FetchContent)
         FetchContent_Declare(mkw_mbedtls_upstream
             URL "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${MKW_MBEDTLS_VERSION}/mbedtls-${MKW_MBEDTLS_VERSION}.tar.bz2"
-            URL_HASH SHA256=${MKW_MBEDTLS_SHA256})
+            URL_HASH SHA256=${MKW_MBEDTLS_SHA256}
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
         # Subproject mode already disables testing and codegen; it still enables programs.
         set(ENABLE_PROGRAMS OFF CACHE BOOL "" FORCE)
         set(ENABLE_TESTING OFF CACHE BOOL "" FORCE)

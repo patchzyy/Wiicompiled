@@ -225,7 +225,7 @@ EOF
 # clang++ invocation above would not catch a broken CMAKE_ROOT (Modules/Templates) or a Ninja that
 # can't find the compiler.
 cat > "$test_dir/CMakeLists.txt" <<'EOF'
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.25)
 project(test CXX)
 add_executable(test t.cpp)
 EOF
