@@ -46,3 +46,18 @@ jobs:
 
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
+
+  macos-setup:
+    name: macOS arm64 setup package
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and smoke-test setup archive
+        run: bash Launcher/package-macos-setup.sh --output-dir Launcher/dist

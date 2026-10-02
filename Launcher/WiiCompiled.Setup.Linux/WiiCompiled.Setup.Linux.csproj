@@ -8,7 +8,7 @@
     <RootNamespace>WiiCompiled.Setup.Linux</RootNamespace>
     <Authors>patchzy</Authors>
     <Product>WiiCompiled</Product>
-    <Description>Command-line installer and launcher for WiiCompiled on Linux</Description>
+    <Description>Command-line installer and launcher for WiiCompiled on Linux and macOS</Description>
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <InvariantGlobalization>true</InvariantGlobalization>

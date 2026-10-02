@@ -19,10 +19,13 @@ internal sealed class ProductInstallRecord
     public string DolSha256 { get; set; } = "";
     public string RelSha256 { get; set; } = "";
     public string BuiltUtc { get; set; } = "";
+    public string? RetroRewindDirectory { get; set; }
+    public bool UsesRetroWfcPayload { get; set; }
+    public string? CodePulSha256 { get; set; }
 }
 
 /// <summary>
-/// The whole flat state document this tool keeps at ~/.local/share/WiiCompiled/install-state.json.
+/// The whole flat per-user state document this tool keeps.
 /// Deliberately not a fingerprint tree: local-build.sh already does its own incremental-rebuild
 /// caching, so this only needs to remember where things were installed and what they were built
 /// against, not decide when to rebuild.

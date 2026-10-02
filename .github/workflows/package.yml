@@ -1,9 +1,7 @@
 name: Package installers
 
-# Builds the per-platform installer/setup tool (WiiCompiled-Setup.exe /
-# WiiCompiled-Setup-x86_64.AppImage) via Launcher/Build-Installer.ps1 and
-# Launcher/build-appimage.sh respectively - the same scripts a maintainer runs by hand today to
-# produce a GitHub Release asset. This does NOT build the actual translated game executable:
+# Builds the per-platform installer/setup tools (WiiCompiled-Setup.exe,
+# WiiCompiled-Setup-<arch>.AppImage, and WiiCompiled-Setup-macos-arm64.zip). This does NOT build the actual translated game executable:
 # that step requires the end user's own Mario Kart Wii dump (Assets/main.dol, Assets/StaticR.rel),
 # which is proprietary and not present in this repository or in CI.
 on:
@@ -90,6 +88,28 @@ jobs:
           if-no-files-found: error
           archive: false
 
+  macos-setup:
+    name: macOS setup (arm64)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build and smoke-test setup archive
+        run: bash Launcher/package-macos-setup.sh --output-dir Launcher/dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WiiCompiled-Setup-macos-arm64
+          path: Launcher/dist/WiiCompiled-Setup-macos-arm64.zip
+          if-no-files-found: error
+          archive: false
+
   # Publishes the packaged installers as a GitHub Release whenever a v* tag is pushed. Wheel Wizard
   # discovers updates from these releases, so the contract it relies on is enforced here: a full
   # (non-prerelease) release whose tag is v<semver>, carrying an asset named exactly
@@ -97,7 +117,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux-appimage, windows-installer, recompilation]
+    needs: [linux-appimage, windows-installer, macos-setup, recompilation]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -141,7 +161,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup-macos-arm64.zip; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")

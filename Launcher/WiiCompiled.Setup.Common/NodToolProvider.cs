@@ -8,9 +8,8 @@ namespace WiiCompiled.Setup.Common;
 /// caller can supply one directly; otherwise this downloads the matching prebuilt release binary
 /// from encounter/nod and caches it at Launcher/artifacts/nodtool[.exe].
 ///
-/// Shared by: WiiCompiled.Setup.Linux/DiscTool.cs (falls back to this at end-user install time on
-/// a plain git checkout), and WiiCompiled.Setup.Common.Cli (invoked once at packaging time by both
-/// build-appimage.sh and Build-Installer.ps1 to acquire the copy each bundles).
+/// Shared by the Linux/macOS setup hosts (which fall back to this at end-user install time on a
+/// plain git checkout), and WiiCompiled.Setup.Common.Cli (invoked at packaging time).
 /// </summary>
 public static class NodToolProvider
 {
@@ -54,6 +53,14 @@ public static class NodToolProvider
                 Architecture.Arm64 => "nodtool-windows-arm64.exe",
                 Architecture.X86 => "nodtool-windows-x86.exe",
                 var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for Windows {other}"),
+            };
+        }
+        if (OperatingSystem.IsMacOS())
+        {
+            return RuntimeInformation.OSArchitecture switch
+            {
+                Architecture.Arm64 => "nodtool-macos-arm64",
+                var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for macOS {other}"),
             };
         }
         return RuntimeInformation.OSArchitecture switch

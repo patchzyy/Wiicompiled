@@ -2,6 +2,36 @@
 
 This guide covers building **WiiCompiled** (base game) and **Retro Rewind** from source on macOS for Apple Silicon (`arm64`). Follow these instructions to compile the native executables directly.
 
+## Downloadable setup
+
+For a packaged setup CLI rather than building the tools from source, download
+`WiiCompiled-Setup-macos-arm64.zip` from a [WiiCompiled tagged release](https://github.com/patchzyy/Wiicompiled/releases)
+that includes the macOS setup package.
+The archive includes the self-contained setup and translator executables, the pinned `nodtool`
+binary, and only the tracked source files needed for the local native build. It contains no game
+dump, translated game executable, or Retro Rewind files. The setup compiles the game on your Mac
+from your own clean PAL `RMCP01` disc.
+
+The setup requires macOS 14 or later on Apple Silicon, Xcode Command Line Tools, CMake, and Ninja.
+Install the build tools with `brew install cmake ninja`. It does not require the .NET SDK; that is
+only needed when building the setup or translator from source.
+
+The release archive is currently unsigned and not notarized because release signing credentials
+are not configured. If macOS adds a quarantine attribute to the downloaded executable, verify that
+the archive came from the official release page and then remove quarantine from the setup binary
+before running it:
+
+```bash
+xattr -dr com.apple.quarantine WiiCompiled-Setup-macos-arm64
+cd WiiCompiled-Setup-macos-arm64
+./WiiCompiled-Setup-macos-arm64 --version
+./WiiCompiled-Setup-macos-arm64 --silent --game /path/to/RMCP01.iso
+```
+
+The setup CLI also supports `--check-products`, `--repair-products`, `--launch-base`, and
+`--uninstall`. Its default products are written under `~/Applications/WiiCompiled/`; use
+`--help` for the full command syntax.
+
 > [!NOTE]
 > If you only want to build the base game (**WiiCompiled**), look for sections marked **`(Skip if only building WiiCompiled)`** to bypass Retro Rewind and online payload steps.
 

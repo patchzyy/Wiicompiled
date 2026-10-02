@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace WiiCompiled.Setup.Linux;
 
 /// <summary>
-/// Invokes Launcher/local-build.sh and turns its stdout into progress reports. Replaces
+/// Invokes the native platform build script and turns its stdout into progress reports. Replaces
 /// LocalBuildService.cs's hardcoded Windows PowerShell 5.1 invocation - there is no PowerShell
 /// dependency here at all, just bash.
 /// </summary>
@@ -17,8 +17,13 @@ internal static class BuildRunner
         IInstallReporter reporter,
         CancellationToken cancellationToken)
     {
-        var script = Path.Combine(workspace, "Launcher", "local-build.sh");
-        if (!File.Exists(script)) throw new FileNotFoundException("local-build.sh is missing", script);
+        var macOS = OperatingSystem.IsMacOS();
+        if (macOS && sysroot is not null)
+            throw new ArgumentException("--sysroot is not supported by the macOS build.");
+
+        var script = Path.Combine(workspace, "Launcher",
+            macOS ? "local-build-macos.command" : "local-build.sh");
+        if (!File.Exists(script)) throw new FileNotFoundException($"{Path.GetFileName(script)} is missing", script);
 
         var startInfo = new ProcessStartInfo("bash")
         {
@@ -36,8 +41,6 @@ internal static class BuildRunner
         }
         if (!string.IsNullOrEmpty(retroDir))
         {
-            // Still forwarded to local-build.sh under its own internal name -
-            // --retro-rewind-package-dir - matching LocalBuild.ps1's own -RetroRewindPackageDirectory.
             startInfo.ArgumentList.Add("--retro-rewind-package-dir"); startInfo.ArgumentList.Add(retroDir);
         }
         if (!string.IsNullOrEmpty(retroWfcOfflineDir))
@@ -50,37 +53,51 @@ internal static class BuildRunner
         {
             startInfo.ArgumentList.Add("--translator-bin"); startInfo.ArgumentList.Add(translatorBin);
         }
-        // Forwarded by AppRun so the AppImage's bundled clang/lld (see prepare-portable-clang.sh)
-        // is used instead of local-build.sh's own default of whatever clang is on $PATH.
-        if (!string.IsNullOrEmpty(ccBin))
+        if (macOS)
         {
-            startInfo.ArgumentList.Add("--cc"); startInfo.ArgumentList.Add(ccBin);
+            if (!string.IsNullOrEmpty(cmakeBin))
+            {
+                startInfo.ArgumentList.Add("--cmake"); startInfo.ArgumentList.Add(cmakeBin);
+            }
+            if (!string.IsNullOrEmpty(ninjaBin))
+            {
+                startInfo.ArgumentList.Add("--ninja"); startInfo.ArgumentList.Add(ninjaBin);
+            }
         }
-        if (!string.IsNullOrEmpty(cxxBin))
+        else
         {
-            startInfo.ArgumentList.Add("--cxx"); startInfo.ArgumentList.Add(cxxBin);
-        }
-        if (!string.IsNullOrEmpty(fuseLd))
-        {
-            startInfo.ArgumentList.Add("--fuse-ld"); startInfo.ArgumentList.Add(fuseLd);
-        }
-        if (!string.IsNullOrEmpty(cmakeBin))
-        {
-            startInfo.ArgumentList.Add("--cmake"); startInfo.ArgumentList.Add(cmakeBin);
-        }
-        if (!string.IsNullOrEmpty(ninjaBin))
-        {
-            startInfo.ArgumentList.Add("--ninja"); startInfo.ArgumentList.Add(ninjaBin);
-        }
-        // Forwarded by AppRun so the AppImage's bundled precompiled aurora/third-party package (see
-        // Prepare-NativePrebuilt.sh) is used instead of local-build.sh compiling aurora-main itself.
-        if (!string.IsNullOrEmpty(nativePrebuiltDir))
-        {
-            startInfo.ArgumentList.Add("--native-prebuilt-dir"); startInfo.ArgumentList.Add(nativePrebuiltDir);
-        }
-        if (!string.IsNullOrEmpty(sysroot))
-        {
-            startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);
+            // Forwarded by AppRun so the AppImage's bundled clang/lld (see prepare-portable-tools.sh)
+            // is used instead of local-build.sh's own default of whatever clang is on $PATH.
+            if (!string.IsNullOrEmpty(ccBin))
+            {
+                startInfo.ArgumentList.Add("--cc"); startInfo.ArgumentList.Add(ccBin);
+            }
+            if (!string.IsNullOrEmpty(cxxBin))
+            {
+                startInfo.ArgumentList.Add("--cxx"); startInfo.ArgumentList.Add(cxxBin);
+            }
+            if (!string.IsNullOrEmpty(fuseLd))
+            {
+                startInfo.ArgumentList.Add("--fuse-ld"); startInfo.ArgumentList.Add(fuseLd);
+            }
+            if (!string.IsNullOrEmpty(cmakeBin))
+            {
+                startInfo.ArgumentList.Add("--cmake"); startInfo.ArgumentList.Add(cmakeBin);
+            }
+            if (!string.IsNullOrEmpty(ninjaBin))
+            {
+                startInfo.ArgumentList.Add("--ninja"); startInfo.ArgumentList.Add(ninjaBin);
+            }
+            // Forwarded by AppRun so the AppImage's bundled precompiled aurora/third-party package
+            // is used instead of local-build.sh compiling aurora-main itself.
+            if (!string.IsNullOrEmpty(nativePrebuiltDir))
+            {
+                startInfo.ArgumentList.Add("--native-prebuilt-dir"); startInfo.ArgumentList.Add(nativePrebuiltDir);
+            }
+            if (!string.IsNullOrEmpty(sysroot))
+            {
+                startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);
+            }
         }
 
         using var process = new Process { StartInfo = startInfo };
@@ -105,7 +122,7 @@ internal static class BuildRunner
 
         if (process.ExitCode != 0)
         {
-            throw new InvalidOperationException($"local-build.sh failed (exit {process.ExitCode}). See diagnostics above.");
+            throw new InvalidOperationException($"{Path.GetFileName(script)} failed (exit {process.ExitCode}). See diagnostics above.");
         }
     }
 
