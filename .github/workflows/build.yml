@@ -55,6 +55,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test macOS app dependency packaging
+        shell: bash
+        run: bash Launcher/macos/test-publish-app.command
+
       - name: Configure native runtime
         shell: bash
         run: |

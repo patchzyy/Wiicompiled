@@ -65,11 +65,32 @@ for asset in dsp_coef.bin initial_pipeline_cache.db cacert.pem wii_bootstrap; do
     ln -s "../Resources/$asset" "$macos/$asset"
 done
 
-# Resolve a non-system dependency from the build product's rpaths. This covers
-# both traditional Homebrew dylibs and the vendored dylibs CMake emits under
-# the local build directory for a cross-architecture build.
+# Expand each image's rpaths before inheriting them, so @loader_path stays
+# relative to the image that declared it rather than a descendant library.
+expanded_rpaths() {
+    local target=$1 rpath
+    while IFS= read -r rpath; do
+        case "$rpath" in
+            @loader_path/*) rpath="$(dirname "$target")/${rpath#@loader_path/}" ;;
+            @loader_path) rpath="$(dirname "$target")" ;;
+            @executable_path/*) rpath="$build_dir/${rpath#@executable_path/}" ;;
+            @executable_path) rpath="$build_dir" ;;
+        esac
+        printf '%s\n' "$rpath"
+    done < <(otool -l "$target" | awk '
+/LC_RPATH/ { rpath = 1; next }
+rpath && /^[[:space:]]*path / {
+    sub(/^[[:space:]]*path[[:space:]]+/, "");
+    sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)$/, "");
+    print;
+    rpath = 0;
+}')
+}
+
+# Resolve a non-system dependency using the current image's rpaths followed
+# by the inherited loader stack, matching dyld's dependency-chain search.
 dependency_path() {
-    local current=$1 dependency=$2 rpath candidate
+    local current=$1 dependency=$2 search_rpaths=$3 rpath candidate
     case "$dependency" in
         /System/Library/*|/usr/lib/*)
             return 1
@@ -92,27 +113,11 @@ dependency_path() {
             else
                 subpath="$dependency"
             fi
-            local targets=("$current")
-            [[ "$current" != "$build_dir/$product" ]] && targets+=("$build_dir/$product")
-            for target in "${targets[@]}"; do
-                while IFS= read -r rpath; do
-                    case "$rpath" in
-                        @loader_path/*) rpath="$(dirname "$target")/${rpath#@loader_path/}" ;;
-                        @loader_path) rpath="$(dirname "$target")" ;;
-                        @executable_path/*) rpath="$build_dir/${rpath#@executable_path/}" ;;
-                        @executable_path) rpath="$build_dir" ;;
-                    esac
-                    candidate="$rpath/$subpath"
-                    [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
-                done < <(otool -l "$target" | awk '
-/LC_RPATH/ { rpath = 1; next }
-rpath && /^[[:space:]]*path / {
-    sub(/^[[:space:]]*path[[:space:]]+/, "");
-    sub(/[[:space:]]+\(offset[[:space:]]+[0-9]+\)$/, "");
-    print;
-    rpath = 0;
-}')
-            done
+            while IFS= read -r rpath; do
+                [[ -n "$rpath" ]] || continue
+                candidate="$rpath/$subpath"
+                [[ -f "$candidate" ]] && { printf '%s\n' "$candidate"; return 0; }
+            done <<< "$search_rpaths"
             ;;
     esac
     return 1
@@ -121,9 +126,16 @@ rpath && /^[[:space:]]*path / {
 # Build a closure of non-system dylibs. System libraries remain system
 # references, while every resolved dependency is copied beside the executable.
 queue=("$build_dir/$product")
+queue_rpaths=("")
 while ((${#queue[@]})); do
     current=${queue[0]}
+    inherited_rpaths=${queue_rpaths[0]}
     queue=("${queue[@]:1}")
+    queue_rpaths=("${queue_rpaths[@]:1}")
+    current_rpaths=$(expanded_rpaths "$current")
+    if [[ -n "$inherited_rpaths" ]]; then
+        current_rpaths="${current_rpaths}${current_rpaths:+$'\n'}$inherited_rpaths"
+    fi
     self_id=$(otool -D "$current" 2>/dev/null | tail -n +2 | sed -nE 's/^[[:space:]]*(.*)[[:space:]]*$/\1/p' || true)
     while IFS= read -r dependency; do
         [[ -z "$dependency" ]] && continue
@@ -131,12 +143,13 @@ while ((${#queue[@]})); do
         case "$dependency" in
             /System/Library/*|/usr/lib/*) continue ;;
         esac
-        dep_path=$(dependency_path "$current" "$dependency") || fail "unresolved non-system dependency: '$dependency' needed by '$current'"
+        dep_path=$(dependency_path "$current" "$dependency" "$current_rpaths") || fail "unresolved non-system dependency: '$dependency' needed by '$current'"
         name=$(basename "$dep_path")
         if [[ ! -f "$frameworks/$name" ]]; then
             ditto "$dep_path" "$frameworks/$name"
             install_name_tool -id "@rpath/$name" "$frameworks/$name"
             queue+=("$dep_path")
+            queue_rpaths+=("$current_rpaths")
         fi
     done < <(otool -L "$current" | tail -n +2 | sed -nE 's/^[[:space:]]*(.*)[[:space:]]+\(compatibility version .*/\1/p')
 done
