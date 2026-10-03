@@ -184,4 +184,3 @@ public class EmittedOutputShapeTests
         Assert.DoesNotContain("loc_800E77A0:\n}", code.Replace("\r\n", "\n"), StringComparison.Ordinal);
     }
 }
-

@@ -116,7 +116,7 @@ int main() {
         Require(ReadBytes(path) == damaged, "Damaged file must remain untouched");
 
         const auto fresh = root / "fresh";
-        Require(Ensure(fresh, error, 1800000123), "Missing setting.txt must initialize");
+        Require(Ensure(fresh, error, 1800000123, BootDefaults{}), "Missing setting.txt must initialize");
         const auto generated = Read(fresh);
         Require(generated && HasIdentity(*generated), "Generated file must be readable");
         Require(generated->at("SERNO") == "800000123", "Persist Dolphin-generated serial");
@@ -127,8 +127,18 @@ int main() {
                 "Complete Dolphin boot settings");
         const auto firstBoot = ReadBytes(FilePath(fresh));
         Require(firstBoot.size() == 256 && firstBoot.back() == 0, "Dolphin buffer size and raw zero padding");
-        Require(Ensure(fresh, error, 1900000999), "Second boot");
+        Require(Ensure(fresh, error, 1900000999, BootDefaults{}), "Second boot");
         Require(ReadBytes(FilePath(fresh)) == firstBoot, "Second boot must not change any bytes");
+
+        const auto freshNtsc = root / "fresh-ntsc";
+        const BootDefaults ntscDefaults{"USA", "RVL-001(USA)", "LU", "NTSC", "US"};
+        Require(Ensure(freshNtsc, error, 1800000123, ntscDefaults), "Regional setting.txt must initialize");
+        const auto generatedNtsc = Read(freshNtsc);
+        Require(generatedNtsc && HasIdentity(*generatedNtsc), "Generated NTSC file must be readable");
+        Require(generatedNtsc->at("CODE") == "LU" && generatedNtsc->at("AREA") == "USA" &&
+                generatedNtsc->at("GAME") == "US", "NTSC first-boot fields");
+        Require(generatedNtsc->at("MODEL") == "RVL-001(USA)" && generatedNtsc->at("VIDEO") == "NTSC",
+                "Complete NTSC boot settings");
 
         const auto blocked = root / "blocked";
         { std::ofstream output(blocked); output << "file obstructing NAND directory"; }

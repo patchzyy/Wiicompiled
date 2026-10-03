@@ -95,13 +95,13 @@ internal static class Program
         if (installsRetro) retroDir = RetroRewindSource.ResolveRetroRewind6(retroDir!);
 
         var workspace = flags.GetValueOrDefault("workspace") ?? WorkspaceLocator.FindFrom(AppContext.BaseDirectory);
-        var manifest = ProjectManifest.Load(Path.Combine(workspace, "projects", "mkwii", "recomp.yml"));
         var assetsDir = Path.Combine(workspace, "Assets");
 
         reporter.Progress(InstallStages.Validate, "Checking prerequisites", 1);
+        ProjectManifest manifest;
         if (flags.TryGetValue("game", out var isoPath) && !string.IsNullOrEmpty(isoPath))
         {
-            await DiscTool.ValidateAndExtractAsync(isoPath, manifest, assetsDir, workspace,
+            manifest = await DiscTool.ValidateAndExtractAsync(isoPath, assetsDir, workspace,
                 flags.GetValueOrDefault("disc-tool-bin"), reporter, token);
         }
         else
@@ -114,6 +114,7 @@ internal static class Program
                     "No --game ISO was given and Assets/main.dol + Assets/StaticR.rel are not already present. " +
                     "Either pass --game <path-to-iso>, or extract them yourself first (see translator/README.md).");
             }
+            manifest = DiscTool.ResolveProjectManifestForAssets(assetsDir, workspace);
         }
 
         var state = JsonState.TryRead<InstallState>(StatePath) ?? new InstallState { Workspace = workspace };

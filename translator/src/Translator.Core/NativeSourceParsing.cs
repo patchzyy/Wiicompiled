@@ -23,9 +23,15 @@ internal static class NativeSourceParsing
             .Select(path => new NativeSourceFile(
                 path,
                 Path.GetRelativePath(root, path).Replace('\\', '/'),
-                StripCommentsAndLiterals(File.ReadAllText(path))))
+                ApplyGuestAddressTable(StripCommentsAndLiterals(File.ReadAllText(path)))))
             .ToArray();
     }
+
+    // The runtime names guest addresses by their PAL identity; the project's region table (the
+    // same header the compiler resolves them through) turns them into the addresses the built
+    // executable uses, so every regex below reads what the C++ will actually register.
+    private static string ApplyGuestAddressTable(string source) =>
+        GuestAddressTable.Current is { } table ? table.Rewrite(source) : source;
 
     public static IEnumerable<string> SplitArguments(string arguments)
     {

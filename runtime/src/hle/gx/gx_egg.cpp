@@ -22,8 +22,8 @@ static void EGG__DrawGX__SetVtxState_HLE(uint32_t state) {
     case 0:
         setFmt(GX_VA_POS, GX_POS_XYZ, GX_S16, 0xE);
         setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
-        setArray(GX_VA_POS, 0x802574a0u, 6);
-        setArray(GX_VA_NRM, 0x802574e0u, 6);
+        setArray(GX_VA_POS, MKW_GADDR(802574a0), 6);
+        setArray(GX_VA_NRM, MKW_GADDR(802574e0), 6);
         setDesc(GX_VA_POS, GX_INDEX8);
         setDesc(GX_VA_NRM, GX_INDEX8);
         break;
@@ -45,22 +45,22 @@ static void EGG__DrawGX__SetVtxState_HLE(uint32_t state) {
         if (state == 7) setDesc(GX_VA_TEX0, GX_DIRECT);
         setFmt(GX_VA_POS, GX_POS_XY, GX_S16, 0xE); setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
         if (state == 7) setFmt(GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        setArray(GX_VA_POS, 0x80257520u, 4); setArray(GX_VA_NRM, 0x80388b80u, 6);
+        setArray(GX_VA_POS, MKW_GADDR(80257520), 4); setArray(GX_VA_NRM, MKW_GADDR(80388b80), 6);
         break;
     case 9:
         setDesc(GX_VA_POS, GX_INDEX8); setDesc(GX_VA_NRM, GX_INDEX8); setDesc(GX_VA_TEX0, GX_DIRECT);
         setFmt(GX_VA_POS, GX_POS_XYZ, GX_S16, 0xE); setFmt(GX_VA_NRM, GX_NRM_XYZ, GX_S16, 0xE);
         setFmt(GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
-        setArray(GX_VA_POS, 0x80257540u, 6); setArray(GX_VA_NRM, 0x80388ba0u, 6);
+        setArray(GX_VA_POS, MKW_GADDR(80257540), 6); setArray(GX_VA_NRM, MKW_GADDR(80388ba0), 6);
         break;
     case 10: case 11: case 12: case 13: {
         const bool useAltPos = (state == 11 || state == 13);
         const bool useTex = (state == 10 || state == 11);
         setDesc(GX_VA_POS, GX_INDEX8);
         if (useTex) setDesc(GX_VA_TEX0, GX_INDEX8);
-        const uint32_t posBase = useAltPos ? 0x80388be0u : 0x80388bc0u;
+        const uint32_t posBase = useAltPos ? MKW_GADDR(80388be0) : MKW_GADDR(80388bc0);
         setArray(GX_VA_POS, posBase, 2);
-        if (useTex) setArray(GX_VA_TEX0, 0x80388be0u, 2);
+        if (useTex) setArray(GX_VA_TEX0, MKW_GADDR(80388be0), 2);
         setFmt(GX_VA_POS, GX_POS_XY, GX_U8, 0);
         if (useTex) setFmt(GX_VA_TEX0, GX_TEX_ST, GX_U8, 0);
         break;
@@ -86,9 +86,16 @@ extern "C" void EGG__LightTexture__SetupTevFinish_HLE_8022e2bc(CpuContext* ctx) 
                 ++remainder;
             }
 
+            // The three fog constants live in .sdata2 and are named by identity rather than by
+            // an r2 offset: NTSC-U puts them 8 bytes further from r2 than PAL/NTSC-J/NTSC-K do,
+            // so the hardcoded PAL offset used to read 176.0 there instead of 0.0 / 0.99.
+            constexpr uint32_t kFogOriginDefault = MKW_GADDR(80388DD0);
+            constexpr uint32_t kFogOriginMode2 = MKW_GADDR(80388DF4);
+            constexpr uint32_t kFogSpan = MKW_GADDR(80388DE0);
             const uint32_t mode = Memory::Read32(self + 0x44);
-            const float origin = Memory::ReadFloat32(ctx->gpr[2] + ((mode == 2) ? -25004 : -25040));
-            const float span = Memory::ReadFloat32(ctx->gpr[2] + -25024);
+            const float origin =
+                Memory::ReadFloat32((mode == 2) ? kFogOriginMode2 : kFogOriginDefault);
+            const float span = Memory::ReadFloat32(kFogSpan);
             const float end = static_cast<float>(origin + span);
             const float lower = static_cast<float>(origin - span);
 
@@ -115,8 +122,8 @@ PPC_NATIVE_OVERRIDE_VOID(8022e2bc, EGG__LightTexture__SetupTevFinish_HLE_8022e2b
 // ============================================================================
 
 extern "C" void EGG__AsyncDisplay__endRender_HLE_8020ff9c(CpuContext* ctx) {
-    uint32_t p = ctx->gpr[3]; ctx->gpr[3] = p; ctx->lr = 0x8020FF9C;
-    InvokeIndirectCpu(0x80219FB4u, ctx);
-    InvokeIndirectCpu(0x8016ED50u, ctx);
+    uint32_t p = ctx->gpr[3]; ctx->gpr[3] = p; ctx->lr = MKW_GADDR(8020FF9C);
+    InvokeIndirectCpu(MKW_GADDR(80219FB4), ctx);
+    InvokeIndirectCpu(MKW_GADDR(8016ED50), ctx);
 }
 PPC_NATIVE_OVERRIDE_VOID(8020FF9C, EGG__AsyncDisplay__endRender_HLE_8020ff9c, (CpuContext* ctx), (ctx));

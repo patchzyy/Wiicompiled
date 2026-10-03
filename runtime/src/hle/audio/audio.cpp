@@ -21,10 +21,10 @@ namespace {
 constexpr uint32_t kDefaultSampleRate = 32000u;
 constexpr uint32_t kAudioChannels = 2u;
 constexpr uint32_t kBytesPerSample = 2u;
-constexpr uint32_t kAIInitializedAddr = 0x80386448u;
-constexpr uint32_t kAICallbackBusyAddr = 0x8038644Cu;
-constexpr uint32_t kAICallbackStackSwitchAddr = 0x8038647Cu;
-constexpr uint32_t kAIDmaCallbackAddr = 0x80386480u;
+constexpr uint32_t kAIInitializedAddr = MKW_GADDR(80386448);
+constexpr uint32_t kAICallbackBusyAddr = MKW_GADDR(8038644C);
+constexpr uint32_t kAICallbackStackSwitchAddr = MKW_GADDR(8038647C);
+constexpr uint32_t kAIDmaCallbackAddr = MKW_GADDR(80386480);
 
 // Max completed 3 ms DMA blocks delivered per tick. Draining several at once catches up
 // backlog from a long frame without letting a large stall spiral into an unbounded loop.
@@ -191,7 +191,7 @@ extern "C" uint32_t AICheckInit_80124094()
     Memory::TryRead32(kAIInitializedAddr, initialized);
     return initialized;
 }
-REGISTER_NATIVE_FUNCTION(0x80124094, AICheckInit_80124094);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(80124094), AICheckInit_80124094);
 
 
 
@@ -207,13 +207,13 @@ extern "C" uint32_t DSPCheckInit_8015d504()
 {
     return AxDspHle::CheckInit();
 }
-REGISTER_NATIVE_FUNCTION(0x8015D504, DSPCheckInit_8015d504);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(8015D504), DSPCheckInit_8015d504);
 
 extern "C" uint32_t DSPAddTask_8015d50c(uint32_t task_ptr)
 {
     return AxDspHle::AddTask(task_ptr);
 }
-REGISTER_NATIVE_FUNCTION(0x8015D50C, DSPAddTask_8015d50c);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(8015D50C), DSPAddTask_8015d50c);
 
 extern "C" void __DSP_boot_task_8015dc60(uint32_t task_ptr)
 {
@@ -335,13 +335,13 @@ extern "C" uint32_t DSPCheckMailFromDSP_8015d40c()
 {
     return AxDspHle::CheckMailFromDSP();
 }
-REGISTER_NATIVE_FUNCTION(0x8015D40C, DSPCheckMailFromDSP_8015d40c);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(8015D40C), DSPCheckMailFromDSP_8015d40c);
 
 extern "C" uint32_t DSPReadMailFromDSP_8015d41c()
 {
     return AxDspHle::ReadMailFromDSP();
 }
-REGISTER_NATIVE_FUNCTION(0x8015D41C, DSPReadMailFromDSP_8015d41c);
+REGISTER_NATIVE_FUNCTION(MKW_GADDR(8015D41C), DSPReadMailFromDSP_8015d41c);
 
 extern "C" uint32_t DSPAssertTask_8015d57c(uint32_t taskPtr)
 {
