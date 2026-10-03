@@ -54,6 +54,9 @@ constexpr int kMaxSslSessions = 4;
 struct SslSession {
     bool active = false;
     bool handshaked = false;
+    // A failed POSIX TLS write cannot be resumed with a new guest buffer.
+    // Keep the slot and socket ownership intact until explicit teardown.
+    bool failed = false;
     bool plaintextWfc = false;
     uint32_t socketFd = UINT32_MAX;
     NativeSocket native = kInvalidSocket;
@@ -761,6 +764,14 @@ static int32_t SslHandshakeImpl(SslSession& ssl) {
     return SSL_OK;
 }
 
+static int32_t FailSslWrite(SslSession& ssl) {
+    ssl.failed = true;
+    // Stop transport I/O without deleting the guest descriptor or freeing a
+    // session still referenced by the IOCTLV_NET_SSL_WRITE caller.
+    ::shutdown(ssl.native, SHUT_RDWR);
+    return SSL_ERR_FAILED;
+}
+
 static int32_t SslWrite(SslSession& ssl, const uint8_t* data, uint32_t size) {
     if (!data || size == 0) {
         return SSL_ERR_ZERO;
@@ -795,12 +806,11 @@ static int32_t SslWrite(SslSession& ssl, const uint8_t* data, uint32_t size) {
         }
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
             if (std::chrono::steady_clock::now() >= writeDeadline) {
-                DeleteWiiSocket(ssl.socketFd);
-                return SSL_ERR_FAILED;
+                return FailSslWrite(ssl);
             }
             continue;
         }
-        return SSL_ERR_FAILED;
+        return FailSslWrite(ssl);
     }
     return static_cast<int32_t>(totalWritten);
 }
@@ -842,6 +852,9 @@ static int32_t SslRead(SslSession& ssl, uint8_t* out, uint32_t size) {
 // The handshake runs on every SSL read/write, so a failure repeats for as long
 // as the session lives; report only the first one.
 static int32_t SslHandshake(SslSession& ssl) {
+    if (ssl.failed) {
+        return SSL_ERR_FAILED;
+    }
     const int32_t result = SslHandshakeImpl(ssl);
     if (result != SSL_OK && !ssl.loggedHandshakeFail) {
         ssl.loggedHandshakeFail = true;
@@ -945,6 +958,11 @@ int32_t HandleSslIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const std
         const int sslId = ReadSslId(out);
         if (!IsSslIdValid(sslId)) {
             WriteSslReturn(in, SSL_ERR_ID);
+            return 0;
+        }
+        // Reject before NAS buffering can acknowledge data on a failed session.
+        if (g_sslSessions[sslId].failed) {
+            WriteSslReturn(in, SSL_ERR_FAILED);
             return 0;
         }
         if (out.size() < 2 || !out[1].address) {

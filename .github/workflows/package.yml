@@ -11,6 +11,11 @@ on:
     tags:
       - '*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -163,14 +168,17 @@ jobs:
 
       - name: Build Setup.pkg
         env:
+          PACKAGE_VERSION: ${{ inputs.version }}
           TAG_VERSION: ${{ github.ref_name }}
         shell: bash
         run: |
-          package_version=""
-          if [[ "${TAG_VERSION:-}" =~ ^v?[0-9] ]]; then
-            package_version="${TAG_VERSION#v}"
-          elif [[ -f "Launcher/Directory.Build.props" ]]; then
-            package_version=$(grep -m1 '<Version>' Launcher/Directory.Build.props | sed -E 's/.*<Version>([^<]+)<\/Version>.*/\1/')
+          package_version="$PACKAGE_VERSION"
+          if [[ -z "$package_version" ]]; then
+            if [[ "${TAG_VERSION:-}" =~ ^v?[0-9] ]]; then
+              package_version="${TAG_VERSION#v}"
+            elif [[ -f "Launcher/Directory.Build.props" ]]; then
+              package_version=$(grep -m1 '<Version>' Launcher/Directory.Build.props | sed -E 's/.*<Version>([^<]+)<\/Version>.*/\1/')
+            fi
           fi
           mkdir -p Launcher/dist
           Launcher/macos/build-setup-pkg.command \

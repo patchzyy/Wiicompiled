@@ -20,13 +20,14 @@ resulting pkg is unsigned unless
 Developer ID Installer certificate.
 
   --workspace DIR             Repository root (default: script's grandparent)
-  --version VERSION           Bundle/package version (default: 0.1.0)
+  --version VERSION           Bundle/package version (default: project version, or 0.1.0)
   --installer-identity NAME   Developer ID Installer identity for productbuild
 EOF
 }
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/../.." && pwd); nodtool_arm64=""; nodtool_x86_64=""; translator_arm64=""; translator_x86_64=""; cmake_root=""; ninja_arm64=""; ninja_x86_64=""; output=""; version=0.1.0; identity=""
+version_supplied=false
 while (($#)); do
     case "$1" in
         --workspace) workspace=${2:-}; shift 2 ;;
@@ -38,14 +39,14 @@ while (($#)); do
         --ninja-arm64) ninja_arm64=${2:-}; shift 2 ;;
         --ninja-x86_64) ninja_x86_64=${2:-}; shift 2 ;;
         --output) output=${2:-}; shift 2 ;;
-        --version) version=${2:-}; shift 2 ;;
+        --version) version=${2:-}; version_supplied=true; shift 2 ;;
         --installer-identity) identity=${2:-}; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
 done
 version=${version#v}
-if [[ -z "$version" || "$version" == "0.1.0" ]]; then
+if [[ "$version_supplied" == false ]]; then
     local_csproj="$workspace/Launcher/Directory.Build.props"
     if [[ -f "$local_csproj" ]]; then
         detected=$(grep -m1 '<Version>' "$local_csproj" | sed -E 's/.*<Version>([^<]+)<\/Version>.*/\1/' || true)

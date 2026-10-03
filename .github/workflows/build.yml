@@ -47,6 +47,29 @@ jobs:
       - name: Test
         run: dotnet test translator/Translator.sln -c Release --no-build --verbosity normal
 
+  platform_tests:
+    name: Host platform (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Configure without graphics dependencies or game assets
+        run: >-
+          cmake -S runtime -B build-platform -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DMKW_BUILD_PRODUCTS=OFF -DMKW_PLATFORM_TESTS_ONLY=ON
+
+      - name: Build and run host-platform tests
+        run: |
+          cmake --build build-platform --parallel 3
+          ctest --test-dir build-platform --output-on-failure
+
   macos_substrate:
     name: macOS arm64 (configure + substrate tests)
     runs-on: macos-14

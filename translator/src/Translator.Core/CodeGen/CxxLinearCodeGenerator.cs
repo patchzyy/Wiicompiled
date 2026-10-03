@@ -225,13 +225,37 @@ public sealed partial class CxxLinearCodeGenerator
 
         var labelNames = func.Blocks.ToDictionary(b => b.Label, b => SanitizeLabel(b.Label), StringComparer.OrdinalIgnoreCase);
         var instructionContinuationLabels = new Dictionary<uint, string>();
-        var continuationCallCount = func.Blocks
+        var continuationCallCount = func.Blocks.Sum(block =>
+        {
+            var term = block.Instructions.LastOrDefault();
+            var emittedInstructionCount = term is IrBranch or IrJump or IrReturn or IrJumpTable or IrUndefined
+                ? Math.Max(0, block.Instructions.Count - 1)
+                : block.Instructions.Count;
+            var suppressed = suppressedInstructionMasks.TryGetValue(block.Label, out var mask) ? mask : null;
+            return Enumerable.Range(0, emittedInstructionCount).Count(index =>
+            {
+                if ((suppressed is not null && index < suppressed.Length && suppressed[index]) ||
+                    block.Instructions[index] is not IrCall call ||
+                    !TryParseAddress(call.Target, out var target) ||
+                    TryGetInlineGuestThunkSpec(target, out _))
+                {
+                    return false;
+                }
+
+                return nonReturningCallTargets.Contains(target) ||
+                    (lrContinuationCallTargets.Contains(target) &&
+                     TryGetLocalFallthroughLr(block.Instructions, index, nonReturningCallTargets, lrContinuationCallTargets).HasValue);
+            });
+        });
+        // Labels remain available for every recognized continuation target.
+        // Sharing the terminal dispatcher is narrower: it only applies when
+        // more than one emitted call can actually jump there.
+        var needsInstructionContinuationLabels = func.Blocks
             .SelectMany(static block => block.Instructions)
             .OfType<IrCall>()
-            .Count(call =>
+            .Any(call =>
                 TryParseAddress(call.Target, out var target) &&
                 (nonReturningCallTargets.Contains(target) || lrContinuationCallTargets.Contains(target)));
-        var needsInstructionContinuationLabels = continuationCallCount > 0;
         var shareLrContinuationDispatch = continuationCallCount > 1;
         if (needsInstructionContinuationLabels)
         {
@@ -500,7 +524,7 @@ public sealed partial class CxxLinearCodeGenerator
                     // Every call site has already reloaded the callee's state.
                     // Keep the complete local target set, but emit it only once.
                     body.AppendLine("    return;");
-                    body.AppendLine("[[maybe_unused]] lr_continuation_dispatch:");
+                    body.AppendLine("lr_continuation_dispatch:");
                     EmitLocalLrContinuationDispatch(body, "    ", labelNames);
                     body.AppendLine("    if (TranslatedFunctionRegistry::FindByAddressPtr(ctx->lr) != nullptr) {");
                     body.AppendLine("        InvokeIndirectCpu(ctx->lr, ctx);");

@@ -45,6 +45,20 @@ jobs:
         shell: pwsh
         run: ./Launcher/Prepare-PortableTools.ps1
 
+      - name: Build and run Windows host-platform tests
+        shell: pwsh
+        run: |
+          $tools = Join-Path $PWD 'Launcher/artifacts/portable-tools'
+          $env:PATH = "$tools/llvm-mingw/bin;$tools/CMake/bin;$tools/Ninja;$env:PATH"
+          cmake -S runtime -B build-platform -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ `
+            -DMKW_BUILD_PRODUCTS=OFF -DMKW_PLATFORM_TESTS_ONLY=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-platform --parallel 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-platform --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Prepare pinned native dependencies
         shell: pwsh
         run: ./Launcher/Prepare-Dependencies.ps1
