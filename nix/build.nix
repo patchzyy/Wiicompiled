@@ -263,6 +263,7 @@
           -DFETCHCONTENT_SOURCE_DIR_TRACY=${deps.tracy} \
           -DFETCHCONTENT_SOURCE_DIR_SDL=$PWD/sdl-src \
           -DFETCHCONTENT_SOURCE_DIR_DAWN_PREBUILT=${deps.dawn-prebuilt} \
+          -DFETCHCONTENT_SOURCE_DIR_MKW_MBEDTLS_UPSTREAM=${deps.mkw-mbedtls-upstream} \
           -DMKW_TRANSLATED_COMPILE_JOBS=$((NIX_BUILD_CORES > 1 ? NIX_BUILD_CORES / 2 : 1))
         runHook postConfigure
       '';

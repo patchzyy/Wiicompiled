@@ -42,8 +42,8 @@ in {
   });
 
   xxhash = unpackTar "xxhash" (fetchurl {
-    url = "https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz";
-    hash = "sha256-quYI3+ghPf0F2QmldxjvgvMHIsOSNEWD0/OQUMfymoA=";
+    url = "https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz";
+    hash = "sha256-VzgnCTXnw9OKebOt98lpJWbOeJWiX2feQ61Sq1BKzTI=";
   });
 
   fmt = unpackTar "fmt" (fetchurl {
@@ -89,6 +89,11 @@ in {
   sdl = unpackTar "sdl" (fetchurl {
     url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.4/SDL3-3.4.4.tar.gz";
     hash = "sha256-7nEtvmqJuxQLv8LOcjWPte5cwiQKvqvVSFUBLbMLOGQ=";
+  });
+
+  mkw-mbedtls-upstream = unpackTar "mkw-mbedtls-upstream" (fetchurl {
+    url = "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2";
+    hash = "sha256-p+i8vsDm92G0ryTyVndiazX3YvaO73nAhnejYyEtEfY=";
   });
 
   # Prebuilt Dawn install tree (DawnConfig.cmake, DAWN_ENABLE_INSTALL=ON),
