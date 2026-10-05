@@ -20,9 +20,11 @@ readonly WORKSPACE="$WS_ROOT/workspace"
 readonly PACK_DIR="$WORKSPACE/PulsarPacks/completed/RetroRewind/RetroRewind6"
 readonly WFC_OFFLINE="$WORKSPACE/RetroWfc"
 readonly INSTALL_DIR="$WS_ROOT/Install/RetroRewind"
+readonly BUILD_LOCK_DIR="$WS_ROOT/.retro-rewind-build.lock"
 readonly RR_VERSION_URL="https://update.rwfc.net/RetroRewind/RetroRewindVersion.txt"
 readonly RR_INSTALL_URL_FILE="https://update.rwfc.net/RetroRewind/RetroRewindInstall.txt"
-readonly WFC_PAYLOAD_URL="http://nas.play.rwfc.net/payload?g=RMCPD00"
+readonly WFC_PAYLOAD_URL="https://rwfc.net/api/wfc/payload?g=RMCPD00"
+readonly WFC_PAYLOAD_MAX_BYTES=$((16 * 1024 * 1024))
 
 log() { printf 'retro-rewind: %s\n' "$*"; }
 die() { printf 'retro-rewind: error: %s\n' "$*" >&2; exit 1; }
@@ -45,6 +47,28 @@ latest_version() {
 latest_install_url() {
     curl -fsSL --max-time 5 "$RR_INSTALL_URL_FILE" | tr -d '[:space:]'
 }
+
+with_workspace_lock() (
+    local pid printed=0
+    mkdir -p "$WS_ROOT"
+    while ! mkdir "$BUILD_LOCK_DIR" 2>/dev/null; do
+        if [ -r "$BUILD_LOCK_DIR/pid" ]; then
+            pid=$(cat "$BUILD_LOCK_DIR/pid" 2>/dev/null || true)
+            if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+                rm -rf "$BUILD_LOCK_DIR"
+                continue
+            fi
+        fi
+        if [ "$printed" -eq 0 ]; then
+            log "Waiting for another Retro Rewind build in this workspace"
+            printed=1
+        fi
+        sleep 2
+    done
+    printf '%s\n' "$$" > "$BUILD_LOCK_DIR/pid"
+    trap 'rm -rf "$BUILD_LOCK_DIR"' EXIT
+    "$@"
+)
 
 ensure_workspace() {
     mkdir -p "$WS_ROOT"
@@ -142,8 +166,42 @@ install_rr() (
     chmod -R u+w "$WORKSPACE/PulsarPacks"
 )
 
+validate_retro_wfc_payload() (
+    local payload=$1 size declared_size tmp pubkey sig signed
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    pubkey="$tmp/retro-wfc-payload.pem"
+    sig="$tmp/payload.sig"
+    signed="$tmp/payload.signed"
+
+    size=$(wc -c < "$payload" | tr -d '[:space:]')
+    [ "$size" -le "$WFC_PAYLOAD_MAX_BYTES" ] || die "Retro-WFC payload is unexpectedly large"
+    [ "$size" -ge 304 ] || die "Retro-WFC payload has an invalid header"
+    head -c 12 "$payload" | cmp -s - <(printf 'WWFC/Payload') ||
+        die "Retro-WFC payload has an invalid header"
+    declared_size=$(od -An -N4 -j12 -tu4 --endian=big "$payload" | tr -d '[:space:]')
+    [ "$declared_size" = "$size" ] ||
+        die "Retro-WFC payload declares $declared_size bytes but contains $size"
+
+    cat > "$pubkey" <<'EOF'
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA5ubOQW81BCLL4mw2pn66
+YT3dzSfXmv0HfcxZPlMZ6qYIApNAADOHbT29/aEsFfRqyOT1tAxW57X2fpFkfWGM
+uZnAQVgbhtEDvXcj/OrAOtOtUTS/YRzUfcUnACWWgh6UHJRwk4/qByOKhHZzI+Sm
+EL2ZZGXlnQTa5P69kVyW/Ac55OgYMAgp148/InXh8/vSUH8b3nTySlKF5hAHuVml
+g7SCDXXsp2aAhm7+XXlZC4LDV3t5YVWJlTDjBblLTO70QoZEtxnfPYVAyViPW7At
+g9OTglXRoeBz00CBY/+TphWiEGoDkjo5eq1qKeu0MDHtBt4VdcjuK1Rnj6BZ4CX0
+VQIDAQAB
+-----END PUBLIC KEY-----
+EOF
+    dd if="$payload" of="$sig" bs=1 skip=16 count=256 status=none
+    dd if="$payload" of="$signed" bs=1 skip=272 status=none
+    openssl dgst -sha256 -verify "$pubkey" -signature "$sig" "$signed" >/dev/null ||
+        die "Retro-WFC payload is not signed by the pinned Retro-WFC signing key"
+)
+
 install_retro_wfc_payload() (
-    local pack_parent stage backup_payload
+    local pack_parent stage backup_payload payload http_code
     pack_parent="$WORKSPACE"
     mkdir -p "$pack_parent"
     stage=$(mktemp -d "$pack_parent/.retro-wfc.XXXXXX")
@@ -153,9 +211,16 @@ install_retro_wfc_payload() (
 
     log "Downloading Retro-WFC payload"
     mkdir -p "$stage/binary"
-    curl -fL --progress-bar --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
-        "$WFC_PAYLOAD_URL" -o "$stage/binary/payload.RMCPD00.bin"
-    [ -s "$stage/binary/payload.RMCPD00.bin" ] || die "Retro-WFC payload download was empty"
+    payload="$stage/binary/payload.RMCPD00.bin"
+    if ! http_code=$(curl -fS --progress-bar --proto '=https' --tlsv1.2 \
+        --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
+        --max-filesize "$WFC_PAYLOAD_MAX_BYTES" --write-out '%{http_code}' \
+        "$WFC_PAYLOAD_URL" -o "$payload"); then
+        die "failed to download Retro-WFC payload"
+    fi
+    [ "$http_code" = 200 ] || die "Retro-WFC payload endpoint returned HTTP $http_code"
+    [ -s "$payload" ] || die "Retro-WFC payload download was empty"
+    validate_retro_wfc_payload "$payload"
 
     if [ -e "$WFC_OFFLINE" ]; then
         mv "$WFC_OFFLINE" "$backup_payload"
@@ -255,6 +320,38 @@ maybe_hint_update() {
     fi
 }
 
+update_rr() {
+    local latest current
+    ensure_workspace
+    latest=$(latest_version) || die "cannot reach the Retro Rewind CDN"
+    current=$(installed_version)
+    if [ "$latest" != "$current" ]; then
+        install_rr
+    else
+        log "pack already latest ($current)"
+    fi
+    # Always rebuild: incremental (cmake config + no-op ninja when
+    # nothing changed), and it picks up toolchain/flake changes that a
+    # version match alone would hide.
+    build_rr
+    log "Retro Rewind $(installed_version) ready"
+}
+
+reinstall_rr() {
+    ensure_workspace
+    install_rr
+    build_rr
+    log "reinstalled Retro Rewind $(installed_version)"
+}
+
+install_initial_rr() {
+    log "no Retro Rewind install found; installing"
+    ensure_workspace
+    install_rr
+    build_rr
+    log "installed Retro Rewind $(installed_version)"
+}
+
 case "${1:-launch}" in
     check)
         latest=$(latest_version) || die "cannot reach the Retro Rewind CDN"
@@ -268,35 +365,16 @@ case "${1:-launch}" in
         fi
         ;;
     update)
-        ensure_workspace
-        latest=$(latest_version) || die "cannot reach the Retro Rewind CDN"
-        current=$(installed_version)
-        if [ "$latest" != "$current" ]; then
-            install_rr
-        else
-            log "pack already latest ($current)"
-        fi
-        # Always rebuild: incremental (cmake config + no-op ninja when
-        # nothing changed), and it picks up toolchain/flake changes that a
-        # version match alone would hide.
-        build_rr
-        log "Retro Rewind $(installed_version) ready"
+        with_workspace_lock update_rr
         launch_rr
         ;;
     reinstall)
-        ensure_workspace
-        install_rr
-        build_rr
-        log "reinstalled Retro Rewind $(installed_version)"
+        with_workspace_lock reinstall_rr
         launch_rr
         ;;
     launch)
         if [ -z "$(installed_version)" ] || [ ! -f "$INSTALL_DIR/RetroRewind" ]; then
-            log "no Retro Rewind install found; installing"
-            ensure_workspace
-            install_rr
-            build_rr
-            log "installed Retro Rewind $(installed_version)"
+            with_workspace_lock install_initial_rr
         fi
         maybe_hint_update
         launch_rr

@@ -18,6 +18,7 @@
   gnused,
   gawk,
   nix,
+  openssl,
   vulkan-loader,
   repoSrc,
   datatree,
@@ -55,5 +56,6 @@ in
       gnused
       gawk
       nix
+      openssl
     ]}
   ''
