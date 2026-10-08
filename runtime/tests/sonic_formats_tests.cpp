@@ -149,6 +149,13 @@ static void TestU8AndTpl() {
     const uint8_t* tile = again.At(5).data.data() + 0x40;
     CHECK(tile[2] == pixels[4 + 3] && tile[3] == pixels[4 + 0]);
     CHECK(tile[32 + 2] == pixels[4 + 1] && tile[32 + 3] == pixels[4 + 2]);
+
+    // RGB5A3: opaque white -> 0xFFFF, transparent -> alpha bits 0.
+    std::vector<uint8_t> two = {255, 255, 255, 255, 0, 0, 0, 0};
+    const Bytes small = TplMakeRgb5a3(two.data(), 2, 1);
+    CHECK(TplReadInfo(small.data(), small.size(), info) && info.format == 5 && info.width == 2);
+    CHECK(small.size() == 0x40 + 32);
+    CHECK(BeRead16(small.data() + 0x40) == 0xFFFF && BeRead16(small.data() + 0x42) == 0x0000);
 }
 
 static void TestTokens() {

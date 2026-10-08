@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdarg>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 
 namespace sonic {
@@ -40,20 +41,15 @@ std::string toUpper(std::string s) {
     return s;
 }
 
+// Paths are UTF-8 everywhere (u8path), so folders with non-ASCII names work on Windows too.
 bool readFile(const std::string& path, std::vector<u8>& out) {
-    FILE* f = fopen(path.c_str(), "rb");
+    std::ifstream f(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
     if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n < 0) {
-        fclose(f);
-        return false;
-    }
+    const std::streamoff n = f.tellg();
+    if (n < 0) return false;
+    f.seekg(0);
     out.resize(size_t(n));
-    bool ok = n == 0 || fread(out.data(), 1, size_t(n), f) == size_t(n);
-    fclose(f);
-    return ok;
+    return n == 0 || bool(f.read(reinterpret_cast<char*>(out.data()), n));
 }
 
 bool fileExists(const std::string& path) {

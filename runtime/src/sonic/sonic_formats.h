@@ -76,6 +76,8 @@ struct TplInfo {
 bool TplReadInfo(const uint8_t* data, size_t size, TplInfo& out);
 // One RGBA8 (GX_TF_RGBA8) image from tightly packed 8-bit RGBA pixels.
 Bytes TplMakeRgba8(const uint8_t* rgba, int width, int height, uint32_t wrapS = 0, uint32_t wrapT = 0);
+// One RGB5A3 (GX_TF_RGB5A3) image: half the size of RGBA8, 3-bit alpha on edges.
+Bytes TplMakeRgb5a3(const uint8_t* rgba, int width, int height, uint32_t wrapS = 0, uint32_t wrapT = 0);
 
 // ---- BMG ------------------------------------------------------------------------
 // Replaces the text of message `messageId` (looked up through MID1). Returns true

@@ -96,9 +96,9 @@ other model. When the model being drawn has one of the fingerprints, the wrapper
    in front of the head) or standing, which way it faces, how big it is and how far it
    leans (`sonic_place.cpp`);
 2. poses Sonic accordingly (`sonic_render.cpp`): the driving pose is built from two
-   SADX animations, the body of the "holding on" seat pose (`SONIC_ACTIONS` 89) with the
-   legs of the "sitting, legs forward" pose (108), mirrored so both hands are on the
-   wheel and both legs reach the pedals;
+   SADX animations, the "sitting, legs forward" pose (`SONIC_ACTIONS` 108) with the
+   arms of the "holding on" seat pose (89), and one side mirrored onto the other so
+   both hands are on the wheel and both legs reach the pedals;
 3. bakes lighting into vertex colours and draws Sonic with GX immediate mode in the
    opaque pass (textures go to aurora as linear RGBA, `GX_TF_RGBA8_PC`);
 4. restores the HLE vertex descriptor state, invalidates the texture binding cache for

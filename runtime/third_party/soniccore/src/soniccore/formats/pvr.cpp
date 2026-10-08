@@ -1,6 +1,7 @@
 #include "pvr.h"
 #include "prs.h"
 #include "../core/common.h"
+#include <filesystem>
 #include <fstream>
 
 namespace sonic {
@@ -272,7 +273,7 @@ bool PvmArchive::open(const std::string& path) {
 
 bool PvmArchive::readHeaderOnly(const std::string& path) {
     path_ = path;
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
     if (!f) return false;
     u8 hdr[8];
     if (!f.read((char*)hdr, 8)) return false;

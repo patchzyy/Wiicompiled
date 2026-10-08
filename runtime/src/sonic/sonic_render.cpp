@@ -23,14 +23,16 @@ struct PoseDef {
 };
 constexpr PoseDef kStandingPose = {1, 0.0f, 0.5f};  // SA_Stand idle loop
 constexpr PoseDef kPortraitPose = {1, 0.0f, 0.0f};
-// Driving is a mix of two SONIC_ACTIONS on the main skeleton: the body and legs
-// of "sitting, legs forward" (108, SonicAnimData 122) and the arms of a seated
-// "holding on" pose (89), which puts both hands forward at chest height.
+// Driving is a mix of two SONIC_ACTIONS on the main skeleton: the body, head and
+// legs of "sitting, legs forward" (108, SonicAnimData 122) and the arms of a
+// seated "holding on" pose (89), which puts the hands forward at chest height.
+// The right leg and right arm are then mirrored onto the left side so both feet
+// reach forward and both hands meet on the wheel.
 constexpr PoseDef kDrivingPose = {108, 0.0f, 0.0f};
 int g_armAction = 89;
 float g_armFrame = 0.0f;
 int g_headAction = -1;
-int g_mixMode = 2;  // 0: arms only, 1: all but legs, 2: all but legs and pelvis (from 108)
+int g_mixMode = 0;  // 0: arms only (default), 1: all but legs, 2: all but legs and pelvis
 // Roots of the arm subtrees of Sonic's main skeleton (73 nodes): left/right
 // shoulder. Node 11 is the neck (head subtree).
 constexpr int kMainSkeletonNodes = 73;
@@ -54,6 +56,15 @@ bool InSubtree(const sonic::NjSkeleton& sk, int node, int root) {
 }
 
 Vec3 V(const float* p) { return {p[0], p[1], p[2]}; }
+
+// Folder names are UTF-8 (like SonicCore's); never the Windows ANSI code page.
+std::filesystem::path Utf8Path(const std::string& text) {
+#if defined(__cpp_char8_t)
+    return std::filesystem::path(std::u8string(text.begin(), text.end()));
+#else
+    return std::filesystem::u8path(text);
+#endif
+}
 
 float Clamp01(float v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
 
@@ -125,7 +136,7 @@ bool SonicResources::Load(const std::string& configured, const std::vector<std::
     std::string errors;
     for (const auto& folder : candidates) {
         std::error_code ec;
-        if (folder.empty() || !std::filesystem::is_directory(std::filesystem::path(folder), ec)) continue;
+        if (folder.empty() || !std::filesystem::is_directory(render_detail::Utf8Path(folder), ec)) continue;
         sonic::Assets assets;
         if (!assets.load(folder)) {
             errors += folder + ": " + assets.error() + "\n";
@@ -257,18 +268,6 @@ bool SonicResources::PoseDrivingLocked(float frame, PosedSonic& out) {
         }
         if (mixHead && InSubtree(*sk, int(n), kHeadRoot)) body[n] = head[n];
     }
-    // Turn the pose so the thighs point along the model's forward axis (-X).
-    std::vector<Mat4> world;
-    sonic::composePose(*sk, body, Mat4(), world);
-    Vec3 thighs(0, 0, 0);
-    for (int i = 0; i < 2; ++i) thighs += world[size_t(kKnees[i])].translation() - world[size_t(kHips[i])].translation();
-    Mat4 root;
-    if (thighs.x * thighs.x + thighs.z * thighs.z > 1e-6f) {
-        // rotY(a) maps (x, z) to (x cos a + z sin a, -x sin a + z cos a); solve for -X.
-        const float current = std::atan2(-thighs.z, thighs.x);
-        const float wanted = std::atan2(0.0f, -1.0f);
-        root = Mat4::rotY(wanted - current);
-    }
     // Symmetry: copy one leg (and one arm) onto the other side, mirrored across
     // Sonic's sagittal plane (z -> -z: X and Y rotations and the Z offset flip).
     auto mirror = [&](int from, int to, int count) {
@@ -285,6 +284,18 @@ bool SonicResources::PoseDrivingLocked(float frame, PosedSonic& out) {
     if (g_armMirror == 1) mirror(kArmRoots[0], kArmRoots[1], kArmNodes);
     if (g_armMirror == 2) mirror(kArmRoots[1], kArmRoots[0], kArmNodes);
 
+    // Turn the pose so the thighs point along the model's forward axis (-X).
+    std::vector<Mat4> world;
+    sonic::composePose(*sk, body, Mat4(), world);
+    Vec3 thighs(0, 0, 0);
+    for (int i = 0; i < 2; ++i) thighs += world[size_t(kKnees[i])].translation() - world[size_t(kHips[i])].translation();
+    Mat4 root;
+    if (thighs.x * thighs.x + thighs.z * thighs.z > 1e-6f) {
+        // rotY(a) maps (x, z) to (x cos a + z sin a, -x sin a + z cos a); solve for -X.
+        const float current = std::atan2(-thighs.z, thighs.x);
+        const float wanted = std::atan2(0.0f, -1.0f);
+        root = Mat4::rotY(wanted - current);
+    }
     sonic::DrawList list;
     model_.drawLocals(list, skel, body, root);
     return FinishPose(list, out);

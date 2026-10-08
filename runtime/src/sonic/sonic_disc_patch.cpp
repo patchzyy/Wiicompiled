@@ -38,6 +38,9 @@ namespace sonic_mkw {
 namespace disc_detail {
 
 namespace fs = std::filesystem;
+namespace cfg_detail {
+inline fs::path Utf8(const std::string& text) { return RuntimeConfigFile::PathFromUtf8(text); }
+}  // namespace cfg_detail
 
 // Bump when the generated content changes so stale cache entries are rebuilt.
 constexpr const char* kPatchVersion = "sonic-mkw-1";
@@ -302,12 +305,16 @@ bool PatchUiArchive(const Bytes& file, const std::string& dvdPath, const Charact
         int width = 0, height = 0;
         if (icons && IsSlotIconTexture(node.name, slot, width, height)) {
             TplInfo info;
-            if (TplReadInfo(node.data.data(), node.data.size(), info)) {
+            if (TplReadInfo(node.data.data(), node.data.size(), info) && info.width <= 1024 && info.height <= 1024) {
                 width = info.width;
                 height = info.height;
             }
             if (const RgbaImage* image = iconCache.Get(width, height)) {
-                node.data = TplMakeRgba8(image->rgba.data(), image->width, image->height, info.wrapS, info.wrapT);
+                // Keep full RGBA8 only where the original was RGBA8: the menus load
+                // these archives into fixed heaps, so the files should not grow much.
+                node.data = info.format == 6
+                                ? TplMakeRgba8(image->rgba.data(), image->width, image->height, info.wrapS, info.wrapT)
+                                : TplMakeRgb5a3(image->rgba.data(), image->width, image->height, info.wrapS, info.wrapT);
                 changed = true;
                 log.push_back(dvdPath + ":" + archive.PathOf(index) + " -> Sonic icon " + std::to_string(width) +
                               "x" + std::to_string(height));
@@ -335,6 +342,25 @@ std::string SanitizedName(const std::string& dvdPath) {
     }
     while (!out.empty() && out.front() == '_') out.erase(out.begin());
     return out;
+}
+
+// Identity of the SADX files the icons are rendered from, so switching installs
+// (or texture mods) rebuilds the patched archives.
+std::string SonicAssetsStamp(const std::string& folder) {
+    std::ostringstream stamp;
+    stamp << folder;
+    for (const std::string& name : sonic::Assets::requiredFiles()) {
+        for (const char* sub : {"", "system"}) {
+            const std::string found = sonic::findFileNoCase(sub[0] ? sonic::joinPath(folder, sub) : folder, name);
+            if (found.empty()) continue;
+            std::error_code ec;
+            const fs::path path = cfg_detail::Utf8(found);
+            stamp << '|' << name << ':' << fs::file_size(path, ec) << ':'
+                  << fs::last_write_time(path, ec).time_since_epoch().count();
+            break;
+        }
+    }
+    return stamp.str();
 }
 
 std::vector<std::string> AssetFallbacks() {
@@ -453,7 +479,8 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
     size_t patched = 0;
     if (icons || names) {
         IconCache iconCache;
-        const std::string salt = std::string("ui:") + slot->icon + (icons ? ":i" : "") + (names ? ":n" : "");
+        const std::string salt = std::string("ui:") + slot->icon + (icons ? ":i" : "") + (names ? ":n" : "") +
+                                 (icons ? ":" + SonicAssetsStamp(resources.Folder()) : std::string());
         for (const DiscFile& file : files) {
             if (!IsUiArchive(file.dvdPath)) continue;
             const uint64_t key = FileKey(file.hostPath, salt);

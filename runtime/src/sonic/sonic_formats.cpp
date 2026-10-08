@@ -209,7 +209,7 @@ bool U8Archive::Parse(const uint8_t* data, size_t size) {
     nodes_.clear();
     if (size < 0x20 || BeRead32(data) != 0x55AA382Du) return false;
     const uint32_t rootOffset = BeRead32(data + 4);
-    if (rootOffset + 12 > size) return false;
+    if (uint64_t(rootOffset) + 12 > size) return false;
     const uint8_t* root = data + rootOffset;
     const uint32_t count = BeRead32(root + 8);
     if (count == 0 || rootOffset + uint64_t(count) * 12 > size) return false;
@@ -310,9 +310,9 @@ Bytes U8Archive::Build() const {
 bool TplReadInfo(const uint8_t* data, size_t size, TplInfo& out) {
     if (size < 0x14 || BeRead32(data) != 0x0020AF30u || BeRead32(data + 4) == 0) return false;
     const uint32_t table = BeRead32(data + 8);
-    if (table + 8 > size) return false;
+    if (uint64_t(table) + 8 > size) return false;
     const uint32_t header = BeRead32(data + table);
-    if (header + 0x24 > size) return false;
+    if (uint64_t(header) + 0x24 > size) return false;
     const uint8_t* h = data + header;
     out.height = BeRead16(h);
     out.width = BeRead16(h + 2);
@@ -359,6 +359,37 @@ Bytes TplMakeRgba8(const uint8_t* rgba, int width, int height, uint32_t wrapS, u
                 dst[32 + i * 2 + 1] = px[2];
             }
             dst += 64;
+        }
+    }
+    return out;
+}
+
+Bytes TplMakeRgb5a3(const uint8_t* rgba, int width, int height, uint32_t wrapS, uint32_t wrapT) {
+    constexpr uint32_t kDataOffset = 0x40;
+    const int blocksX = (width + 3) / 4;
+    const int blocksY = (height + 3) / 4;
+    // Same container as TplMakeRgba8, then the header's format and the data swapped.
+    std::vector<uint8_t> blank(size_t(width) * height * 4, 0);
+    Bytes out = TplMakeRgba8(blank.data(), width, height, wrapS, wrapT);
+    out.resize(kDataOffset + size_t(blocksX) * blocksY * 32);
+    BeWrite32(out.data() + 0x14 + 4, 5);  // GX_TF_RGB5A3
+    uint8_t* dst = out.data() + kDataOffset;
+    for (int by = 0; by < blocksY; ++by) {
+        for (int bx = 0; bx < blocksX; ++bx) {
+            for (int i = 0; i < 16; ++i) {
+                const int x = bx * 4 + (i & 3);
+                const int y = by * 4 + (i >> 2);
+                uint8_t px[4] = {0, 0, 0, 0};
+                if (x < width && y < height) std::memcpy(px, rgba + (size_t(y) * width + x) * 4, 4);
+                uint16_t v;
+                if (px[3] >= 0xF0) {  // opaque: 1 RRRRR GGGGG BBBBB
+                    v = uint16_t(0x8000 | ((px[0] >> 3) << 10) | ((px[1] >> 3) << 5) | (px[2] >> 3));
+                } else {              // 0 AAA RRRR GGGG BBBB
+                    v = uint16_t(((px[3] >> 5) << 12) | ((px[0] >> 4) << 8) | ((px[1] >> 4) << 4) | (px[2] >> 4));
+                }
+                BeWrite16(dst + i * 2, v);
+            }
+            dst += 32;
         }
     }
     return out;
@@ -600,7 +631,7 @@ bool Mdl0Summarize(const uint8_t* mdl, size_t avail, Mdl0Summary& out) {
     // Info block: the first word is its own size (0x40) and the second points back
     // to the MDL0, which locates it whatever the number of section offsets.
     for (size_t pos = 0x28; pos <= 0x70; pos += 4) {
-        if (s.U32(pos) == 0x40 && s.S32(pos + 4) == -int32_t(pos)) {
+        if (s.Has(pos, 0x40) && s.U32(pos) == 0x40 && s.S32(pos + 4) == -int32_t(pos)) {
             out.vertexCount = s.U32(pos + 0x10);
             out.boxValid = true;
             for (int i = 0; i < 3; ++i) {

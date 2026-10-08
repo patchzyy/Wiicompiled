@@ -54,6 +54,7 @@ struct ModelEntry {
     bool isSonic = false;
     Mdl0Summary summary;
     DriverState state;
+    bool drawnThisFrame = true;  // last opaque pass drew Sonic
 };
 
 std::unordered_map<uint32_t, ModelEntry> g_models;
@@ -264,13 +265,14 @@ void SetBatchState(const MeshBatch& batch) {
     }
 }
 
-void EmitBatch(const MeshBatch& batch, const Mat4& toView) {
+void EmitBatch(const MeshBatch& batch, const Mat4& toView, bool& drawOpen) {
     constexpr size_t kMaxVerts = 3 * 20000;
     size_t done = 0;
     const size_t total = batch.tris.size() - batch.tris.size() % 3;
     while (done < total) {
         const size_t count = std::min(kMaxVerts, total - done);
         GXBegin(GX_TRIANGLES, GX_VTXFMT7, u16(count));
+        drawOpen = true;
         for (size_t i = done; i < done + count; ++i) {
             const MeshVertex& v = batch.tris[i];
             const Vec3 p = toView.transformPoint(Vec3(v.pos[0], v.pos[1], v.pos[2]));
@@ -286,6 +288,7 @@ void EmitBatch(const MeshBatch& batch, const Mat4& toView) {
             }
         }
         GXEnd();
+        drawOpen = false;
         done += count;
     }
 }
@@ -299,25 +302,36 @@ void DrawPosed(const PosedSonic& posed, const Mat4& toView) {
         savedFmt[i] = g_hleGxState.vtxAttrFmt[GX_VTXFMT7][i];
     }
 
-    EnsureAuroraFrameActive();
-    GXMarkFrameWork();
-    for (uint32_t i = 0; i < kAttrCount; ++i) g_hleGxState.vtxDesc[i] = GX_NONE;
-    g_hleGxState.InvalidateVtxLayoutHash();
-    GXClearVtxDesc();
-    GX__SetVtxDesc_8016d3a4(GX_VA_POS, GX_DIRECT);
-    GX__SetVtxDesc_8016d3a4(GX_VA_CLR0, GX_DIRECT);
-    GX__SetVtxDesc_8016d3a4(GX_VA_TEX0, GX_DIRECT);
-    GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
-    GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
-    GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
+    // Like GX__DrawSphere: whatever happens while drawing, close an open GXBegin
+    // and restore the vertex state below.
+    bool drawOpen = false;
+    try {
+        EnsureAuroraFrameActive();
+        GXMarkFrameWork();
+        for (uint32_t i = 0; i < kAttrCount; ++i) g_hleGxState.vtxDesc[i] = GX_NONE;
+        g_hleGxState.InvalidateVtxLayoutHash();
+        GXClearVtxDesc();
+        GX__SetVtxDesc_8016d3a4(GX_VA_POS, GX_DIRECT);
+        GX__SetVtxDesc_8016d3a4(GX_VA_CLR0, GX_DIRECT);
+        GX__SetVtxDesc_8016d3a4(GX_VA_TEX0, GX_DIRECT);
+        GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+        GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+        GX__SetVtxAttrFmt_8016dc68(GX_VTXFMT7, GX_VA_TEX0, GX_TEX_ST, GX_F32, 0);
 
-    SetCommonState();
-    for (int pass = 0; pass < 2; ++pass) {
-        for (const MeshBatch& batch : posed.batches) {
-            if (batch.blend != (pass == 1) || batch.tris.empty()) continue;
-            SetBatchState(batch);
-            EmitBatch(batch, toView);
+        SetCommonState();
+        for (int pass = 0; pass < 2; ++pass) {
+            for (const MeshBatch& batch : posed.batches) {
+                if (batch.blend != (pass == 1) || batch.tris.empty()) continue;
+                SetBatchState(batch);
+                EmitBatch(batch, toView, drawOpen);
+            }
         }
+    } catch (const std::exception& error) {
+        if (drawOpen) GXEnd();
+        static int reports = 0;
+        if (reports++ < 8) RT_LOGF(RT_TAG_SONIC, "draw failed: %s\n", error.what());
+    } catch (...) {
+        if (drawOpen) GXEnd();
     }
 
     for (uint32_t i = 0; i < kAttrCount; ++i) g_hleGxState.vtxDesc[i] = GX_NONE;
@@ -354,18 +368,17 @@ bool TryDrawSonic(CpuContext* ctx) {
     const uint32_t viewPos = ctx->gpr[4];
     const uint32_t opa = ctx->gpr[7];
     if (!viewPos) return false;
-    if (!opa) return true;  // Sonic is drawn whole in the opaque pass
+    // Sonic is drawn whole in the opaque pass; the translucent pass is skipped
+    // unless that failed and the original driver was drawn instead.
+    if (!opa) return model->drawnThisFrame;
+    model->drawnThisFrame = false;
     const Placement placement = Place(*model, viewPos);
     if (!placement.ok) return false;
     const PosedSonic* posed = SonicPose_(placement.pose);
     if (!posed) return false;
-    try {
-        DrawPosed(*posed, placement.sonicToView);
-    } catch (const std::exception& error) {
-        static int reports = 0;
-        if (reports++ < 8) RT_LOGF(RT_TAG_SONIC, "draw failed: %s\n", error.what());
-    }
+    DrawPosed(*posed, placement.sonicToView);
     InvalidateG3DState(ctx);
+    model->drawnThisFrame = true;
     return true;
 }
 
