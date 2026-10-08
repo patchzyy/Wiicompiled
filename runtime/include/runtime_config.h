@@ -95,6 +95,16 @@ struct RuntimeUserConfig {
     std::optional<bool> rumbleEnabled;
     std::optional<int32_t> muteHotkey;
     std::map<std::string, std::string> controllerExpressions;
+    // [sonic]: Sonic as a playable driver, built at runtime from the player's own
+    // Sonic Adventure DX files (docs/SONIC.md).
+    std::optional<bool> sonicEnabled;
+    std::optional<std::string> sonicReplaces;
+    std::optional<std::string> sonicAssets;
+    std::optional<bool> sonicModel;
+    std::optional<bool> sonicIcons;
+    std::optional<bool> sonicName;
+    std::optional<float> sonicScale;
+    std::optional<bool> sonicDebug;
 };
 
 namespace RuntimeConfigFile {
@@ -340,7 +350,21 @@ inline void EnsureConfigFile() {
               "# dvd_root = \"D:\\\\MarioKartWii\\\\DATA\"\n"
               "# nand_root = \"D:\\\\WiiNand\"\n"
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
-              "# overlay_roots = [\"D:\\\\RetroRewind\"]\n";
+              "# overlay_roots = [\"D:\\\\RetroRewind\"]\n\n"
+              "[sonic]\n"
+              "# Sonic from Sonic Adventure DX as a playable driver. He takes the\n"
+              "# roster slot named by `replaces` (model, icons and name). Nothing is\n"
+              "# shipped: everything is built from your own SADX files, so point\n"
+              "# `assets` at your Sonic Adventure DX folder (the one with the system\n"
+              "# folder) or at a SonicCore SonicAssets folder. See docs/SONIC.md.\n"
+              "enabled = true\n"
+              "replaces = \"luigi\"\n"
+              "# assets = \"D:\\\\SADX\\\\SADX\"\n"
+              "model = true\n"
+              "icons = true\n"
+              "name = true\n"
+              "scale = 1.0\n"
+              "debug = false\n";
 }
 
 template <typename T>
@@ -494,6 +518,15 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
     config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
+
+    config.sonicEnabled = FindConfigValue<bool>(document, "sonic", "enabled");
+    config.sonicReplaces = FindConfigValue<std::string>(document, "sonic", "replaces");
+    config.sonicAssets = FindConfigValue<std::string>(document, "sonic", "assets");
+    config.sonicModel = FindConfigValue<bool>(document, "sonic", "model");
+    config.sonicIcons = FindConfigValue<bool>(document, "sonic", "icons");
+    config.sonicName = FindConfigValue<bool>(document, "sonic", "name");
+    config.sonicScale = FindConfigFloat(document, "sonic", "scale");
+    config.sonicDebug = FindConfigValue<bool>(document, "sonic", "debug");
 
     config.nandRoot = FindConfigValue<std::string>(document, "paths", "nand_root");
     config.dvdRoot = FindConfigValue<std::string>(document, "paths", "dvd_root");
@@ -1005,6 +1038,22 @@ inline bool DiscordPresenceEnabled(bool fallback = true) {
 inline std::string DiscordClientId(std::string fallback = "1543984562369990706") {
     return Get().discordClientId.value_or(std::move(fallback));
 }
+
+inline bool SonicEnabled(bool fallback = true) { return Get().sonicEnabled.value_or(fallback); }
+inline std::string SonicReplaces(std::string fallback = "luigi") {
+    return Get().sonicReplaces.value_or(std::move(fallback));
+}
+inline std::string SonicAssets(std::string fallback = "") {
+    return Get().sonicAssets.value_or(std::move(fallback));
+}
+inline bool SonicModel(bool fallback = true) { return Get().sonicModel.value_or(fallback); }
+inline bool SonicIcons(bool fallback = true) { return Get().sonicIcons.value_or(fallback); }
+inline bool SonicName(bool fallback = true) { return Get().sonicName.value_or(fallback); }
+inline float SonicScale(float fallback = 1.0f) {
+    const float value = Get().sonicScale.value_or(fallback);
+    return (value > 0.05f && value < 20.0f) ? value : fallback;
+}
+inline bool SonicDebug(bool fallback = false) { return Get().sonicDebug.value_or(fallback); }
 
 inline const std::vector<std::string>& OverlayRoots() {
     return Get().overlayRoots;

@@ -94,6 +94,14 @@ vendored in `runtime/third_party/toml11`.
 Source: <https://github.com/ToruNiina/toml11/tree/v4.4.0>. Full license text:
 `runtime/third_party/toml11/LICENSE`.
 
+### SonicCore - MIT
+
+Copyright (c) 2026 OpenSADX / SonicCore contributors.
+Sonic Adventure DX's Sonic (model loading, animation, limb welds) as a reusable C++ module,
+vendored in `runtime/third_party/soniccore` and used by `runtime/src/sonic` (docs/SONIC.md).
+It contains no game data: it reads the player's own Sonic Adventure DX files at runtime.
+Full license text: `runtime/third_party/soniccore/LICENSE`.
+
 ### YamlDotNet - MIT
 
 Copyright (c) Antoine Aubry and contributors.

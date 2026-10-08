@@ -85,6 +85,18 @@ target_include_directories(mkw_pugixml PUBLIC third_party/pugixml)
 target_compile_features(mkw_pugixml PUBLIC cxx_std_17)
 set_target_properties(mkw_pugixml PROPERTIES UNITY_BUILD OFF)
 
+# SonicCore (MIT): Sonic Adventure DX's Sonic as a reusable module. It contains
+# no game data; it reads the player's own SADX files at runtime and is used by
+# runtime/src/sonic to put Sonic in the game as a playable driver (docs/SONIC.md).
+file(GLOB_RECURSE MKW_SONICCORE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_LIST_DIR}/third_party/soniccore/src/soniccore/*.cpp")
+add_library(mkw_soniccore STATIC ${MKW_SONICCORE_SOURCES})
+add_library(mkw::soniccore ALIAS mkw_soniccore)
+target_include_directories(mkw_soniccore PUBLIC third_party/soniccore/src)
+target_compile_features(mkw_soniccore PUBLIC cxx_std_17)
+set_target_properties(mkw_soniccore PROPERTIES UNITY_BUILD OFF)
+target_compile_options(mkw_soniccore PRIVATE -O2 -w)
+
 # POSIX x86-64 guest-fiber scheduling (runtime/src/host_context.cpp) needs a symmetric
 # stackful-coroutine primitive to stand in for Win32 Fibers. libco's co_switch() transfers
 # directly to any other created coroutine, matching SwitchToFiber's semantics exactly (unlike
@@ -401,6 +413,16 @@ target_include_directories(mkw_sc_serial_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR
 target_compile_features(mkw_sc_serial_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_sc_serial_tests COMMAND mkw_sc_serial_tests)
 
+# The Sonic integration's file format code (Yaz0, U8, TPL, BMG, BRRES) is plain
+# host code, tested here on synthetic data.
+add_executable(mkw_sonic_formats_tests
+    "${CMAKE_CURRENT_LIST_DIR}/tests/sonic_formats_tests.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/src/sonic/sonic_formats.cpp")
+target_include_directories(mkw_sonic_formats_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/src")
+target_compile_features(mkw_sonic_formats_tests PRIVATE cxx_std_17)
+set_target_properties(mkw_sonic_formats_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_sonic_formats_tests COMMAND mkw_sonic_formats_tests)
+
 # The input expression engine is self-contained, so it can be exercised without
 # linking the runtime or SDL.
 add_executable(mkw_input_expr_tests
@@ -515,7 +537,7 @@ else()
         target_compile_definitions(mkw_macos_native_compile PRIVATE SDL_MAIN_HANDLED TARGET_PC)
         target_link_libraries(mkw_macos_native_compile PRIVATE
             aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
-            mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
+            mkw::pugixml mkw::soniccore mkw::toml11 mkw::cryptopp mkw::mbedtls)
         if(MKW_PLATFORM_MACOS_X86_64)
             target_link_libraries(mkw_macos_native_compile PRIVATE mkw::libco)
             # Keep this compile-only audit on the same Haswell-era x86-64-v3

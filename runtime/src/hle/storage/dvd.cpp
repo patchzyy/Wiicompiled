@@ -14,6 +14,7 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#include "sonic/sonic_mkw.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -624,6 +625,13 @@ static void BuildAndPublishRuntimeFst() {
             mapped->second >= static_cast<int32_t>(g_fileEntries.size())) {
             continue;
         }
+        // A replacement larger than the disc file it replaces cannot keep the
+        // physical extent: reads past the original end would resolve into the
+        // next file's range. It gets a synthetic range below instead, like a
+        // created file.
+        if (g_fileEntries[mapped->second].size > fstFile.size) {
+            continue;
+        }
         g_fileEntries[mapped->second].discOffsetWords = fstFile.start / 4u;
     }
 
@@ -834,6 +842,28 @@ extern "C" void DVDInit_8015EA1C()
     RT_LOG(RT_TAG_DVD) << "disc index: " << vanillaEntryCount << " disc file(s), "
               << (g_fileEntries.size() - vanillaEntryCount) << " overlay registration(s) from "
               << overlays.size() << " root(s)" << std::endl;
+
+    // Sonic as a playable driver (docs/SONIC.md): patched UI archives replace the
+    // registered files exactly like overlay files, and the replaced driver's
+    // models are fingerprinted for the draw hook. Never fatal: on any problem the
+    // game simply keeps its own files.
+    try {
+        std::vector<sonic_mkw::DiscFile> sonicFiles;
+        sonicFiles.reserve(g_pathToEntry.size());
+        for (const auto& [lookupPath, entryIndex] : g_pathToEntry) {
+            (void)lookupPath;
+            if (entryIndex < 0 || entryIndex >= static_cast<int32_t>(g_fileEntries.size())) continue;
+            const DVDFileEntry& entry = g_fileEntries[entryIndex];
+            if (!entry.isDirectory) sonicFiles.push_back({entry.dvdPath, entry.hostPath});
+        }
+        sonic_mkw::PatchDisc(sonicFiles, [](const std::string& dvdPath, const fs::path& hostPath, uint32_t size) {
+            RegisterFileEntry(dvdPath, hostPath, size);
+        });
+    } catch (const std::exception& error) {
+        RT_LOG(RT_TAG_DVD) << "Sonic disc patch failed: " << error.what() << std::endl;
+    } catch (...) {
+        RT_LOG(RT_TAG_DVD) << "Sonic disc patch failed" << std::endl;
+    }
 
     // Load FST mapping so real files keep their physical disc extents.
     LoadFstIndex();

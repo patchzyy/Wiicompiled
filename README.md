@@ -143,6 +143,12 @@ reporting—remain visible.
 > [Releases](https://github.com/patchzyy/Wiicompiled/releases) page. If someone's sharing an
 > installer through Discord or some random download site, don't touch it!!
 
+**Sonic as a playable driver.**
+Point `[sonic] assets` in `Config.toml` at your Sonic Adventure DX install and Sonic takes
+over a roster slot (Luigi by default): his DX model drives the kart, and the roster icons
+and name are his. Everything is generated on your machine from your own SADX files,
+nothing is shipped. See [docs/SONIC.md](docs/SONIC.md).
+
 ## A note on related projects
 
 WiiCompiled, Wheel Wizard, Retro rewind and other related projects are developed
