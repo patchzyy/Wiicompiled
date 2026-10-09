@@ -51,7 +51,10 @@ foreach ($relative in $sourceFiles | Sort-Object -Unique) {
 [uint32]$entry = 0x80001000L
 [uint32[]]$guestCallbacks = @(
     0x80069000L, 0x8012B830L, 0x801A0620L, 0x801A1ED8L, 0x801A961CL,
-    0x801AADE0L, 0x801D8D30L, 0x801D9E94L, 0x8055531CL
+    0x801AADE0L, 0x801D8D30L, 0x801D9E94L, 0x8055531CL, 0x8058160CL,
+    0x8058FFE8L, 0x80627008L, 0x807A14D4L, 0x807E25A8L, 0x807E2928L,
+    0x807E35FCL, 0x807E36F4L, 0x807E37D4L, 0x807E3880L, 0x807E39CCL,
+    0x807E3E10L, 0x80833774L, 0x80860ACCL
 )
 $textSize = [int]($guestCallbacks[-1] - $entry + 4)
 $dataOffset = 0x100 + $textSize
@@ -66,9 +69,9 @@ Write-BigEndian32 0x00 0x100       # text[0] file offset
 Write-BigEndian32 0x48 $entry      # text[0] guest address
 Write-BigEndian32 0x90 $textSize   # text[0] length (unreachable gaps are zero)
 Write-BigEndian32 0x1C $dataOffset # data[0] file offset
-Write-BigEndian32 0x64 0x80600000L # data[0] guest address
+Write-BigEndian32 0x64 0x80900000L # data[0] guest address (above the last callback)
 Write-BigEndian32 0xAC 4           # data[0] length
-Write-BigEndian32 0xD8 0x80601000L # BSS address
+Write-BigEndian32 0xD8 0x80901000L # BSS address
 Write-BigEndian32 0xDC 32          # BSS length
 Write-BigEndian32 0xE0 $entry      # entry point
 Write-BigEndian32 0x100 0x38600028 # li r3,40
@@ -93,8 +96,8 @@ project:
 memory:
   base: 0x80000000
   size: 0x01800000
-  sda_base: 0x80600000
-  sda2_base: 0x80600000
+  sda_base: 0x80900000
+  sda2_base: 0x80900000
 inputs:
   dol:
     path: synthetic.dol

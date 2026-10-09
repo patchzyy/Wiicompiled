@@ -14,6 +14,7 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "runtime_product.h"
+#include "sonic/sonic_course.h"
 #include "sonic/sonic_mkw.h"
 
 #include <cstdint>
@@ -940,6 +941,7 @@ extern "C" int32_t DVDReadPrio_8015E834(uint32_t fileInfoPtr, uint32_t bufferPtr
     }
 
     CopyToGuestAsDma(bufferPtr, tempBuf.data(), uLength);
+    if (uOffset == 0) sonic_mkw::NotifyDvdFileRead(entry.dvdPath, entry.hostPath);
 
     Memory::Write32(fileInfoPtr + DVD_CB_OFFSET_TRANSFERRED, uLength);
     Memory::Write32(fileInfoPtr + DVD_CB_OFFSET_STATE, DVD_STATE_END);
@@ -1012,6 +1014,9 @@ extern "C" int32_t DVD__ReadAbsAsyncPrio_HLE_801628cc(uint32_t cmdBlockPtr,
             } else {
                 CopyToGuestAsDma(bufferPtr, tempBuf.data(), tempBuf.size());
                 bytesRead = static_cast<int32_t>(tempBuf.size());
+                if (readInfo.fileOffset == 0) {
+                    sonic_mkw::NotifyDvdFileRead(readInfo.entry->dvdPath, readInfo.entry->hostPath);
+                }
             }
         }
 
@@ -1128,6 +1133,7 @@ extern "C" int32_t DVDLowRead_80166330(uint32_t buffer, uint32_t length, uint32_
     }
 
     CopyToGuestAsDma(buffer, tempBuf.data(), tempBuf.size());
+    if (readInfo.fileOffset == 0) sonic_mkw::NotifyDvdFileRead(readInfo.entry->dvdPath, readInfo.entry->hostPath);
     return finish(true);
 }
 PPC_NATIVE_OVERRIDE(80166330, DVDLowRead_80166330, int32_t, (uint32_t b, uint32_t l, uint32_t o, uint32_t c), (b, l, o, c));

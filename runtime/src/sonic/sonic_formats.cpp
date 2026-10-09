@@ -536,6 +536,53 @@ bool BmgReplaceMessage(Bytes& bmg, uint32_t messageId, const std::u16string& tex
     return true;
 }
 
+bool BmgSetMessage(Bytes& bmg, uint32_t messageId, const std::u16string& text, uint32_t attributesFrom) {
+    uint8_t encoding = 0;
+    std::vector<BmgSection> sections;
+    if (!ParseBmg(bmg, encoding, sections)) return false;
+    if (FindMessageIndex(sections, messageId) >= 0) return BmgReplaceMessage(bmg, messageId, text);
+    BmgSection* inf = nullptr;
+    BmgSection* mid = nullptr;
+    for (auto& s : sections) {
+        if (s.magic == Magic("INF1")) inf = &s;
+        if (s.magic == Magic("MID1")) mid = &s;
+    }
+    if (!inf || !mid || inf->body.size() < 8 || mid->body.size() < 8) return false;
+    const uint32_t count = BeRead16(inf->body.data());
+    const uint32_t entrySize = BeRead16(inf->body.data() + 2);
+    if (count != BeRead16(mid->body.data()) || entrySize < 4 || 8 + size_t(count) * entrySize > inf->body.size() ||
+        8 + size_t(count) * 4 > mid->body.size() || count >= 0xFFFF) {
+        return false;
+    }
+    // MID1 is sorted (the game binary-searches it): insert in order.
+    uint32_t at = 0;
+    while (at < count && BeRead32(mid->body.data() + 8 + at * 4) < messageId) ++at;
+    Bytes entry(entrySize, 0);
+    const int from = FindMessageIndex(sections, attributesFrom);
+    if (from >= 0) {
+        std::memcpy(entry.data(), inf->body.data() + 8 + size_t(from) * entrySize, entrySize);
+    }
+    BeWrite32(entry.data(), 0);  // string offset, set by BmgReplaceMessage below
+    inf->body.insert(inf->body.begin() + long(8 + size_t(at) * entrySize), entry.begin(), entry.end());
+    uint8_t id[4];
+    BeWrite32(id, messageId);
+    mid->body.insert(mid->body.begin() + long(8 + size_t(at) * 4), id, id + 4);
+    BeWrite16(inf->body.data(), uint16_t(count + 1));
+    BeWrite16(mid->body.data(), uint16_t(count + 1));
+    Bytes out(bmg.begin(), bmg.begin() + 0x20);
+    for (const auto& s : sections) {
+        const size_t start = out.size();
+        BePush32(out, s.magic);
+        BePush32(out, 0);
+        out.insert(out.end(), s.body.begin(), s.body.end());
+        PadTo(out, 0x20);
+        BeWrite32(out.data() + start + 4, uint32_t(out.size() - start));
+    }
+    BeWrite32(out.data() + 8, uint32_t(out.size()));
+    bmg.swap(out);
+    return BmgReplaceMessage(bmg, messageId, text);
+}
+
 // =====================================================================================
 // BRRES / MDL0
 // =====================================================================================

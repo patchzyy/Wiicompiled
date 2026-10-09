@@ -468,6 +468,10 @@ void SystemBridge::DumpCrashHeuristics(std::ostream& os, const CpuContext* cpu,
 // MEM2 space reserved at startup for the runtime FST.
 extern "C" uint32_t g_dvdFstReservedBase = 0;
 extern "C" uint32_t g_dvdFstReservedSize = 0;
+// MEM2 space reserved for the Sonic integration's guest-side scratch data
+// (strings and small objects it hands to game functions); 0 when Sonic is off.
+extern "C" uint32_t g_sonicScratchBase = 0;
+extern "C" uint32_t g_sonicScratchSize = 0;
 
 void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
 
@@ -557,7 +561,13 @@ void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
         // Reserve FST memory before guest code can use this part of the arena.
         g_dvdFstReservedSize = kDvdFstReserveSize;
         g_dvdFstReservedBase = ipcBufLo - kDvdFstReserveSize;
-        const uint32_t mem2ArenaHi = g_dvdFstReservedBase;
+        uint32_t mem2ArenaHi = g_dvdFstReservedBase;
+        if (RuntimeConfigFile::SonicEnabled()) {
+            constexpr uint32_t kSonicScratchSize = 0x10000u;
+            g_sonicScratchSize = kSonicScratchSize;
+            g_sonicScratchBase = mem2ArenaHi - kSonicScratchSize;
+            mem2ArenaHi = g_sonicScratchBase;
+        }
 
         entries.push_back({0x80003118u, mem2Size, "Physical MEM2 size", true});
         entries.push_back({0x8000311Cu, mem2Size, "Simulated MEM2 size", true});

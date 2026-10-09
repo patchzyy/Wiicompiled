@@ -466,6 +466,68 @@ KartWrite SonicRacer::Update(const RacerInput& input, const KartView& kart, cons
     return out;
 }
 
+void SonicRacer::RefreshPose() {
+    sonic::DrawList list;
+    sonic_.draw(list);
+    const float scale = tuning_.scale;
+    BuildBatches(list, sonic::Mat4::scale(Vec3(scale, scale, scale)), posed_);
+    body_.clear();
+    for (const sonic::DrawItem& item : list.items) {
+        if (!item.model || item.textureSet != sonic::TEXSET_SONIC || item.model->verts.empty()) continue;
+        Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+        for (const sonic::NjVertex& v : item.model->verts) {
+            const Vec3 w = item.world.transformPoint(v.pos);
+            lo = sonic::vmin(lo, w);
+            hi = sonic::vmax(hi, w);
+        }
+        BodySphere sphere;
+        sphere.center = (lo + hi) * (0.5f * scale);
+        // Half the box's middle extent: a sphere around a limb's box overshoots
+        // along its length but a long thin part is covered by its neighbours.
+        Vec3 ext = (hi - lo) * 0.5f;
+        float e[3] = {ext.x, ext.y, ext.z};
+        std::sort(e, e + 3);
+        sphere.radius = std::max(e[1], 0.5f * e[2]) * scale;
+        if (sphere.radius < 0.3f * scale) continue;  // eyes, teeth, tiny bits
+        body_.push_back(sphere);
+    }
+    if (body_.empty()) {
+        // No model parts (should not happen): a capsule-ish pair of spheres.
+        const sonic::Player& p = sonic_.physics();
+        body_.push_back({(p.pos + p.up * 2.5f) * scale, 2.5f * scale});
+        body_.push_back({(p.pos + p.up * 7.0f) * scale, 3.0f * scale});
+    }
+}
+
+BodySphere SonicRacer::BodyBounds() const {
+    BodySphere out;
+    if (body_.empty()) return out;
+    Vec3 lo(1e30f, 1e30f, 1e30f), hi(-1e30f, -1e30f, -1e30f);
+    for (const BodySphere& b : body_) {
+        lo = sonic::vmin(lo, b.center - Vec3(b.radius, b.radius, b.radius));
+        hi = sonic::vmax(hi, b.center + Vec3(b.radius, b.radius, b.radius));
+    }
+    out.center = (lo + hi) * 0.5f;
+    out.radius = sonic::length(hi - lo) * 0.5f;
+    return out;
+}
+
+void SonicRacer::Push(const Vec3& offset, const Vec3& addVelocity) {
+    if (phase_ != RacerPhase::Running) return;
+    const float inv = 1.0f / std::max(tuning_.scale, 0.1f);
+    sonic_.physics().push(offset * inv, addVelocity * inv);
+}
+
+void SonicRacer::Hurt(const Vec3& from) {
+    if (phase_ != RacerPhase::Running || hurtCooldown_ > 0) return;
+    const float inv = 1.0f / std::max(tuning_.scale, 0.1f);
+    sonic_.hurt(from * inv);
+    hurtCooldown_ = 60;
+    boostFrames_ = 0;
+}
+
+Vec3 SonicRacer::Velocity() const { return sonic_.physics().vel * tuning_.scale; }
+
 void SonicRacer::BuildDraw(PosedSonic& out) {
     sonic::DrawList list;
     sonic_.draw(list);

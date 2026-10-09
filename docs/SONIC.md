@@ -1,31 +1,19 @@
-# Sonic as a playable driver
+# Sonic as a playable racer
 
-WiiCompiled can put **Sonic from Sonic Adventure DX** into Mario Kart Wii as a playable
-character. He takes over one roster slot (Luigi by default) and replaces that driver
-everywhere the game shows them:
+WiiCompiled can add **Sonic from Sonic Adventure DX** to Mario Kart Wii as a new
+playable character who **races on foot**, with his own SADX physics, against the other
+racers. Every other character stays as it is.
 
-- **In races and menus**: Sonic's DX model in a driving pose (seated, legs forward,
-  both hands on the wheel). He is scaled to the driver he replaces, follows the kart
-  and leans with the driver's body. In menus and on the podium, where the driver
-  stands, he stands with his idle animation.
-- **Roster icons**: every icon of the slot (`tt_<name>_64x64.tpl`, `st_<name>_32x32.tpl`
-  and the other sizes) is a portrait rendered from Sonic's model, framed like the
-  Mario Kart Wii icons: head and shoulders, 3/4 view, dark outline, transparent
-  background.
-- **Name**: the character's name message (`Common.bmg` message 9000 + slot) reads
-  "Sonic" (ソニック in Japanese, 소닉 in Korean) in every language.
+- **Character select**: a new Sonic button in the grid, with a portrait rendered from his
+  model, his name ("Sonic"; ソニック in Japanese, 소닉 in Korean) and Sonic standing in the
+  3D preview while he is highlighted.
+- **Races**: Sonic runs, jumps, spin dashes and homing-attacks with Sonic Adventure DX's
+  own physics (ported in [SonicCore](../runtime/third_party/soniccore)) on the course's
+  real collision. Laps, positions, items, the camera, Lakitu, cannons and the finish all
+  work as for a kart.
 
-The slot keeps its stats, weight class, vehicles, unlocks and save data, and its voice
-clips.
-
-## Nothing is shipped
-
-No Nintendo or Sega data is in this repository. Sonic is built at runtime from your own
-Sonic Adventure DX files: his model, animations and textures come from
-`system\CHRMODELS_orig.dll` (or `CHRMODELS.dll`) and `system\SONIC.PVM`, read by
-[SonicCore](../runtime/third_party/soniccore) (MIT). The icons are rendered from that
-model on your machine. Patched Mario Kart Wii archives are written to your cache folder
-(`<app data>/Cache/sonic`), never next to your game files, and never leave your machine.
+Nothing from Nintendo or Sega is shipped: Sonic is built at runtime from your own SADX
+files (see below).
 
 ## Setup
 
@@ -35,7 +23,6 @@ model on your machine. Patched Mario Kart Wii archives are written to your cache
 ```toml
 [sonic]
 enabled = true
-replaces = "luigi"
 assets = "D:\\Games\\Sonic Adventure DX"
 ```
 
@@ -43,88 +30,138 @@ assets = "D:\\Games\\Sonic Adventure DX"
 `sonic_extract` tool (`SonicAssets`) works too. Without `assets`, a `SonicAssets` folder
 next to `Config.toml`, next to the program or in the app data folder is used.
 
-3. Start the game. The log shows a line like this (the numbers depend on your files):
+3. Start the game. The log shows lines like these:
 
 ```
-[sonic] Sonic replaces Luigi: 108 driver model(s) in 36 file(s), 23 UI archive(s) patched (850 ms)
+[sonic] Sonic loaded from D:\Games\Sonic Adventure DX; he plays as Mario under the hood
+[sonic] Sonic (as Mario): 120 Mario model(s) in 40 file(s), 23 UI archive(s) patched (900 ms)
+[sonic] Sonic button added to the character select grid at (...)
 ```
 
-The first start after a change takes a moment while the archives are patched; later
-starts reuse the cache.
+## Controls (in a race)
+
+| Mario Kart control | Sonic |
+|---|---|
+| Accelerate (A / 2) | Run forward |
+| Stick / tilt | Steer (relative to where he is running) |
+| Drift / hop (R / B) | Jump; hold for a higher jump; press again in the air for a homing attack (towards a nearby racer) or an air dash |
+| Brake (B / 1) | Spin dash: hold to charge, let go to launch. Holding it through the countdown or while landing charges as soon as he touches the ground |
+| Trick (d-pad / shake) | Jump |
+| Item | Use the item, as usual |
+
+Grass, sand and dirt don't slow him: he is on foot. Boost panels and mushrooms push him
+to about a quarter above his top speed.
+
+## Speed
+
+Sonic is about as tall as Mario (1 SADX unit = 9 Mario Kart units at `scale = 1`).
+
+| `physics` | top speed on flat ground | notes |
+|---|---|---|
+| `"downhill"` (default) | ~94 Mario Kart units/frame | SADX, but his flat-ground speed cap is raised to the speed SADX gives him running down a steep (30°) slope. Everything else is SADX's. |
+| `"sadx"` | ~40 | exactly SADX |
+| `"kart"` | ~86 | speed and acceleration matched to the karts |
+
+For comparison: the fastest 150cc kart does about 86, a bike in a wheelie about 98, a
+mushroom 115+, and the game caps normal speed at 120. With SADX acceleration
+(`acceleration = 1`) Sonic needs about 7 s to reach top speed by running, or a third of
+a second of spin dash charging.
+
+## Collision
+
+With `collision = "model"` (default) Sonic's body is what collides: a set of spheres,
+one per part of his model (head, torso, arms, legs, shoes, quills, or the spin ball),
+recomputed every frame so they follow his animation.
+
+- **Karts** bump into his body and he into theirs (their real hitboxes from the game's
+  data); karts push him away and he pushes them.
+- **Items** (shells, bananas, bombs...) hit him when they touch his body.
+- **Course hazards** (Goombas, Thwomps, Chain Chomps...) still use the game's own check
+  against the (tiny) kart at his feet, which is close to his body for most hazards.
+
+Under the hood the game still has a kart for him; it is shrunk to `kart_scale` and hidden,
+and only follows him. With `collision = "kart"` that kart keeps its full size and does
+all the colliding instead (a fallback).
 
 ## Options
 
-| key        | default   | meaning |
-|------------|-----------|---------|
-| `enabled`  | `true`    | Turn Sonic on or off. Without SADX files nothing changes either way. |
-| `replaces` | `"luigi"` | The roster slot Sonic takes. English name (`"King Boo"`), file abbreviation (`"kt"`) or icon name (`"teresa"`). |
-| `assets`   | (search)  | Your Sonic Adventure DX folder, or a SonicAssets folder. Relative paths are relative to `Config.toml`. |
-| `model`    | `true`    | Draw Sonic instead of the driver's 3D model. |
-| `icons`    | `true`    | Replace the slot's roster icons. |
-| `name`     | `true`    | Replace the slot's name. |
-| `scale`    | `1.0`     | Extra size multiplier for Sonic's 3D model. |
-| `debug`    | `false`   | Log every model the draw hook sees (address, fingerprint, first bone names) and every patched file. |
+| key            | default      | meaning |
+|----------------|--------------|---------|
+| `enabled`      | `true`       | Turn Sonic on or off. Without SADX files nothing changes either way. |
+| `assets`       | (search)     | Your Sonic Adventure DX folder, or a SonicAssets folder. Relative paths are relative to `Config.toml`. |
+| `base`         | `"mario"`    | The character Sonic plays as under the hood (weight class, item odds, kart sizes, online). English name, file abbreviation or icon name. Players who pick that character themselves are not affected. |
+| `physics`      | `"downhill"` | `"downhill"`, `"sadx"` or `"kart"` (see Speed). |
+| `speed`        | `1.0`        | Multiplies his speeds. |
+| `acceleration` | `1.0`        | Multiplies how hard he pushes off the ground (1 = SADX). |
+| `scale`        | `1.0`        | Sonic's size (1 = about Mario's height). Speeds scale with it. |
+| `select`       | `"button"`   | `"button"`: the Sonic button. `"base"`: every local player who picks the base character races as Sonic (a fallback for testing). |
+| `collision`    | `"model"`    | `"model"` or `"kart"` (see Collision). |
+| `kart_scale`   | `0.1`        | Size of the hidden stand-in kart with `collision = "model"`. |
+| `model`        | `true`       | Show Sonic in the menus' 3D views (over the base character's model). |
+| `icons`        | `true`       | Sonic's portrait in the roster. |
+| `name`         | `true`       | The "Sonic" name message. |
+| `debug`        | `false`      | Log the grid, race players, item and bump decisions, and every patched file. |
 
-Any roster character can be replaced. Medium characters (Luigi, Mario, Peach, Daisy,
-Yoshi, Birdo, Diddy Kong, Dry Bones) fit Sonic's size best.
+## Nothing is shipped
+
+No Nintendo or Sega data is in this repository. Sonic's model, animations, textures and
+physics values come from `system\CHRMODELS_orig.dll` (or `CHRMODELS.dll`),
+`system\SONIC.PVM` and the game executable, read by SonicCore (MIT). The portrait is
+rendered on your machine. Patched Mario Kart Wii archives are written to your cache
+folder (`<app data>/Cache/sonic`), never next to your game files.
 
 ## How it works
 
-Two parts, both in `runtime/src/sonic/`:
+All in `runtime/src/sonic/`:
 
-**Disc layer** (`sonic_disc_patch.cpp`, run from `DVDInit` after the disc and any
-Riivolution/Retro Rewind overlays are registered):
+- **`sonic_disc_patch.cpp`** (from `DVDInit`, after overlays): patches the UI archives
+  (the roster's unused `tt_hammer_*` picture, shown by pane `cha_21_hammer`, becomes
+  Sonic's portrait; message 9025 "Sonic" is added to every `Common.bmg`), and
+  fingerprints the base character's driver models.
+- **`sonic_roster.cpp`**: after `CtrlMenuCharacterSelect::Load`, a 27th `ButtonDriver`
+  is built with the game's own `LoadButton` for the base character's index (the button
+  array pointer is shifted for that one call), moved to a free grid cell and appended to
+  the grid's control group. Clicking it is, to the game, clicking the base character;
+  the hooks remember which player used Sonic's button. While the game builds that
+  button, its name and its preview, the icon and name lookups
+  (`GetCharacterIconPaneName`, `GetCharacterMessageId`) answer with Sonic's.
+- **`sonic_race_hook.cpp`**: wraps `Kart::Manager::Update`. For each Sonic player it
+  reads the kart (respawn, cannon, finish, boosts, item hits) and the controller, runs
+  `SonicRacer`, and writes Sonic's position, rotation and speed back into the kart. It
+  also shrinks the kart (`Kart::Movement::UpdateScale`), resolves kart bumps against
+  Sonic's body, and answers `Item::Obj::CheckKartCollision` for him.
+- **`sonic_racer.cpp`**: SonicCore's SADX physics on the course's KCL collision
+  (`sonic_course.cpp`, read from the course archive the game loaded), the physics modes,
+  and Sonic's collision body.
+- **`sonic_draw_hook.cpp`**: wraps `nw4r::g3d::DrawResMdlDirectly`. In races it skips
+  the base character's driver model at Sonic's kart and draws Sonic there, once per
+  camera, through the current camera matrix; in the menus it draws Sonic over the base
+  character's models while Sonic is picked.
 
-- every `Scene/UI/*.szs` archive (and `Race/Common.szs`) is decompressed (Yaz0), opened
-  (U8), and the slot's icon textures and name message are replaced; the archive is
-  rebuilt, recompressed and registered in place of the original, exactly like an
-  overlay file. Archives that do not mention the slot are left alone. Because the
-  overlays are applied first, mods that replace the UI are patched too.
-- the slot's driver models (`driver_model.brres` in `Race/Kart/*-<abbr>*.szs`, and
-  the slot's models in `Scene/Model/` and `Demo/`) are fingerprinted: a hash of each
-  MDL0's vertex position data, which nw4r never rewrites when it binds a model.
-- results are cached under `<app data>/Cache/sonic`, keyed by each source file's path,
-  size and modification time.
-
-**Draw layer** (`sonic_draw_hook.cpp`): a native wrapper around
-`nw4r::g3d::DrawResMdlDirectly` (0x80069000), registered with
-`REGISTER_NATIVE_FUNCTION_AS` so the original translated function still draws every
-other model. When the model being drawn has one of the fingerprints, the wrapper:
-
-1. reads the driver's bone matrices from the view matrix array the game passes in and
-   works out, in the driver's root bone frame, whether the driver is seated (feet well
-   in front of the head) or standing, which way it faces, how big it is and how far it
-   leans (`sonic_place.cpp`);
-2. poses Sonic accordingly (`sonic_render.cpp`): the driving pose is built from two
-   SADX animations, the "sitting, legs forward" pose (`SONIC_ACTIONS` 108) with the
-   arms of the "holding on" seat pose (89), and one side mirrored onto the other so
-   both hands are on the wheel and both legs reach the pedals;
-3. bakes lighting into vertex colours and draws Sonic with GX immediate mode in the
-   opaque pass (textures go to aurora as linear RGBA, `GX_TF_RGBA8_PC`);
-4. restores the HLE vertex descriptor state, invalidates the texture binding cache for
-   the texture map it used and calls `nw4r::g3d::G3DState::Invalidate` so g3d reloads
-   its GX state for the next model.
-
-The draw hook never touches models it does not recognise, and the disc layer never
-fails the boot: if anything goes wrong the game keeps its own files.
+The disc layer never fails the boot, and every hook falls back to the game's own
+function when it does not recognise what it is given.
 
 ## Limitations
 
-- Sonic replaces a slot; he is not a 25th roster entry (that would need new layout
-  files, character tables and online handling).
-- Voice clips and the character's sound effects stay the replaced driver's.
-- Kart colours and emblems that depend on the character stay the replaced driver's.
-- The driving pose is static (no steering or trick animation); the lean follows the
-  driver's upper body sideways.
-- Online play: other players see the original character.
+- CPUs never play as Sonic; only local players.
+- Online, other players see the base character.
+- Sonic's sound effects and voice are not played yet; his kart's engine sound is still
+  heard.
+- Course hazards use the stand-in kart, not his model (see Collision).
+- Results screens and the award ceremony show Sonic only if no other player uses the
+  base character.
 
 ## Troubleshooting
 
+Turn on `debug = true` and send the log; it lists the grid buttons, the race players,
+every item/bump decision near Sonic and every patched file.
+
+- **No Sonic button**: look for `character select:` lines in the log. As a fallback, set
+  `select = "base"` and pick the base character.
+- **Sonic stands still in races**: look for `course collision` (he needs the course's
+  collision) and `race:` lines.
 - **"Sonic Adventure DX files not found"**: check `assets`. It must be the folder that
   contains `system\CHRMODELS_orig.dll` (or `CHRMODELS.dll`) and `system\SONIC.PVM`.
-- **"no driver models found"**: the slot's `Race/Kart` files were not found under that
-  abbreviation. Turn on `debug = true` and send the log.
-- **Icons or name not replaced**: with `debug = true` the log lists every patched file
-  and texture.
-- **Sonic too big or too small**: adjust `scale`.
-- To force a rebuild, delete `<app data>/Cache/sonic`.
+- **Items pass through him or hit from too far**: try `collision = "kart"` and send the
+  log.
+- To force a rebuild of the patched archives, delete `<app data>/Cache/sonic`.

@@ -96,6 +96,9 @@ public:
     // external launch (springs, dash panels): world velocity
     void launch(const Vec3& worldVel, int lockFrames, PlayerState st = PlayerState::Spring);
     void hurt(const Vec3& from);
+    // Something outside the physics shoved the character (another racer, say):
+    // move it by `offset` and add `addWorldVel` to its velocity.
+    void push(const Vec3& offset, const Vec3& addWorldVel);
     // Hosts that move the character themselves (cutscenes, vehicles, replays):
     // place it with a world velocity and facing, grounded or airborne, curled up
     // or not, without running the physics. Animation and effects follow as usual.

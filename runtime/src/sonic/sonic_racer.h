@@ -72,6 +72,12 @@ struct RacerTuning {
 
 enum class RacerPhase { Waiting, Running, Passenger };
 
+// One piece of Sonic's body for collisions (Mario Kart units, world space).
+struct BodySphere {
+    sonic::Vec3 center;
+    float radius = 0;
+};
+
 class SonicRacer {
 public:
     bool Init(const sonic::Assets& assets);
@@ -85,6 +91,21 @@ public:
 
     // Sonic and his effects as world-space batches (Mario Kart units).
     void BuildDraw(PosedSonic& out);
+    // Poses Sonic once for the frame (after Update): his draw batches and his
+    // collision body, one sphere per part of his model (head, torso, arms, legs,
+    // shoes, quills... or the spin ball), so collisions follow his animation.
+    void RefreshPose();
+    const PosedSonic& Posed() const { return posed_; }
+    const std::vector<BodySphere>& Body() const { return body_; }
+    // Bounding sphere of the whole body (Mario Kart units).
+    BodySphere BodyBounds() const;
+
+    // Something shoved Sonic (a kart bumping into him): move him by `offset` and
+    // add `addVelocity` (Mario Kart units, per frame).
+    void Push(const sonic::Vec3& offset, const sonic::Vec3& addVelocity);
+    // Hit by an item or hazard coming from `from` (Mario Kart units).
+    void Hurt(const sonic::Vec3& from);
+    sonic::Vec3 Velocity() const;  // Mario Kart units per frame
     const std::vector<sonic::SoundEvent>& Sounds() const { return sonic_.sounds(); }
 
     RacerPhase Phase() const { return phase_; }
@@ -122,6 +143,8 @@ private:
 
     sonic::Sonic sonic_;
     RacerTuning tuning_;
+    PosedSonic posed_;
+    std::vector<BodySphere> body_;
     RacerPhase phase_ = RacerPhase::Waiting;
     bool prevDrift_ = false, prevBrake_ = false, prevTrick_ = false;
     bool chargeBuffered_ = false;

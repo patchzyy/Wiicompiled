@@ -2,10 +2,12 @@
 //
 // Runs once inside DVDInit, after the disc and overlay files are known:
 //   1. loads SonicCore from the player's Sonic Adventure DX files;
-//   2. fingerprints every driver model of the replaced roster slot so the draw
-//      hook can recognise them in guest memory;
-//   3. patches the UI archives: the slot's roster icons become portraits
-//      rendered from Sonic's model, its name message becomes "Sonic";
+//   2. fingerprints every driver model of the base character (the one Sonic
+//      plays as under the hood) so the draw hook can recognise them in guest
+//      memory and show Sonic in their place while Sonic is picked;
+//   3. patches the UI archives: the roster's unused "hammer" picture (pane
+//      cha_21_hammer) becomes Sonic's portrait, rendered from his model, and a
+//      new name message (9025) says "Sonic";
 // Results are cached under <app data>/Cache/sonic and keyed by the source file's
 // path, size and modification time, so later boots only stat the files.
 #include "sonic/sonic_mkw.h"
@@ -43,7 +45,7 @@ inline fs::path Utf8(const std::string& text) { return RuntimeConfigFile::PathFr
 }  // namespace cfg_detail
 
 // Bump when the generated content changes so stale cache entries are rebuilt.
-constexpr const char* kPatchVersion = "sonic-mkw-1";
+constexpr const char* kPatchVersion = "sonic-mkw-2";
 
 const CharacterSlot kSlots[] = {
     {0, "Mario", "mr", "mario"},          {1, "Baby Peach", "bpc", "baby_peach"},
@@ -266,6 +268,10 @@ bool IsSlotIconTexture(const std::string& fileName, const CharacterSlot& slot, i
     return width > 0 && height > 0 && width <= 1024 && height <= 1024;
 }
 
+// The unused roster picture Sonic's portrait goes into (tt_hammer_*.tpl).
+const CharacterSlot kSonicPictureSlot = {-1, "Sonic", "hammer", "hammer"};
+constexpr uint32_t kSonicNameMessage = 9025;
+
 std::u16string SonicNameFor(const std::string& dvdPath) {
     // Language archives end in _<letter>.szs (E, F, G, I, J, K, M, N, Q, S, U).
     const auto tokens = PathTokens(dvdPath);
@@ -303,7 +309,7 @@ bool PatchUiArchive(const Bytes& file, const std::string& dvdPath, const Charact
     for (size_t index : archive.Files()) {
         U8Archive::Node& node = archive.At(index);
         int width = 0, height = 0;
-        if (icons && IsSlotIconTexture(node.name, slot, width, height)) {
+        if (icons && IsSlotIconTexture(node.name, kSonicPictureSlot, width, height)) {
             TplInfo info;
             if (TplReadInfo(node.data.data(), node.data.size(), info) && info.width <= 1024 && info.height <= 1024) {
                 width = info.width;
@@ -320,10 +326,10 @@ bool PatchUiArchive(const Bytes& file, const std::string& dvdPath, const Charact
                               "x" + std::to_string(height));
             }
         } else if (names && ToLowerAscii(node.name) == "common.bmg") {
-            if (BmgReplaceMessage(node.data, 9000u + uint32_t(slot.id), SonicNameFor(dvdPath))) {
+            if (BmgSetMessage(node.data, kSonicNameMessage, SonicNameFor(dvdPath), 9000u + uint32_t(slot.id))) {
                 changed = true;
                 log.push_back(dvdPath + ":" + archive.PathOf(index) + " -> name message " +
-                              std::to_string(9000 + slot.id));
+                              std::to_string(kSonicNameMessage));
             }
         }
     }
@@ -393,7 +399,7 @@ const CharacterSlot* FindCharacterSlot(const std::string& text) {
 
 bool ModelSwapActive() { return disc_detail::g_modelSwap.load(std::memory_order_acquire); }
 
-bool IsSonicFingerprint(uint64_t fingerprint) {
+bool IsBaseModelFingerprint(uint64_t fingerprint) {
     std::lock_guard<std::mutex> lock(disc_detail::g_stateMutex);
     return disc_detail::g_fingerprints.count(fingerprint) != 0;
 }
@@ -407,12 +413,11 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
     g_debug = cfg::SonicDebug();
     const auto started = std::chrono::steady_clock::now();
 
-    // Still the earlier Luigi-slot build here; the new-character version replaces this.
-    const CharacterSlot* slot = FindCharacterSlot("luigi");
+    const CharacterSlot* slot = FindCharacterSlot(cfg::SonicBase());
     if (!slot) {
-        RT_LOG(RT_TAG_SONIC) << "replaces = \"" << "luigi"
-                             << "\" is not a Mario Kart Wii character; Sonic is disabled." << std::endl;
-        return;
+        RT_LOG(RT_TAG_SONIC) << "base = \"" << cfg::SonicBase()
+                             << "\" is not a Mario Kart Wii character; using Mario." << std::endl;
+        slot = &kSlots[0];
     }
 
     std::string configured = cfg::SonicAssets();
@@ -425,7 +430,8 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
                              << resources.Error() << std::endl;
         return;
     }
-    RT_LOG(RT_TAG_SONIC) << "Sonic loaded from " << resources.Folder() << "; replacing " << slot->name << std::endl;
+    RT_LOG(RT_TAG_SONIC) << "Sonic loaded from " << resources.Folder() << "; he plays as " << slot->name
+                         << " under the hood" << std::endl;
 
     const fs::path cacheDir = cfg::ApplicationDataDirectory() / "Cache" / "sonic";
     std::error_code ec;
@@ -480,7 +486,7 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
     size_t patched = 0;
     if (icons || names) {
         IconCache iconCache;
-        const std::string salt = std::string("ui:") + slot->icon + (icons ? ":i" : "") + (names ? ":n" : "") +
+        const std::string salt = std::string("ui:") + kSonicPictureSlot.icon + ":" + slot->icon + (icons ? ":i" : "") + (names ? ":n" : "") +
                                  (icons ? ":" + SonicAssetsStamp(resources.Folder()) : std::string());
         for (const DiscFile& file : files) {
             if (!IsUiArchive(file.dvdPath)) continue;
@@ -522,12 +528,13 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
     g_modelSwap = modelSwap && !prints.empty();
 
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
-    RT_LOG(RT_TAG_SONIC) << "Sonic replaces " << slot->name << ": " << prints.size() << " driver model(s) in "
-                         << modelFiles << " file(s), " << patched << " UI archive(s) patched (" << ms.count()
-                         << " ms)" << std::endl;
+    RT_LOG(RT_TAG_SONIC) << "Sonic (as " << slot->name << "): " << prints.size() << " " << slot->name
+                         << " model(s) in " << modelFiles << " file(s), " << patched << " UI archive(s) patched ("
+                         << ms.count() << " ms)" << std::endl;
     if (modelSwap && prints.empty()) {
         RT_LOG(RT_TAG_SONIC) << "no driver models found for " << slot->name
-                             << "; Sonic's 3D model will not appear (icons and name still do)" << std::endl;
+                             << "; Sonic will not appear in the menus' 3D views (racing, icons and name still work)"
+                             << std::endl;
     }
     if (g_debug) {
         for (const std::string& line : log) RT_LOG(RT_TAG_SONIC) << "  " << line << std::endl;

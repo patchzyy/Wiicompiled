@@ -6,12 +6,16 @@
 //   r5 viewNrmMtxArray, r6 viewTexMtxArray
 //   r7 byteCodeOpa, r8 byteCodeXlu (the pass being drawn is the non-null one)
 //   r9 DrawResMdlReplacement*, r10 drawMode
-// The wrapper below keeps the original translated function for every model except
-// the replaced driver's (recognised by geometry fingerprint, see PatchDisc). For
-// those it draws Sonic instead: posed seated or standing to match what the driver's
-// skeleton is doing, scaled to the driver, anchored to the driver's root bone and
-// leaning with the driver's upper body. Lighting is baked per vertex on the CPU;
-// the GX state it changes is handed back to g3d with G3DState::Invalidate.
+// The wrapper keeps the original translated function for every model, except:
+//   * in races, near a Sonic player's (shrunk) kart: the base character's driver
+//     model is skipped and, once per camera and frame, Sonic is drawn running
+//     (SonicRacer's posed batches, world space, through the current camera
+//     matrix, G3DState::GetCameraMtxPtr);
+//   * in the menus while Sonic is picked: the base character's models (recognised
+//     by geometry fingerprint, see PatchDisc) are drawn as Sonic instead, posed
+//     seated or standing to match the model's skeleton.
+// Lighting is baked per vertex on the CPU; the GX state it changes is handed back
+// to g3d with G3DState::Invalidate.
 #include "abi_bridge.h"
 #include "hle/gx/gx_internal.h"
 #include "memory.h"
@@ -19,6 +23,8 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "sonic/sonic_formats.h"
+#include "sonic/sonic_game.h"
+#include "sonic/sonic_guest.h"
 #include "sonic/sonic_mkw.h"
 #include "sonic/sonic_place.h"
 #include "sonic/sonic_render.h"
@@ -41,6 +47,7 @@ using sonic::Mat4;
 using sonic::Vec3;
 
 constexpr uint32_t kG3DStateInvalidate = 0x80064450u;  // nw4r::g3d::G3DState::Invalidate(u32 flags)
+constexpr uint32_t kG3DStateCameraMtx = 0x80064180u;   // nw4r::g3d::G3DState::GetCameraMtxPtr()
 constexpr uint32_t kInvalidateAll = 0x7FFu;
 constexpr uint32_t kMdl0Magic = 0x4D444C30u;  // "MDL0"
 // Sonic is drawn this much smaller than the driver he replaces: SADX Sonic's
@@ -51,8 +58,9 @@ struct ModelEntry {
     uint32_t size = 0;
     uint8_t head[64] = {};
     uint8_t middle[32] = {};
-    bool isSonic = false;
+    bool isBase = false;  // one of the base character's models
     Mdl0Summary summary;
+    uint32_t rootMatrix = 0;  // matrix ID of the first node
     DriverState state;
     bool drawnThisFrame = true;  // last opaque pass drew Sonic
 };
@@ -111,17 +119,16 @@ ModelEntry* LookupModel(uint32_t mdl) {
     e.size = size;
     std::memcpy(e.head, bytes, sizeof(e.head));
     std::memcpy(e.middle, bytes + size / 2, sizeof(e.middle));
-    const uint64_t print = Mdl0Fingerprint(bytes, avail);
-    e.isSonic = print != 0 && IsSonicFingerprint(print);
-    if (e.isSonic) Mdl0Summarize(bytes, avail, e.summary);
-    if (DebugLogging()) {
-        Mdl0Summary s;
-        Mdl0Summarize(bytes, avail, s);
+    const uint64_t print = ModelSwapActive() ? Mdl0Fingerprint(bytes, avail) : 0;
+    e.isBase = print != 0 && IsBaseModelFingerprint(print);
+    Mdl0Summarize(bytes, avail, e.summary);
+    if (!e.summary.nodes.empty()) e.rootMatrix = e.summary.nodes[0].matrixId;
+    if (DebugLogging() && e.isBase) {
+        const Mdl0Summary& s = e.summary;
         std::string firstNodes;
         for (size_t i = 0; i < s.nodes.size() && i < 6; ++i) firstNodes += " " + s.nodes[i].name;
-        RT_LOGF(RT_TAG_SONIC, "model 0x%08X size %u nodes %zu fingerprint %016llx%s:%s\n", mdl, size,
-                s.nodes.size(), static_cast<unsigned long long>(print), e.isSonic ? " -> SONIC" : "",
-                firstNodes.c_str());
+        RT_LOGF(RT_TAG_SONIC, "model 0x%08X size %u nodes %zu fingerprint %016llx (base character):%s\n", mdl, size,
+                s.nodes.size(), static_cast<unsigned long long>(print), firstNodes.c_str());
     }
     if (g_models.size() > 4096) g_models.clear();
     return &g_models.emplace(mdl, std::move(e)).first->second;
@@ -360,34 +367,113 @@ void InvalidateG3DState(CpuContext* ctx) {
     *ctx = saved;
 }
 
-bool TryDrawSonic(CpuContext* ctx) {
-    const uint32_t mdl = ResolveMdl0(ctx->gpr[3]);
-    if (!mdl) return false;
-    ModelEntry* model = LookupModel(mdl);
-    if (!model || !model->isSonic) return false;
+// Menus: the base character's model drawn as Sonic.
+bool TryDrawMenuSonic(CpuContext* ctx, ModelEntry& model) {
     const uint32_t viewPos = ctx->gpr[4];
     const uint32_t opa = ctx->gpr[7];
     if (!viewPos) return false;
     // Sonic is drawn whole in the opaque pass; the translucent pass is skipped
-    // unless that failed and the original driver was drawn instead.
-    if (!opa) return model->drawnThisFrame;
-    model->drawnThisFrame = false;
-    const Placement placement = Place(*model, viewPos);
+    // unless that failed and the original model was drawn instead.
+    if (!opa) return model.drawnThisFrame;
+    model.drawnThisFrame = false;
+    const Placement placement = Place(model, viewPos);
     if (!placement.ok) return false;
     const PosedSonic* posed = SonicPose_(placement.pose);
     if (!posed) return false;
     DrawPosed(*posed, placement.sonicToView);
     InvalidateG3DState(ctx);
-    model->drawnThisFrame = true;
+    model.drawnThisFrame = true;
     return true;
+}
+
+// ---- races ---------------------------------------------------------------------
+
+struct RaceFrame {
+    uint32_t frame = ~0u;
+    std::vector<game::RacerDraw> racers;
+    std::vector<std::pair<int, uint64_t>> drawn;  // (racer, camera) pairs drawn this frame
+    int logs = 0;
+};
+
+RaceFrame& Race() {
+    static RaceFrame race;
+    return race;
+}
+
+uint64_t HashMatrix(const Mat4& m) {
+    uint64_t h = 1469598103934665603ull;
+    for (int r = 0; r < 3; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            uint32_t bits;
+            const float f = m.at(r, c);
+            std::memcpy(&bits, &f, 4);
+            h = (h ^ bits) * 1099511628211ull;
+        }
+    }
+    return h;
+}
+
+bool CameraMatrix(CpuContext* ctx, Mat4& out) {
+    const uint32_t mtx = guest::Call(ctx, kG3DStateCameraMtx);
+    return mtx && ReadMtx34(mtx, out);
+}
+
+// Returns true when the model must not be drawn (Sonic's stand-in).
+bool RaceModel(CpuContext* ctx, ModelEntry* model) {
+    RaceFrame& race = Race();
+    const uint32_t frame = game::FrameNumber();
+    if (race.frame != frame) {
+        race.frame = frame;
+        game::RacersForDraw(race.racers);
+        race.drawn.clear();
+    }
+    if (race.racers.empty() || !model) return false;
+    const uint32_t viewPos = ctx->gpr[4];
+    Mat4 root;
+    if (!viewPos || !ReadMtx34(viewPos + model->rootMatrix * 48u, root)) return false;
+    Mat4 camera;
+    if (!CameraMatrix(ctx, camera)) return false;
+    const Vec3 at = root.translation();
+    for (const game::RacerDraw& racer : race.racers) {
+        // The kart's models are posed either before or after Sonic moves the kart
+        // in the frame: either position marks them.
+        const float near = std::min(sonic::length(at - camera.transformPoint(racer.kartPos)),
+                                    sonic::length(at - camera.transformPoint(racer.gamePos)));
+        if (near > racer.hideRadius) continue;
+        // Something of Sonic's stand-in kart: Sonic is drawn here, once per camera.
+        if (ctx->gpr[7] && racer.posed && !racer.posed->batches.empty()) {
+            const std::pair<int, uint64_t> key(racer.id, HashMatrix(camera));
+            if (std::find(race.drawn.begin(), race.drawn.end(), key) == race.drawn.end()) {
+                race.drawn.push_back(key);
+                DrawPosed(*racer.posed, camera);
+                InvalidateG3DState(ctx);
+                if (DebugLogging() && race.logs < 4) {
+                    ++race.logs;
+                    RT_LOGF(RT_TAG_SONIC, "drawing Sonic (player %d) with model 0x%08X as the anchor\n", racer.id,
+                            ctx->gpr[3]);
+                }
+            }
+        }
+        return racer.hideAll || model->isBase;
+    }
+    return false;
+}
+
+bool TryDraw(CpuContext* ctx) {
+    const uint32_t mdl = ResolveMdl0(ctx->gpr[3]);
+    if (!mdl) return false;
+    ModelEntry* model = LookupModel(mdl);
+    if (game::RaceActive()) return RaceModel(ctx, model);
+    if (model && model->isBase && game::MenuShowsSonic()) return TryDrawMenuSonic(ctx, *model);
+    return false;
 }
 
 }  // namespace draw_detail
 }  // namespace sonic_mkw
 
-// nw4r::g3d::DrawResMdlDirectly, with the replaced driver drawn as Sonic.
+// nw4r::g3d::DrawResMdlDirectly, with Sonic drawn in races and over the base character in menus.
 extern "C" void nw4r_g3d_DrawResMdlDirectly_Sonic_80069000(CpuContext* ctx) {
-    if (sonic_mkw::ModelSwapActive() && ctx && sonic_mkw::draw_detail::TryDrawSonic(ctx)) {
+    if (ctx && sonic_mkw::SonicResources::Get().Ready() && sonic_mkw::draw_detail::TryDraw(ctx)) {
         return;
     }
     func_80069000(ctx);

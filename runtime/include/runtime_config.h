@@ -102,6 +102,9 @@ struct RuntimeUserConfig {
     std::optional<std::string> sonicPhysics;
     std::optional<float> sonicSpeed;
     std::optional<float> sonicAcceleration;
+    std::optional<std::string> sonicSelect;
+    std::optional<std::string> sonicCollision;
+    std::optional<float> sonicKartScale;
     std::optional<std::string> sonicAssets;
     std::optional<bool> sonicModel;
     std::optional<bool> sonicIcons;
@@ -376,6 +379,15 @@ inline void EnsureConfigFile() {
               "acceleration = 1.0\n"
               "# Sonic's size (1 = about as tall as Mario).\n"
               "scale = 1.0\n"
+              "# select: \"button\" = a Sonic button on the character select screen;\n"
+              "#         \"base\"   = every local player who picks the base character races\n"
+              "#                    as Sonic (a fallback while testing)\n"
+              "select = \"button\"\n"
+              "# collision: \"model\" = karts and items hit Sonic's body (his model), the\n"
+              "#                      game's kart is shrunk to kart_scale and only follows him;\n"
+              "#            \"kart\"  = the game's full-size kart under Sonic does the colliding\n"
+              "collision = \"model\"\n"
+              "kart_scale = 0.1\n"
               "model = true\n"
               "icons = true\n"
               "name = true\n"
@@ -539,6 +551,9 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.sonicPhysics = FindConfigValue<std::string>(document, "sonic", "physics");
     config.sonicSpeed = FindConfigFloat(document, "sonic", "speed");
     config.sonicAcceleration = FindConfigFloat(document, "sonic", "acceleration");
+    config.sonicSelect = FindConfigValue<std::string>(document, "sonic", "select");
+    config.sonicCollision = FindConfigValue<std::string>(document, "sonic", "collision");
+    config.sonicKartScale = FindConfigFloat(document, "sonic", "kart_scale");
     config.sonicAssets = FindConfigValue<std::string>(document, "sonic", "assets");
     config.sonicModel = FindConfigValue<bool>(document, "sonic", "model");
     config.sonicIcons = FindConfigValue<bool>(document, "sonic", "icons");
@@ -1067,6 +1082,16 @@ inline std::string SonicPhysics(std::string fallback = "downhill") {
 inline float SonicSpeed(float fallback = 1.0f) {
     const float value = Get().sonicSpeed.value_or(fallback);
     return (value >= 0.25f && value <= 4.0f) ? value : fallback;
+}
+inline std::string SonicSelect(std::string fallback = "button") {
+    return Get().sonicSelect.value_or(std::move(fallback));
+}
+inline std::string SonicCollision(std::string fallback = "model") {
+    return Get().sonicCollision.value_or(std::move(fallback));
+}
+inline float SonicKartScale(float fallback = 0.1f) {
+    const float value = Get().sonicKartScale.value_or(fallback);
+    return (value >= 0.01f && value <= 1.0f) ? value : fallback;
 }
 inline float SonicAcceleration(float fallback = 1.0f) {
     const float value = Get().sonicAcceleration.value_or(fallback);

@@ -83,6 +83,9 @@ Bytes TplMakeRgb5a3(const uint8_t* rgba, int width, int height, uint32_t wrapS =
 // Replaces the text of message `messageId` (looked up through MID1). Returns true
 // when the file was changed. The text is re-encoded for the file's encoding.
 bool BmgReplaceMessage(Bytes& bmg, uint32_t messageId, const std::u16string& text);
+// Sets message `messageId`, adding it (in ID order, with the attributes of the
+// message `attributesFrom` when that exists) if the file does not have it yet.
+bool BmgSetMessage(Bytes& bmg, uint32_t messageId, const std::u16string& text, uint32_t attributesFrom);
 // The text of a message as UTF-16 (escape sequences kept as raw code units).
 bool BmgGetMessage(const Bytes& bmg, uint32_t messageId, std::u16string& text);
 

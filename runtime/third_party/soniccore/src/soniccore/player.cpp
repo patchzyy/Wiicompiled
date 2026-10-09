@@ -784,6 +784,13 @@ void Player::reset(const StartPos& sp) {
     syncView();
 }
 
+void Player::push(const Vec3& offset, const Vec3& addWorldVel) {
+    pos += offset;
+    wvel += addWorldVel;
+    vel = wvel;
+    spd = toLocal(wvel);
+}
+
 void Player::launch(const Vec3& v, int lockFrames, PlayerState st) {
     wvel = v;
     if (st == PlayerState::Spring) {

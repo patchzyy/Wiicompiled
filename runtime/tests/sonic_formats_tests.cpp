@@ -88,6 +88,21 @@ static void TestBmg() {
     CHECK(!BmgReplaceMessage(bmg, 1234, u"x"));
     CHECK(BeRead32(bmg.data() + 8) == bmg.size());
     CHECK(bmg.size() % 32 == 0);
+
+    // a new message, inserted in ID order with another message's attributes
+    Bytes added = MakeBmg();
+    CHECK(BmgSetMessage(added, 9025, u"Sonic", 9000));
+    CHECK(BmgGetMessage(added, 9025, text) && text == u"Sonic");
+    CHECK(BmgGetMessage(added, 9000, text) && text == u"Mario");
+    CHECK(BmgGetMessage(added, 9007, text) && text == u"Luigi");
+    CHECK(BmgGetMessage(added, 9008, text) && text == u"Toad");
+    CHECK(BmgSetMessage(added, 9004, u"Early", 9000));
+    CHECK(BmgGetMessage(added, 9004, text) && text == u"Early");
+    CHECK(BmgGetMessage(added, 9025, text) && text == u"Sonic");
+    CHECK(BmgSetMessage(added, 9025, u"Sonic!", 9000));  // already there: replaced
+    CHECK(BmgGetMessage(added, 9025, text) && text == u"Sonic!");
+    CHECK(BeRead32(added.data() + 8) == added.size());
+    CHECK(added.size() % 32 == 0);
 }
 
 static void TestU8AndTpl() {
