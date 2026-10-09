@@ -59,6 +59,7 @@
 extern "C" void func_8058ffe8(CpuContext* ctx);  // Kart::Manager::Update
 extern "C" void func_8058160c(CpuContext* ctx);  // Kart::Movement::UpdateScale
 extern "C" void func_807a14d4(CpuContext* ctx);  // Item::Obj::CheckKartCollision
+extern "C" void func_8058fdd4(CpuContext* ctx);  // Kart::Manager::~Manager
 
 namespace sonic_mkw {
 namespace race_detail {
@@ -73,6 +74,7 @@ constexpr uint32_t kLinkGetPhysics = 0x805903CCu;
 constexpr uint32_t kLinkGetPhysicsHolder = 0x805903ACu;
 constexpr uint32_t kLinkGetBsp = 0x80590888u;
 constexpr uint32_t kLinkGetPlayerIdx = 0x80590A5Cu;
+constexpr uint32_t kModelsVisibilitySet = 0x8056A300u;  // Kart::ModelsVisibility::SetModelsVisibility(bool)
 constexpr int kStageRace = 2;
 constexpr float kSadxToMkw = 9.0f;  // Mario Kart units per SADX unit at scale 1
 
@@ -89,6 +91,8 @@ struct Racer {
     int writes = 0;
     bool reportedHit = false;
     Vec3 gamePos;
+    int lakituFrames = 0;
+    bool trustTimers = true;
 };
 
 struct State {
@@ -97,7 +101,7 @@ struct State {
     std::vector<Kart> karts;
     std::vector<Racer> racers;
     CourseCollision course;
-    uint64_t courseGeneration = ~0ull;
+    uint64_t courseGeneration = ~0ull;  // generation last tried (loaded or failed)
     std::string courseName;
     float courseScale = 0;
     RacerTuning tuning;
@@ -178,7 +182,7 @@ const RacerTuning& Tuning() {
         }
         t.params = SonicRacer::DownhillParams(assets, speed, accel, &top);
     }
-    if (mode != "downhill" && std::fabs(accel - 1.0f) > 1e-3f) {
+    if ((mode == "sadx" || mode == "kart") && std::fabs(accel - 1.0f) > 1e-3f) {
         t.params.lim_frict *= accel;
         t.params.run_accel *= accel;
     }
@@ -200,7 +204,7 @@ void LoadCourse(float scale) {
         s.courseGeneration = 0;
         return;
     }
-    if (generation == s.courseGeneration && scale == s.courseScale && s.course.Ready()) return;
+    if (generation == s.courseGeneration && scale == s.courseScale) return;  // loaded, or failed: wait for a new one
     s.courseGeneration = generation;
     s.courseScale = scale;
     for (const auto& [dvdPath, hostPath] : recent) {
@@ -220,6 +224,7 @@ void LoadCourse(float scale) {
         }
         RT_LOGF(RT_TAG_SONIC, "course %s: %s\n", dvdPath.c_str(), error.c_str());
     }
+    s.course = CourseCollision();
 }
 
 bool IsSonicPlayer(int playerIdx, int& hudOut, int& typeOut, int& charOut) {
@@ -237,6 +242,19 @@ bool IsSonicPlayer(int playerIdx, int& hudOut, int& typeOut, int& charOut) {
     return hud >= 0 && hud < game::kHuds && game::ChoseSonic(hud);
 }
 
+// The race is over (Kart::Manager destroyed): forget its players and course.
+void Reset() {
+    State& s = S();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.key = 0;
+    s.karts.clear();
+    s.racers.clear();
+    s.draws.clear();
+    s.baseIsSonic = false;
+    s.course = CourseCollision();
+    s.courseGeneration = ~0ull;
+}
+
 void Setup(CpuContext* ctx, uint32_t manager, uint32_t key) {
     State& s = S();
     std::lock_guard<std::mutex> lock(s.mutex);
@@ -244,6 +262,8 @@ void Setup(CpuContext* ctx, uint32_t manager, uint32_t key) {
     s.karts.clear();
     s.racers.clear();
     s.draws.clear();
+    s.course = CourseCollision();
+    s.courseGeneration = ~0ull;
     s.itemLogs = s.bumpLogs = 0;
     s.baseIsSonic = false;
     if (!SonicResources::Get().Ready()) return;
@@ -318,7 +338,9 @@ RacerInput ReadInput(int playerIdx, bool& finished) {
     return in;
 }
 
-KartView ReadKart(const Kart& k, int stage) {
+// `trustTimers`: use the respawn timers (Movement +0x234, Collision +0x48); a
+// racer stops trusting them if they never clear (wrong offsets on some build).
+KartView ReadKart(const Kart& k, int stage, bool trustTimers, bool& lakituOut) {
     KartView v;
     v.pos = g::Vec(k.physics + 0x68);
     ReadQuat(k.physics + 0xF0, v.rot);
@@ -332,7 +354,8 @@ KartView ReadKart(const Kart& k, int stage) {
     v.hitByItem = (b1 & 1u) != 0;
     const bool oob = (b0 & 0x10u) != 0;
     const bool lakitu = g::U16(k.movement + 0x234) != 0 || g::S16(k.collision + 0x48) > 0;
-    v.respawning = oob || lakitu || (b1 & 2u) != 0;
+    v.respawning = oob || (lakitu && trustTimers) || (b1 & 2u) != 0;
+    lakituOut = lakitu;
     return v;
 }
 
@@ -411,7 +434,9 @@ void Bumps() {
         if (r.sonic->Phase() != RacerPhase::Running) continue;
         const BodySphere bounds = r.sonic->BodyBounds();
         for (const Kart& k : s.karts) {
-            if (k.racer == int(&r - s.racers.data())) continue;
+            const int self = int(&r - s.racers.data());
+            if (k.racer == self) continue;
+            if (k.racer >= 0 && k.racer < self) continue;  // Sonic/Sonic pairs: handled once
             const Vec3 kartPos = g::Vec(k.physics + 0x68);
             if (sonic::length(kartPos - bounds.center) > bounds.radius + 400.0f) continue;
             std::vector<Ball> other;
@@ -461,13 +486,7 @@ void Tick(CpuContext* ctx) {
     const uint32_t manager = g::Ptr(kKartManager);
     const uint32_t players = manager ? g::Ptr(manager + 0x20) : 0;
     if (!manager || !players) {
-        if (s.key) {
-            std::lock_guard<std::mutex> lock(s.mutex);
-            s.key = 0;
-            s.karts.clear();
-            s.racers.clear();
-            s.draws.clear();
-        }
+        if (s.key) Reset();
         return;
     }
     const uint32_t key = manager ^ (players << 1) ^ g::U8(manager + 0x24);
@@ -485,8 +504,14 @@ void Tick(CpuContext* ctx) {
         }
         bool finished = false;
         const RacerInput in = ReadInput(k.idx, finished);
-        KartView view = ReadKart(k, stage);
+        bool lakitu = false;
+        KartView view = ReadKart(k, stage, r.trustTimers, lakitu);
         r.gamePos = view.pos;
+        r.lakituFrames = (lakitu && stage >= kStageRace) ? r.lakituFrames + 1 : 0;
+        if (r.trustTimers && r.lakituFrames > 600) {
+            r.trustTimers = false;
+            RT_LOGF(RT_TAG_SONIC, "Sonic (player %d): the respawn timers never clear; ignoring them\n", k.idx);
+        }
         view.finished = finished || stage > kStageRace + 1;
         if (view.hitByItem && !r.reportedHit && DebugLogging()) {
             RT_LOGF(RT_TAG_SONIC, "Sonic (player %d) was hit\n", k.idx);
@@ -496,6 +521,11 @@ void Tick(CpuContext* ctx) {
         if (w.write) {
             WriteKart(k, w);
             ++r.writes;
+        }
+        // The stand-in kart's own models (body, wheels) are hidden by the game;
+        // the driver is skipped by the draw hook.
+        if (const uint32_t visibility = g::Ptr(k.pointers + 0x58)) {
+            g::Call(ctx, kModelsVisibilitySet, {visibility, 0u});
         }
     }
     if (s.modelCollision) Bumps();
@@ -509,8 +539,7 @@ void Tick(CpuContext* ctx) {
         d.gamePos = r.gamePos;
         d.posed = &r.sonic->Posed();
         d.id = s.karts[size_t(r.kart)].idx;
-        d.hideAll = !s.modelCollision;
-        d.hideRadius = s.modelCollision ? 40.0f : 220.0f;
+        d.hideRadius = s.modelCollision ? 40.0f : 150.0f;
         s.draws.push_back(d);
     }
 }
@@ -605,6 +634,10 @@ extern "C" void Item_Obj_CheckKartCollision_Sonic_807a14d4(CpuContext* ctx) {
         func_807a14d4(ctx);  // his own items, or the game moving him: the game decides
         return;
     }
+    if (g::U32(item + 0x74) & 1u) {  // already killed
+        ctx->gpr[3] = 0;
+        return;
+    }
     const sonic::Vec3 pos = g::Vec(item + 0x44);
     const uint32_t entity = g::Ptr(item + 0xB0);
     float radius = entity ? g::F32(entity + 4) : 0.0f;
@@ -625,3 +658,10 @@ extern "C" void Item_Obj_CheckKartCollision_Sonic_807a14d4(CpuContext* ctx) {
 }
 REGISTER_NATIVE_FUNCTION_AS(0x807A14D4, Item_Obj_CheckKartCollision_Sonic_807a14d4,
                             "Item_Obj_CheckKartCollision_Sonic_807a14d4");
+
+// Kart::Manager::~Manager: the race is over.
+extern "C" void Kart_Manager_dtor_Sonic_8058fdd4(CpuContext* ctx) {
+    sonic_mkw::race_detail::Reset();
+    func_8058fdd4(ctx);
+}
+REGISTER_NATIVE_FUNCTION_AS(0x8058FDD4, Kart_Manager_dtor_Sonic_8058fdd4, "Kart_Manager_dtor_Sonic_8058fdd4");

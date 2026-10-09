@@ -50,10 +50,9 @@ struct RacerDraw {
     const PosedSonic* posed = nullptr;
     int id = 0;
     // Models whose origin is this close (view space) belong to Sonic's stand-in
-    // kart; with hideAll they are all skipped (full-size kart), otherwise only
-    // the base character's driver (the shrunk kart is too small to see).
+    // kart: the base character's driver among them is skipped (the game hides
+    // the kart itself), and Sonic is drawn with the first of them.
     float hideRadius = 40.0f;
-    bool hideAll = false;
 };
 // Sonic racers to draw this frame (empty outside races).
 void RacersForDraw(std::vector<RacerDraw>& out);

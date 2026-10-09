@@ -45,16 +45,16 @@ foreach ($relative in $sourceFiles | Sort-Object -Unique) {
 }
 
 # One synthetic text section: li r3,40; addi r3,r3,2; nop; blr.
-# Native HLE wrappers also call these nine guest symbols directly. Give each
+# Native HLE wrappers (and the Sonic hooks) also call these guest symbols directly. Give each
 # its own generated blr function so the real product can link without game code.
 # Keep this list explicit: a new unresolved guest dependency must fail the test.
 [uint32]$entry = 0x80001000L
 [uint32[]]$guestCallbacks = @(
     0x80069000L, 0x8012B830L, 0x801A0620L, 0x801A1ED8L, 0x801A961CL,
     0x801AADE0L, 0x801D8D30L, 0x801D9E94L, 0x8055531CL, 0x8058160CL,
-    0x8058FFE8L, 0x80627008L, 0x807A14D4L, 0x807E25A8L, 0x807E2928L,
-    0x807E35FCL, 0x807E36F4L, 0x807E37D4L, 0x807E3880L, 0x807E39CCL,
-    0x807E3E10L, 0x80833774L, 0x80860ACCL
+    0x8058FDD4L, 0x8058FFE8L, 0x80627008L, 0x807A14D4L, 0x807E25A8L,
+    0x807E2928L, 0x807E35FCL, 0x807E36F4L, 0x807E37D4L, 0x807E3880L,
+    0x807E39CCL, 0x807E3E10L, 0x80833774L, 0x80860ACCL
 )
 $textSize = [int]($guestCallbacks[-1] - $entry + 4)
 $dataOffset = 0x100 + $textSize

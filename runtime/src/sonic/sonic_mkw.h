@@ -47,6 +47,9 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg);
 // The base character's models were found (the menus can show Sonic over them).
 bool ModelSwapActive();
 bool IsBaseModelFingerprint(uint64_t fingerprint);
+// The UI archives got Sonic's portrait (in the hammer picture) / his name message.
+bool SonicIconPatched();
+bool SonicNamePatched();
 bool DebugLogging();
 
 }  // namespace sonic_mkw

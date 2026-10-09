@@ -73,6 +73,8 @@ std::string Squash(const std::string& text) {
 std::mutex g_stateMutex;
 std::unordered_set<uint64_t> g_fingerprints;
 std::atomic<bool> g_modelSwap{false};
+std::atomic<bool> g_iconPatched{false};
+std::atomic<bool> g_namePatched{false};
 std::atomic<bool> g_debug{false};
 
 bool ReadBytes(const fs::path& path, Bytes& out) {
@@ -405,6 +407,8 @@ bool IsBaseModelFingerprint(uint64_t fingerprint) {
 }
 
 bool DebugLogging() { return disc_detail::g_debug.load(std::memory_order_relaxed); }
+bool SonicIconPatched() { return disc_detail::g_iconPatched.load(std::memory_order_acquire); }
+bool SonicNamePatched() { return disc_detail::g_namePatched.load(std::memory_order_acquire); }
 
 void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) {
     using namespace disc_detail;
@@ -526,6 +530,8 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
         g_fingerprints = prints;
     }
     g_modelSwap = modelSwap && !prints.empty();
+    g_iconPatched = icons && patched > 0;
+    g_namePatched = names && patched > 0;
 
     const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started);
     RT_LOG(RT_TAG_SONIC) << "Sonic (as " << slot->name << "): " << prints.size() << " " << slot->name

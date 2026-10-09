@@ -30,6 +30,7 @@
 #include "sonic/sonic_game.h"
 #include "sonic/sonic_guest.h"
 #include "sonic/sonic_mkw.h"
+#include "sonic/sonic_render.h"
 
 #include <algorithm>
 #include <atomic>
@@ -144,7 +145,12 @@ Vec3 Position(uint32_t control) { return g::Vec(control + 0x04); }
 // reading order (top row first), or a new column right of the last row.
 Vec3 FreeCell(uint32_t buttons, int count, uint32_t base) {
     std::vector<Vec3> pos;
-    for (int i = 0; i < count; ++i) pos.push_back(Position(buttons + uint32_t(i) * kButtonSize));
+    for (int i = 0; i < count; ++i) {
+        const Vec3 p = Position(buttons + uint32_t(i) * kButtonSize);
+        if (p.x == 0 && p.y == 0 && buttons + uint32_t(i) * kButtonSize != base) continue;  // never loaded
+        if (!std::isfinite(p.x) || !std::isfinite(p.y)) continue;
+        pos.push_back(p);
+    }
     auto unique = [](std::vector<float> v) {
         std::sort(v.begin(), v.end());
         std::vector<float> out;
@@ -303,7 +309,8 @@ void CheckManipulator(CpuContext* ctx, Grid& grid) {
 }
 
 bool Enabled() {
-    return RuntimeConfigFile::SonicEnabled() && ToLowerAscii(RuntimeConfigFile::SonicSelect()) != "base";
+    return RuntimeConfigFile::SonicEnabled() && SonicResources::Get().Ready() &&
+           ToLowerAscii(RuntimeConfigFile::SonicSelect()) != "base";
 }
 
 }  // namespace roster_detail
@@ -335,12 +342,17 @@ void ClearHovers() {
     for (int& h : roster_detail::S().hover) h = -1;
 }
 bool MenuShowsSonic() {
+    // The base character's models are shared by everyone showing that character,
+    // so they become Sonic only while nobody shows the real base character.
     auto& s = roster_detail::S();
+    bool sonic = false, base = false;
     for (int h = 0; h < kHuds; ++h) {
-        if (s.hover[h] == 1) return true;
-        if (s.hover[h] == -1 && s.choseSonic[h]) return true;
+        int shown = s.hover[h];
+        if (shown == -1) shown = s.choseSonic[h] ? 1 : s.choseBase[h] ? 2 : -1;
+        sonic = sonic || shown == 1;
+        base = base || shown == 2;
     }
-    return false;
+    return sonic && !base;
 }
 void PushIdentity() { ++roster_detail::S().identity; }
 void PopIdentity() { --roster_detail::S().identity; }
@@ -433,8 +445,9 @@ extern "C" void CtrlMenuCharacterSelect_OnButtonSelect_Sonic_807e36f4(CpuContext
     const uint32_t button = ctx->gpr[4];
     const int hud = int(ctx->gpr[5]);
     const bool sonic = sonic_mkw::roster_detail::IsSonicButton(button);
-    if (sonic_mkw::roster_detail::Grid* grid = sonic_mkw::roster_detail::GridFor(ctx->gpr[3])) sonic_mkw::roster_detail::CheckManipulator(ctx, *grid);
-    if (!s.grids.empty()) sonic_mkw::game::SetHover(hud, sonic ? 1 : 0);
+    sonic_mkw::roster_detail::Grid* grid = sonic_mkw::roster_detail::GridFor(ctx->gpr[3]);
+    if (grid) sonic_mkw::roster_detail::CheckManipulator(ctx, *grid);
+    if (!s.grids.empty()) sonic_mkw::game::SetHover(hud, sonic ? 1 : (grid && button == grid->base) ? 2 : 0);
     sonic_mkw::roster_detail::IdentityScope scope(sonic);
     func_807e36f4(ctx);
 }
@@ -490,7 +503,8 @@ REGISTER_NATIVE_FUNCTION_AS(0x80627008, CtrlMenuCharacterSelect_dtor_Sonic_80627
 extern "C" void GetCharacterIconPaneName_Sonic_80860acc(CpuContext* ctx) {
     const int character = int(ctx->gpr[3]);
     func_80860acc(ctx);
-    if (character == sonic_mkw::game::BaseCharacter() && sonic_mkw::roster_detail::AnswerWithSonic()) {
+    if (sonic_mkw::SonicIconPatched() && character == sonic_mkw::game::BaseCharacter() &&
+        sonic_mkw::roster_detail::AnswerWithSonic()) {
         const uint32_t name = sonic_mkw::guest::InternString(sonic_mkw::game::kSonicIconPane);
         if (name) ctx->gpr[3] = name;
     }
@@ -501,7 +515,8 @@ REGISTER_NATIVE_FUNCTION_AS(0x80860ACC, GetCharacterIconPaneName_Sonic_80860acc,
 extern "C" void GetCharacterMessageId_Sonic_80833774(CpuContext* ctx) {
     const int character = int(ctx->gpr[3]);
     func_80833774(ctx);
-    if (character == sonic_mkw::game::BaseCharacter() && sonic_mkw::roster_detail::AnswerWithSonic()) {
+    if (sonic_mkw::SonicNamePatched() && character == sonic_mkw::game::BaseCharacter() &&
+        sonic_mkw::roster_detail::AnswerWithSonic()) {
         ctx->gpr[3] = sonic_mkw::game::kSonicNameMessage;
     }
 }

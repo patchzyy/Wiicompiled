@@ -392,6 +392,7 @@ struct RaceFrame {
     uint32_t frame = ~0u;
     std::vector<game::RacerDraw> racers;
     std::vector<std::pair<int, uint64_t>> drawn;  // (racer, camera) pairs drawn this frame
+    std::map<int, int> missed;                    // racer -> frames in a row without an anchor
     int logs = 0;
 };
 
@@ -423,6 +424,11 @@ bool RaceModel(CpuContext* ctx, ModelEntry* model) {
     RaceFrame& race = Race();
     const uint32_t frame = game::FrameNumber();
     if (race.frame != frame) {
+        for (const game::RacerDraw& racer : race.racers) {
+            bool drawn = false;
+            for (const auto& d : race.drawn) drawn = drawn || d.first == racer.id;
+            race.missed[racer.id] = drawn ? 0 : race.missed[racer.id] + 1;
+        }
         race.frame = frame;
         game::RacersForDraw(race.racers);
         race.drawn.clear();
@@ -439,7 +445,15 @@ bool RaceModel(CpuContext* ctx, ModelEntry* model) {
         // in the frame: either position marks them.
         const float near = std::min(sonic::length(at - camera.transformPoint(racer.kartPos)),
                                     sonic::length(at - camera.transformPoint(racer.gamePos)));
-        if (near > racer.hideRadius) continue;
+        // Normally the stand-in's driver model is the anchor. If nothing of the
+        // stand-in is drawn (the game hid it all), any opaque model near Sonic in
+        // this camera's view will do.
+        const bool fallback = race.missed[racer.id] > 10;
+        if (near > racer.hideRadius) {
+            if (!fallback || !ctx->gpr[7]) continue;
+            const float sonicDistance = sonic::length(camera.transformPoint(racer.kartPos));
+            if (sonicDistance > 6000.0f || sonic::length(at - camera.transformPoint(racer.kartPos)) > 6000.0f) continue;
+        }
         // Something of Sonic's stand-in kart: Sonic is drawn here, once per camera.
         if (ctx->gpr[7] && racer.posed && !racer.posed->batches.empty()) {
             const std::pair<int, uint64_t> key(racer.id, HashMatrix(camera));
@@ -454,7 +468,7 @@ bool RaceModel(CpuContext* ctx, ModelEntry* model) {
                 }
             }
         }
-        return racer.hideAll || model->isBase;
+        if (near <= racer.hideRadius) return model->isBase;
     }
     return false;
 }
