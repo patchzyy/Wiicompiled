@@ -196,7 +196,9 @@ internal static class Program
         foreach (var p in profiles)
         {
             var dir = p == "base" ? (baseInstallDir ?? installDir) : installDir;
-            var exeName = p == "base" ? "WiiCompiled" : "RetroRewind";
+            var product = p == "base" ? "WiiCompiled" : "RetroRewind";
+            // macOS builds a .app bundle (publish-app.command); launch/check-products want the binary inside it.
+            var exeName = OperatingSystem.IsMacOS() ? $"{product}.app/Contents/MacOS/{product}" : product;
             var displayName = p == "base" ? "WiiCompiled (base game)" : "WiiCompiled (Retro Rewind)";
             state.Products.RemoveAll(r => r.Profile == p);
             state.Products.Add(new ProductInstallRecord

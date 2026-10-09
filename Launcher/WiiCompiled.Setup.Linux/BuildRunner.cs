@@ -17,8 +17,11 @@ internal static class BuildRunner
         IInstallReporter reporter,
         CancellationToken cancellationToken)
     {
-        var script = Path.Combine(workspace, "Launcher", "local-build.sh");
-        if (!File.Exists(script)) throw new FileNotFoundException("local-build.sh is missing", script);
+        // macOS has its own build script (clang from Xcode, .app bundles) that takes the same flags,
+        // minus the Linux-only toolchain overrides below, which it rejects as unknown options.
+        var script = Path.Combine(workspace, "Launcher",
+            OperatingSystem.IsMacOS() ? "local-build-macos.command" : "local-build.sh");
+        if (!File.Exists(script)) throw new FileNotFoundException($"{Path.GetFileName(script)} is missing", script);
 
         var startInfo = new ProcessStartInfo("bash")
         {
@@ -105,7 +108,7 @@ internal static class BuildRunner
 
         if (process.ExitCode != 0)
         {
-            throw new InvalidOperationException($"local-build.sh failed (exit {process.ExitCode}). See diagnostics above.");
+            throw new InvalidOperationException($"{Path.GetFileName(script)} failed (exit {process.ExitCode}). See diagnostics above.");
         }
     }
 

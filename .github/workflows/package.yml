@@ -139,6 +139,18 @@ jobs:
             -p:PublishSingleFile=true \
             -o Launcher/artifacts/macos/translator-x86_64
 
+      - name: Publish self-contained setup CLI
+        shell: bash
+        run: |
+          dotnet publish Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj \
+            -c Release -r osx-arm64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -o Launcher/artifacts/macos/setup-arm64
+          dotnet publish Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj \
+            -c Release -r osx-x64 --self-contained true \
+            -p:PublishSingleFile=true \
+            -o Launcher/artifacts/macos/setup-x86_64
+
       - name: Download pinned universal Ninja
         shell: bash
         run: |
@@ -178,10 +190,13 @@ jobs:
             --nodtool-x86_64 Launcher/artifacts/macos/nodtool-x86_64 \
             --translator-arm64 Launcher/artifacts/macos/translator-arm64/Translator.Cli \
             --translator-x86_64 Launcher/artifacts/macos/translator-x86_64/Translator.Cli \
+            --setup-arm64 Launcher/artifacts/macos/setup-arm64/WiiCompiled.Setup.Linux \
+            --setup-x86_64 Launcher/artifacts/macos/setup-x86_64/WiiCompiled.Setup.Linux \
             --cmake-root Launcher/artifacts/macos/cmake \
             --ninja-arm64 Launcher/artifacts/macos/ninja/ninja \
             --ninja-x86_64 Launcher/artifacts/macos/ninja/ninja \
             --output Launcher/dist/WiiCompiled-Setup.pkg \
+            --run-output Launcher/dist/WiiCompiled-Setup-macos.run \
             ${package_version:+--version "$package_version"}
 
       - name: Verify package layout and architecture-specific tools
@@ -204,11 +219,28 @@ jobs:
           lipo "$resources/tools/cmake/bin/cmake" -verify_arch arm64 x86_64
           bash "$resources/setup.command" --help
           /usr/bin/arch -x86_64 /bin/bash "$resources/setup.command" --help
+          # The .run must answer --version without unpacking, then unpack once and run its entry point
+          # with each architecture's setup CLI.
+          run=Launcher/dist/WiiCompiled-Setup-macos.run
+          version=$("$run" --version)
+          HOME="$RUNNER_TEMP/run-home" "$run" check-products
+          unpacked="$RUNNER_TEMP/run-home/Library/Application Support/WiiCompiled/Setup/$version"
+          for arch in arm64 x86_64; do
+            lipo "$unpacked/tools/$arch/wiicompiled-setup" -verify_arch "$arch"
+          done
+          HOME="$RUNNER_TEMP/run-home" /usr/bin/arch -x86_64 /bin/bash "$run" check-products
 
       - uses: actions/upload-artifact@v7
         with:
           name: WiiCompiled-Setup-macos-universal
           path: Launcher/dist/WiiCompiled-Setup.pkg
+          if-no-files-found: error
+          archive: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WiiCompiled-Setup-macos-run
+          path: Launcher/dist/WiiCompiled-Setup-macos.run
           if-no-files-found: error
           archive: false
 
@@ -263,7 +295,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg WiiCompiled-Setup-macos.run; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")

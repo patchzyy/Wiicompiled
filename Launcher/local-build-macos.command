@@ -139,6 +139,22 @@ step configure-native 'Configuring the native toolchain'
 "$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DAURORA_SDL3_PROVIDER=vendor
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"
-if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi
-if (( builds_retro )); then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product RetroRewind --output-dir "$output_dir" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi
+# Same provenance record local-build.sh writes; Wheel Wizard reads CodePulSha256 to tell whether Retro Rewind is current.
+write_build_record() {
+    local code_pul_sha=null
+    [[ "$2" == retro-rewind ]] && code_pul_sha="\"$(sha256 "$retro_root/Binaries/Code.pul")\""
+    cat > "$1/local-build.json" <<JSON
+{
+  "SchemaVersion": 1,
+  "Profile": "$2",
+  "BuiltUtc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "DolSha256": "$(sha256 "$assets/main.dol")",
+  "RelSha256": "$(sha256 "$assets/StaticR.rel")",
+  "CodePulSha256": $code_pul_sha,
+  "Compiler": "$(clang++ --version | head -1)"
+}
+JSON
+}
+if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; write_build_record "${base_output_dir:-$output_dir}" base; fi
+if (( builds_retro )); then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product RetroRewind --output-dir "$output_dir" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; write_build_record "$output_dir" retro-rewind; fi
 printf 'MKWCBUILD:OUTPUT=%s\n' "$output_dir"
