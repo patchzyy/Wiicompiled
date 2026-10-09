@@ -96,6 +96,11 @@ public:
     // external launch (springs, dash panels): world velocity
     void launch(const Vec3& worldVel, int lockFrames, PlayerState st = PlayerState::Spring);
     void hurt(const Vec3& from);
+    // Hosts that move the character themselves (cutscenes, vehicles, replays):
+    // place it with a world velocity and facing, grounded or airborne, curled up
+    // or not, without running the physics. Animation and effects follow as usual.
+    void setPuppet(const Vec3& feet, const Vec3& worldVel, const Vec3& forward, const Vec3& upDir, bool onGround,
+                   bool curled);
 
     // events consumed by the game for sounds
     bool evHoming = false, evBounce = false;

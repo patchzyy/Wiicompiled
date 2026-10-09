@@ -48,6 +48,14 @@ void Sonic::update(const InputState& input, const Vec3& cameraForward, const ICo
     updateAnimation();
 }
 
+void Sonic::puppet(const Vec3& feet, const Vec3& worldVel, const Vec3& forward, bool onGround, bool curled) {
+    sounds_.clear();
+    player_.targets.clear();
+    player_.setPuppet(feet, worldVel, forward, Vec3(0, 1, 0), onGround, curled);
+    effects_.update(player_);
+    updateAnimation();
+}
+
 void Sonic::updateAnimation() {
     // Picks animation IDs the way Sonic's state machine does in the original game;
     // the IDs index the game's own SonicAnimData table (transitions, blend and

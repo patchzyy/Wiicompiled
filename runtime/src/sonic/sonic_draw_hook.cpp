@@ -198,11 +198,11 @@ Placement Place(ModelEntry& model, uint32_t viewPosArray) {
 
 // ---- GX ---------------------------------------------------------------------------
 
-GXTexObj* TextureFor(int texture, int wrapS, int wrapT) {
+GXTexObj* TextureFor(int set, int texture, int wrapS, int wrapT) {
     static std::map<int, GXTexObj> objects;
-    const auto& textures = SonicResources::Get().Textures();
+    const auto& textures = SonicResources::Get().Textures(set);
     if (texture < 0 || size_t(texture) >= textures.size()) return nullptr;
-    const int key = texture * 16 + wrapS * 4 + wrapT;
+    const int key = (set * 4096 + texture) * 16 + wrapS * 4 + wrapT;
     auto it = objects.find(key);
     if (it == objects.end()) {
         const sonic::Image& image = textures[size_t(texture)].image;
@@ -239,7 +239,7 @@ void SetCommonState() {
 }
 
 void SetBatchState(const MeshBatch& batch) {
-    GXTexObj* tex = batch.texture >= 0 ? TextureFor(batch.texture, batch.wrapS, batch.wrapT) : nullptr;
+    GXTexObj* tex = batch.texture >= 0 ? TextureFor(batch.textureSet, batch.texture, batch.wrapS, batch.wrapT) : nullptr;
     if (tex) {
         GXLoadTexObj(tex, GX_TEXMAP0);
         GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD0, GX_TEXMAP0, GX_COLOR0A0);

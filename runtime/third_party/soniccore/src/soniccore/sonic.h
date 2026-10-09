@@ -52,6 +52,10 @@ public:
     // (stick up = away from the camera). Falling below `killY` respawns Sonic.
     void update(const InputState& input, const Vec3& cameraForward, const ICollision& collision, float killY = -1e30f);
 
+    // Move Sonic yourself for a frame instead of update() (see Player::setPuppet):
+    // animation, effects and sounds-free bookkeeping still advance.
+    void puppet(const Vec3& feet, const Vec3& worldVel, const Vec3& forward, bool onGround, bool curled);
+
     // Add Sonic (and his effects) to a draw list.
     void draw(DrawList& out);
 

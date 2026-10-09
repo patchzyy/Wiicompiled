@@ -33,7 +33,10 @@ struct MeshVertex {
 };
 
 struct MeshBatch {
-    int texture = -1;       // index into the SONIC.PVM texture set, -1 = untextured
+    int texture = -1;       // index into the texture set, -1 = untextured
+    int textureSet = 0;     // sonic::TEXSET_SONIC or TEXSET_EFFECTS
+    uint32_t tint = 0xFFFFFFFFu;  // RGBA multiplier (R in the low byte)
+    float alpha = 1.0f;     // fade
     bool env = false;       // environment mapped: UVs from the view-space normal
     bool blend = false;     // alpha blended (drawn after the opaque batches)
     bool alphaTest = false; // texture with cut-out alpha
@@ -77,7 +80,8 @@ public:
     const std::string& Error() const { return error_; }
     const std::string& Folder() const { return folder_; }
 
-    const std::vector<sonic::TextureImage>& Textures() const;
+    const std::vector<sonic::TextureImage>& Textures(int set = sonic::TEXSET_SONIC) const;
+    const sonic::Assets& Assets() const { return assets_; }
 
     // Poses Sonic (thread-safe, serialised). `time` is in 60 Hz frames.
     bool Pose(SonicPose pose, float time, PosedSonic& out);
@@ -103,6 +107,10 @@ private:
     sonic::CharacterModel model_;
     std::mutex mutex_;
 };
+
+// Turns a SonicCore draw list into batches, transforming every vertex by
+// `toWorld` (no normalisation; for drawing live characters).
+void BuildBatches(const sonic::DrawList& list, const sonic::Mat4& toWorld, PosedSonic& out);
 
 // ---- icons ------------------------------------------------------------------------
 struct IconStyle {

@@ -98,7 +98,10 @@ struct RuntimeUserConfig {
     // [sonic]: Sonic as a playable driver, built at runtime from the player's own
     // Sonic Adventure DX files (docs/SONIC.md).
     std::optional<bool> sonicEnabled;
-    std::optional<std::string> sonicReplaces;
+    std::optional<std::string> sonicBase;
+    std::optional<std::string> sonicPhysics;
+    std::optional<float> sonicSpeed;
+    std::optional<float> sonicAcceleration;
     std::optional<std::string> sonicAssets;
     std::optional<bool> sonicModel;
     std::optional<bool> sonicIcons;
@@ -352,18 +355,30 @@ inline void EnsureConfigFile() {
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
               "# overlay_roots = [\"D:\\\\RetroRewind\"]\n\n"
               "[sonic]\n"
-              "# Sonic from Sonic Adventure DX as a playable driver. He takes the\n"
-              "# roster slot named by `replaces` (model, icons and name). Nothing is\n"
-              "# shipped: everything is built from your own SADX files, so point\n"
-              "# `assets` at your Sonic Adventure DX folder (the one with the system\n"
-              "# folder) or at a SonicCore SonicAssets folder. See docs/SONIC.md.\n"
+              "# Sonic from Sonic Adventure DX as a new playable character who races on\n"
+              "# foot. Nothing is shipped: everything is built from your own SADX files,\n"
+              "# so point `assets` at your Sonic Adventure DX folder (the one with the\n"
+              "# system folder) or at a SonicCore SonicAssets folder. See docs/SONIC.md.\n"
               "enabled = true\n"
-              "replaces = \"luigi\"\n"
               "# assets = \"D:\\\\SADX\\\\SADX\"\n"
+              "# The character the game uses under the hood for Sonic's weight class\n"
+              "# and item odds. Players picking that character themselves are not affected.\n"
+              "base = \"mario\"\n"
+              "# physics: \"downhill\" = SADX, but on flat ground he reaches the speed SADX\n"
+              "#          gives him down a steep slope (about 94 Mario Kart units/frame;\n"
+              "#          the fastest kart does about 86)\n"
+              "#          \"sadx\"     = exactly SADX (about 40 units/frame on flat ground)\n"
+              "#          \"kart\"     = top speed and acceleration matched to the karts\n"
+              "physics = \"downhill\"\n"
+              "# Multiplies his speeds; acceleration multiplies how hard he pushes off\n"
+              "# (1 = SADX: about 7 s to full speed with \"downhill\", 2.5 = about 3.5 s).\n"
+              "speed = 1.0\n"
+              "acceleration = 1.0\n"
+              "# Sonic's size (1 = about as tall as Mario).\n"
+              "scale = 1.0\n"
               "model = true\n"
               "icons = true\n"
               "name = true\n"
-              "scale = 1.0\n"
               "debug = false\n";
 }
 
@@ -520,7 +535,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.discordClientId = FindConfigValue<std::string>(document, "discord", "client_id");
 
     config.sonicEnabled = FindConfigValue<bool>(document, "sonic", "enabled");
-    config.sonicReplaces = FindConfigValue<std::string>(document, "sonic", "replaces");
+    config.sonicBase = FindConfigValue<std::string>(document, "sonic", "base");
+    config.sonicPhysics = FindConfigValue<std::string>(document, "sonic", "physics");
+    config.sonicSpeed = FindConfigFloat(document, "sonic", "speed");
+    config.sonicAcceleration = FindConfigFloat(document, "sonic", "acceleration");
     config.sonicAssets = FindConfigValue<std::string>(document, "sonic", "assets");
     config.sonicModel = FindConfigValue<bool>(document, "sonic", "model");
     config.sonicIcons = FindConfigValue<bool>(document, "sonic", "icons");
@@ -1040,8 +1058,19 @@ inline std::string DiscordClientId(std::string fallback = "1543984562369990706")
 }
 
 inline bool SonicEnabled(bool fallback = true) { return Get().sonicEnabled.value_or(fallback); }
-inline std::string SonicReplaces(std::string fallback = "luigi") {
-    return Get().sonicReplaces.value_or(std::move(fallback));
+inline std::string SonicBase(std::string fallback = "mario") {
+    return Get().sonicBase.value_or(std::move(fallback));
+}
+inline std::string SonicPhysics(std::string fallback = "downhill") {
+    return Get().sonicPhysics.value_or(std::move(fallback));
+}
+inline float SonicSpeed(float fallback = 1.0f) {
+    const float value = Get().sonicSpeed.value_or(fallback);
+    return (value >= 0.25f && value <= 4.0f) ? value : fallback;
+}
+inline float SonicAcceleration(float fallback = 1.0f) {
+    const float value = Get().sonicAcceleration.value_or(fallback);
+    return (value >= 0.25f && value <= 8.0f) ? value : fallback;
 }
 inline std::string SonicAssets(std::string fallback = "") {
     return Get().sonicAssets.value_or(std::move(fallback));

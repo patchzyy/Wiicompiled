@@ -821,6 +821,32 @@ void Player::hurt(const Vec3& from) {
     rings = 0;
 }
 
+void Player::setPuppet(const Vec3& feet, const Vec3& worldVel, const Vec3& forward, const Vec3& upDir, bool onGround,
+                       bool curled) {
+    pos = feet;
+    wvel = worldVel;
+    Vec3 f = normalize(Vec3(forward.x, 0, forward.z), facing);
+    ang[0] = ang[2] = 0;
+    ang[1] = angAim = wrapAng(radToAng(std::atan2(f.z, f.x)));
+    (void)upDir;
+    flags = u16(flags & ~0x503);
+    if (onGround) flags |= 1;
+    if (curled) flags |= 0x100 | 0x400;
+    if (curled) mode = MD_Jump;
+    else if (!onGround) mode = MD_Fall;
+    else mode = length(Vec3(worldVel.x, 0, worldVel.z)) > 0.05f ? MD_Run : MD_Stand;
+    spd = toLocal(wvel);
+    groundNormal = Vec3(0, 1, 0);
+    upY = 1;
+    nocontimer = 0;
+    hurtTimer_ = 0;
+    evJumped = evLanded = evSpinDash = evRespawn = evSkid = evSpinCharge = false;
+    evHoming = evBounce = false;
+    braking = false;
+    if (flags & 0x100) ballTimer = (ballTimer + 1) & 0xFFFF;
+    syncView();
+}
+
 void Player::syncView() {
     Mat4 m = localToWorld();
     up = normalize(m.transformDir(Vec3(0, 1, 0)));

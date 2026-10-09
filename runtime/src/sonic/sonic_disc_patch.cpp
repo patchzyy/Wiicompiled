@@ -407,9 +407,10 @@ void PatchDisc(const std::vector<DiscFile>& files, const RegisterDiscFile& reg) 
     g_debug = cfg::SonicDebug();
     const auto started = std::chrono::steady_clock::now();
 
-    const CharacterSlot* slot = FindCharacterSlot(cfg::SonicReplaces());
+    // Still the earlier Luigi-slot build here; the new-character version replaces this.
+    const CharacterSlot* slot = FindCharacterSlot("luigi");
     if (!slot) {
-        RT_LOG(RT_TAG_SONIC) << "replaces = \"" << cfg::SonicReplaces()
+        RT_LOG(RT_TAG_SONIC) << "replaces = \"" << "luigi"
                              << "\" is not a Mario Kart Wii character; Sonic is disabled." << std::endl;
         return;
     }

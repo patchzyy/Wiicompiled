@@ -107,11 +107,14 @@ uint32_t ShadeVertex(const MeshBatch& batch, const MeshVertex& v, const float nV
         light[1] = (0.74f + 0.56f * key + 0.15f * fill + rim) * boost;
         light[2] = (0.78f + 0.54f * key + 0.18f * fill + rim) * boost;
     }
+    // DrawItem tint (RGBA, R in the low byte) and fade alpha.
+    const float tint[4] = {float(batch.tint & 0xFF) / 255.0f, float((batch.tint >> 8) & 0xFF) / 255.0f,
+                           float((batch.tint >> 16) & 0xFF) / 255.0f, float(batch.tint >> 24) / 255.0f};
     uint32_t out = 0;
     for (int i = 0; i < 3; ++i) {
-        out |= uint32_t(render_detail::Clamp01(base[i] * light[i]) * 255.0f + 0.5f) << (i * 8);
+        out |= uint32_t(render_detail::Clamp01(base[i] * light[i] * tint[i]) * 255.0f + 0.5f) << (i * 8);
     }
-    out |= uint32_t(render_detail::Clamp01(base[3]) * 255.0f + 0.5f) << 24;
+    out |= uint32_t(render_detail::Clamp01(base[3] * tint[3] * batch.alpha) * 255.0f + 0.5f) << 24;
     return out;
 }
 
@@ -155,31 +158,37 @@ bool SonicResources::Load(const std::string& configured, const std::vector<std::
     return false;
 }
 
-const std::vector<sonic::TextureImage>& SonicResources::Textures() const {
-    return assets_.textures(sonic::TEXSET_SONIC);
+const std::vector<sonic::TextureImage>& SonicResources::Textures(int set) const {
+    return assets_.textures(set);
 }
 
 namespace render_detail {
 
 // Batch key: everything that changes GX state.
-using BatchKey = std::tuple<int, uint32_t, uint32_t, bool, float>;
+using BatchKey = std::tuple<int, int, uint32_t, uint32_t, bool, float, uint32_t, float>;
 
-void AppendItem(const sonic::DrawItem& item, const std::vector<sonic::TextureImage>& textures,
-                const Mat4& canonical, std::map<BatchKey, size_t>& index, PosedSonic& out) {
+void AppendItem(const sonic::DrawItem& item, const Mat4& canonical, std::map<BatchKey, size_t>& index,
+                PosedSonic& out) {
     const sonic::NjModel& model = *item.model;
     const Mat4 world = canonical * item.world;
+    const auto& textures = SonicResources::Get().Textures(item.textureSet);
     for (const sonic::NjMeshPart& part : model.parts) {
         if (part.material < 0 || part.material >= int(model.mats.size())) continue;
         const sonic::NjMaterial& mat = model.mats[size_t(part.material)];
         const sonic::MaterialInfo info(mat);
-        const int texture = (info.useTexture() && mat.texId < textures.size()) ? int(mat.texId) : -1;
-        const BatchKey key{texture, mat.flags & 0xFFFF0000u, mat.diffuse, part.hasVColor, item.lightBoost};
+        const uint32_t texId = item.forceTexture >= 0 ? uint32_t(item.forceTexture) : mat.texId;
+        const int texture = (info.useTexture() && texId < textures.size()) ? int(texId) : -1;
+        const BatchKey key{item.textureSet, texture, mat.flags & 0xFFFF0000u, mat.diffuse, part.hasVColor,
+                           item.lightBoost, item.tint, item.alpha};
         auto found = index.find(key);
         if (found == index.end()) {
             MeshBatch batch;
             batch.texture = texture;
+            batch.textureSet = item.textureSet;
+            batch.tint = item.tint;
+            batch.alpha = item.alpha;
             batch.env = info.env();
-            batch.blend = info.useAlpha();
+            batch.blend = info.useAlpha() || item.alpha < 0.999f;
             batch.alphaTest = !batch.blend && texture >= 0 && textures[size_t(texture)].image.hasAlpha;
             batch.vertexColor = part.hasVColor;
             batch.lit = !(part.hasVColor || info.ignoreLight());
@@ -301,6 +310,15 @@ bool SonicResources::PoseDrivingLocked(float frame, PosedSonic& out) {
     return FinishPose(list, out);
 }
 
+void BuildBatches(const sonic::DrawList& list, const sonic::Mat4& toWorld, PosedSonic& out) {
+    using namespace render_detail;
+    out = PosedSonic{};
+    std::map<BatchKey, size_t> index;
+    for (const auto& item : list.items) {
+        if (item.model) AppendItem(item, toWorld, index, out);
+    }
+}
+
 bool SonicResources::PoseAction(int action, float frame, PosedSonic& out) {
     std::lock_guard<std::mutex> lock(mutex_);
     out = PosedSonic{};
@@ -321,9 +339,8 @@ bool SonicResources::FinishPose(const sonic::DrawList& list, PosedSonic& out) {
     // Character models face -X; turn them to face +Z (see soniccore sonic.cpp).
     const Mat4 facePlusZ = Mat4::basis(Vec3(0, 0, -1), Vec3(0, 1, 0), Vec3(1, 0, 0));
     std::map<BatchKey, size_t> index;
-    const auto& textures = Textures();
     for (const auto& item : list.items) {
-        if (item.model) AppendItem(item, textures, facePlusZ, index, out);
+        if (item.model) AppendItem(item, facePlusZ, index, out);
     }
 
     // Normalise: lowest vertex at y = 0, joint box centred on x/z.
@@ -456,15 +473,15 @@ void DrawTriangle(Canvas& cv, const ScreenVertex& a, const ScreenVertex& b, cons
 
 void RasterizeToCanvas(const PosedSonic& posed, const Mat4& view, float left, float right, float bottom, float top,
                        Canvas& cv) {
-    const auto& textures = SonicResources::Get().Textures();
+    const auto& resources = SonicResources::Get();
     const float sx = float(cv.width) / (right - left);
     const float sy = float(cv.height) / (top - bottom);
     for (int pass = 0; pass < 2; ++pass) {
         for (const MeshBatch& batch : posed.batches) {
             if (batch.blend != (pass == 1)) continue;
             TexSampler tex;
-            if (batch.texture >= 0 && size_t(batch.texture) < textures.size()) {
-                tex.image = &textures[size_t(batch.texture)].image;
+            if (batch.texture >= 0 && size_t(batch.texture) < resources.Textures(batch.textureSet).size()) {
+                tex.image = &resources.Textures(batch.textureSet)[size_t(batch.texture)].image;
             }
             tex.wrapS = batch.wrapS;
             tex.wrapT = batch.wrapT;
