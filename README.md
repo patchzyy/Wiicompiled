@@ -81,6 +81,33 @@ Force feedback can be turned off for every port at once.
 The official Wii U / Switch GameCube adapter (WUP-028) works too; as with Dolphin, on Windows the
 adapter must be switched to the WinUSB driver once (Zadig).
 
+**Racing wheels.**
+Wheels identified by SDL, plus recognized Logitech wheel models, can use wheel steering and pedals
+on A and B. A usable SDL gamepad mapping is required: supported Logitech Driving Force models get a
+built-in layout, while other devices may need **Set up** in **F10**, **Controller settings** first.
+A mapping you capture in the wizard overrides the built-in layout. Built-in wheel layouts remain
+available there for customization.
+
+The pedal heuristic assumes steering on raw axis 0 and pedals resting high. Two-axis devices use a
+combined pedal axis when both pedal selectors are automatic. If that does not match your device,
+choose Accelerator and Brake explicitly, including axis 0; explicit choices override the combined
+axis heuristic. When either A or B is mapped to an SDL axis, including by the wizard, the SDL layout
+owns both pedal controls and the raw selectors are disabled. Use **Customize** to map both pedals.
+These controls and steering sensitivity work with force feedback disabled.
+
+Force feedback uses a centering spring and vibration from the game's rumble, where the driver
+supports them. Set the wheel's physical rotation range in its driver. Steering sensitivity is a gain:
+100% uses the available steering travel, while the default 350% reaches maximum game steering at
+roughly 30% of travel from center. Higher sensitivity reaches the limit sooner; it does not change
+the driver's rotation range. Strength, spring, vibration and sensitivity are adjustable in F10 and
+saved to Config.toml.
+
+For a mapped device SDL does not classify as a wheel, select its port and enable **Treat this device
+as a racing wheel**. The override is scoped to that device's SDL GUID. Existing configurations with
+only force_wheel = true must select the device again; an unscoped flag no longer affects every pad.
+Force feedback is opened only through SDL's joystick association or an unambiguous exact-name
+match. Drivers exposing unrelated interface names may therefore provide input without force feedback.
+
 **Real Wii Remotes over Bluetooth.**
 Pair a Wii Remote with Windows (Settings > Bluetooth > Add device, press 1+2 or SYNC, leave the
 PIN empty)

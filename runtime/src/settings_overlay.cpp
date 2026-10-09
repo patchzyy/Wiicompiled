@@ -8,6 +8,7 @@
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wheel_ffb.h"
 #include "wii_remote_input.h"
 
 #include <imgui.h>
@@ -115,6 +116,12 @@ bool g_forceAspect169 = RuntimeConfigFile::ForceAspect169Enabled();
 bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
 #endif
 uint32_t g_disabledPostProcessingPaths = RuntimeConfigFile::DisabledPostProcessingPaths(0);
+int g_ffbStrength = RuntimeConfigFile::FfbStrength();
+int g_ffbSpring = RuntimeConfigFile::FfbSpring();
+int g_ffbVibration = RuntimeConfigFile::FfbVibration();
+int g_steeringSensitivity = RuntimeConfigFile::SteeringSensitivity();
+int g_acceleratorAxis = RuntimeConfigFile::AcceleratorAxis();
+int g_brakeAxis = RuntimeConfigFile::BrakeAxis();
 std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
     std::array<int32_t, PAD_MAX_CONTROLLERS> indices{};
     indices.fill(std::numeric_limits<int32_t>::min());
@@ -766,6 +773,7 @@ void DrawControllerSettings() {
     if (ImGui::MenuItem("Unassign controller")) {
         PADClearPort(selectedGamePort);
         g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+        wheel_ffb::NotifyControllersChanged();
     }
     ImGui::Separator();
     controller_mapping_wizard::DrawSetupList();
@@ -784,6 +792,7 @@ void DrawControllerSettings() {
                 PADSetPortForIndex(index, selectedGamePort);
                 g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
                 ApplyConfiguredMappings();
+                wheel_ffb::NotifyControllersChanged();
             }
             ImGui::PopID();
         }
@@ -860,6 +869,118 @@ void DrawControllerSettings() {
     ImGui::SameLine();
     if (ImGui::Button("PlayStation")) {
         applyPreset(kPlayStationPreset);
+    }
+
+    ImGui::SeparatorText("Analog");
+    if (PADDeadZones* zones = PADGetDeadZones(static_cast<uint32_t>(g_controllerPort))) {
+        int stickDeadzone = zones->stickDeadZone;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Stick dead zone", &stickDeadzone, 0, 16000, "%d",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            zones->stickDeadZone = static_cast<uint16_t>(stickDeadzone);
+            zones->substickDeadZone = static_cast<uint16_t>(stickDeadzone);
+            PADSerializeMappings();
+        }
+        int triggerZone = zones->leftTriggerActivationZone;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("L/R press point", &triggerZone, 1000, 32000, "%d",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            zones->leftTriggerActivationZone = static_cast<uint16_t>(triggerZone);
+            zones->rightTriggerActivationZone = static_cast<uint16_t>(triggerZone);
+            PADSerializeMappings();
+        }
+    }
+    if (PADSupportsRumbleIntensity(static_cast<uint32_t>(g_controllerPort))) {
+        uint16_t low = 0;
+        uint16_t high = 0;
+        PADGetRumbleIntensity(static_cast<uint32_t>(g_controllerPort), &low, &high);
+        int rumblePercent = (static_cast<int>(low) * 100 + INT16_MAX / 2) / INT16_MAX;
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Rumble strength", &rumblePercent, 0, 100, "%d%%",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            const auto intensity = static_cast<uint16_t>((rumblePercent * INT16_MAX + 50) / 100);
+            PADSetRumbleIntensity(static_cast<uint32_t>(g_controllerPort), intensity, intensity);
+            PADSerializeMappings();
+        }
+    }
+
+    const int selectedIndex = PADGetIndexForPort(selectedGamePort);
+    if (auto* gamepad = selectedIndex >= 0 ? PADGetSDLGamepadForIndex(selectedIndex) : nullptr) {
+        char guid[33] = {};
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(SDL_GetGamepadID(gamepad)), guid, sizeof(guid));
+        bool forceWheel = RuntimeConfigFile::FfbForceWheel() && RuntimeConfigFile::FfbWheelGuid() == guid;
+        if (ImGui::Checkbox("Treat this device as a racing wheel", &forceWheel)) {
+            RuntimeConfigFile::SetFfbWheelGuid(forceWheel ? guid : "");
+            wheel_ffb::NotifyControllersChanged();
+        }
+    }
+
+    if (wheel_ffb::IsWheelPort(selectedGamePort)) {
+        ImGui::SeparatorText("Force feedback");
+        bool ffbEnabled = RuntimeConfigFile::FfbEnabled();
+        if (ImGui::Checkbox("Enabled##ffb", &ffbEnabled)) {
+            RuntimeConfigFile::SetFfbEnabled(ffbEnabled);
+            wheel_ffb::NotifyControllersChanged();
+        }
+        ImGui::TextDisabled("%s", wheel_ffb::StatusText());
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::SliderInt("Steering sensitivity", &g_steeringSensitivity, 100, 900, "%d%%",
+                             ImGuiSliderFlags_AlwaysClamp)) {
+            wheel_ffb::ApplySteeringSensitivity(g_steeringSensitivity);
+            RuntimeConfigFile::SetSteeringSensitivity(g_steeringSensitivity);
+        }
+        if (ffbEnabled) {
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Strength", &g_ffbStrength, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplyStrength(g_ffbStrength);
+                RuntimeConfigFile::SetFfbStrength(g_ffbStrength);
+            }
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Centering spring", &g_ffbSpring, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplySpring(g_ffbSpring);
+                RuntimeConfigFile::SetFfbSpring(g_ffbSpring);
+            }
+            ImGui::SetNextItemWidth(190.0f);
+            if (ImGui::SliderInt("Vibration", &g_ffbVibration, 0, 100, "%d%%",
+                                 ImGuiSliderFlags_AlwaysClamp)) {
+                wheel_ffb::ApplyVibration(g_ffbVibration);
+                RuntimeConfigFile::SetFfbVibration(g_ffbVibration);
+            }
+        }
+        ImGui::ProgressBar((wheel_ffb::SteeringPosition(selectedGamePort) + 1.0f) * 0.5f,
+                           ImVec2(190.0f, 0.0f), "Steering");
+        const auto pedalCombo = [](const char* label, int& axis, bool accelerator) {
+            ImGui::SetNextItemWidth(190.0f);
+            const std::string current =
+                axis < 0 ? "Detected automatically" : "Axis " + std::to_string(axis);
+            if (!ImGui::BeginCombo(label, current.c_str())) {
+                return;
+            }
+            for (int value = -1; value < 8; ++value) {
+                const std::string name =
+                    value < 0 ? "Detected automatically" : "Axis " + std::to_string(value);
+                if (ImGui::Selectable(name.c_str(), value == axis)) {
+                    axis = value;
+                    if (accelerator) {
+                        RuntimeConfigFile::SetAcceleratorAxis(value);
+                    } else {
+                        RuntimeConfigFile::SetBrakeAxis(value);
+                    }
+                }
+            }
+            ImGui::EndCombo();
+        };
+        const bool mappedPedals = wheel_ffb::UsesMappedPedals(selectedGamePort);
+        ImGui::BeginDisabled(mappedPedals);
+        pedalCombo("Accelerator", g_acceleratorAxis, true);
+        pedalCombo("Brake", g_brakeAxis, false);
+        ImGui::EndDisabled();
+        if (mappedPedals) {
+            ImGui::TextDisabled("Pedals use the SDL layout. Use Customize above to map both pedals.");
+        }
+        ImGui::TextDisabled("Set rotation range in your wheel driver; higher sensitivity reaches full steering sooner");
     }
 
     ImGui::SeparatorText("Button mapping");
@@ -1425,6 +1546,7 @@ void ApplyInputBlockState() {
                          g_exitPromptOpen || g_topBarVisible || StartupScreenVisible();
     PADBlockInput(blocked);
     InputBindings::SetInputBlocked(blocked);
+    wheel_ffb::SetInputBlocked(blocked);
 }
 } // namespace
 
@@ -1432,6 +1554,7 @@ void InitializeRuntimeSettings() noexcept {
     PAD_HLE_SetRumbleEnabled(g_rumbleEnabled);
     InputBindings::Reload();
     controller_mapping_wizard::LoadPersistedMappings();
+    controller_mapping_wizard::ApplyBuiltinWheelMappings();
     ApplyConfiguredMappings();
     AudioBackend::Instance().SetMasterVolume(static_cast<float>(g_audioVolumePercent) / 100.0f);
     AudioBackend::Instance().SetMuted(g_audioMuted);
@@ -1458,6 +1581,7 @@ void InitializeRuntimeSettings() noexcept {
     g_bootShaderWaitStart = {};
     PADBlockInput(false);
     InputBindings::SetInputBlocked(false);
+    wheel_ffb::SetInputBlocked(false);
 }
 
 void HandleEvents(const AuroraEvent* events) noexcept {
@@ -1465,8 +1589,12 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         return;
     }
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
+        if (ev->type == AURORA_SDL_EVENT && ev->sdl.type == SDL_EVENT_GAMEPAD_REMAPPED) {
+            wheel_ffb::NotifyControllersChanged();
+        }
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+            wheel_ffb::NotifyControllersChanged();
         }
         if (ev->type != AURORA_SDL_EVENT) {
             continue;
@@ -1504,6 +1632,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
 }
 
 void ReleaseControllers() noexcept {
+    wheel_ffb::Shutdown();
     // Aurora drives the LED white on first PADRead and never clears it, and the
     // exit paths terminate the process outright, so do it here.
     bool queued = false;
