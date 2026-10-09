@@ -119,7 +119,7 @@ static void TryInvokeSwitchCallback(uint32_t oldCtx, uint32_t newCtx, CpuContext
 
 // Forward declare for SelectThread to use
 extern "C" void OS__SetCurrentContext_801a1e70(uint32_t contextAddr);
-extern "C" void func_801A1ED8(CpuContext* ctx);
+extern "C" void MKW_GUEST_FUNC(801A1ED8)(CpuContext* ctx);
 
 // ============================================================================
 // SelectThread HLE - Thread Scheduler (Fiber-Aware)
@@ -200,7 +200,7 @@ extern "C" void SelectThread_801a9c08(CpuContext* ctx)
             const uint16_t modeFlags = ::Memory::Read16(runningContext + 0x1A2u);
             if ((modeFlags & 0x0002u) == 0) {
                 cpu->gpr[3] = runningContext;
-                func_801A1ED8(cpu);
+                MKW_GUEST_FUNC(801A1ED8)(cpu);
                 if (cpu->gpr[3] != 0) {
                     cpu->gpr[3] = 0;
                     return;

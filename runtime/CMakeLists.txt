@@ -393,11 +393,15 @@ add_executable(mkw_nand_settings_tests "${CMAKE_CURRENT_LIST_DIR}/tests/nand_set
 find_package(Threads REQUIRED)
 target_link_libraries(mkw_nand_settings_tests PRIVATE Threads::Threads)
 target_include_directories(mkw_nand_settings_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_definitions(mkw_nand_settings_tests PRIVATE
+    MKW_STANDALONE_GUEST_REGION_HEADER="region/rmcp01.h")
 target_compile_features(mkw_nand_settings_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_nand_settings_tests COMMAND mkw_nand_settings_tests)
 
 add_executable(mkw_sc_serial_tests "${CMAKE_CURRENT_LIST_DIR}/tests/sc_serial_tests.cpp")
 target_include_directories(mkw_sc_serial_tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/include")
+target_compile_definitions(mkw_sc_serial_tests PRIVATE
+    MKW_STANDALONE_GUEST_REGION_HEADER="region/rmcp01.h")
 target_compile_features(mkw_sc_serial_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_sc_serial_tests COMMAND mkw_sc_serial_tests)
 
@@ -500,9 +504,8 @@ else()
     if(MKW_PLATFORM_MACOS)
         # Compile-only audit of native runtime sources. It deliberately avoids
         # translated products until their host dependencies are portable.
-        # These sources depend on generated/RuntimeConfig.h, which is emitted for
-        # a particular game by the translator and is intentionally unavailable
-        # in this platform-only configuration.
+        # Sources needing translated SDA bases remain excluded. Guest address
+        # bindings use an explicit PAL fixture without a generated configuration.
         set(MKW_MACOS_NATIVE_AUDIT_SOURCES ${SOURCES})
         list(REMOVE_ITEM MKW_MACOS_NATIVE_AUDIT_SOURCES
             "${CMAKE_CURRENT_LIST_DIR}/src/abi_bridge.cpp"
@@ -512,7 +515,9 @@ else()
             "${CMAKE_CURRENT_LIST_DIR}/include" "${CMAKE_CURRENT_LIST_DIR}/src"
             "${CMAKE_CURRENT_LIST_DIR}/.." "${CMAKE_CURRENT_LIST_DIR}/../aurora-main/include")
         target_compile_features(mkw_macos_native_compile PRIVATE cxx_std_20)
-        target_compile_definitions(mkw_macos_native_compile PRIVATE SDL_MAIN_HANDLED TARGET_PC)
+        target_compile_definitions(mkw_macos_native_compile PRIVATE
+            SDL_MAIN_HANDLED TARGET_PC
+            MKW_STANDALONE_GUEST_REGION_HEADER="region/rmcp01.h")
         target_link_libraries(mkw_macos_native_compile PRIVATE
             aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
             mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)

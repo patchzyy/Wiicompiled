@@ -509,7 +509,7 @@ internal sealed class InstallerEngine
             !relHash.Equals(manifest.ExpectedRelSha256, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidDataException(
-                "The disc is RMCP01 but does not match the supported clean PAL revision. " +
+                $"The disc is {manifest.ExpectedGameId} but does not match the supported clean revision. " +
                 "Patched or otherwise modified game code cannot be installed safely.");
         }
     }

@@ -6,6 +6,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "hle/storage/riivolution.h"
+#include "region/guest_region.h"
 
 #include "hle/riivolution_contract.h"
 #include "hle/runtime_parse_helpers.h"
@@ -46,11 +47,11 @@ std::optional<std::string> RiivoReadFile(const fs::path& path) {
     return buffer.str();
 }
 
-// Six-character game ID ("RMCP01") from guest low memory, with the same RMCP
-// fallback the rest of the storage HLE uses for boots that have not written
-// the disc header yet.
+// Six-character game ID ("RMCP01" etc.) from guest low memory, falling back to the built
+// executable's own game code - the same fallback the rest of the storage HLE uses for boots
+// that have not written the disc header yet.
 std::string RiivoGameId() {
-    const uint32_t code = RuntimeHle::CurrentGameCode(0x524D4350u); // "RMCP"
+    const uint32_t code = RuntimeHle::CurrentGameCode(MKW_REGION_GAME_CODE);
     std::string id(6, '\0');
     id[0] = static_cast<char>((code >> 24) & 0xffu);
     id[1] = static_cast<char>((code >> 16) & 0xffu);
