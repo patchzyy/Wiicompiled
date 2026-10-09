@@ -354,14 +354,7 @@ void SonicRacer::ApplySurface(const KartView& kart) {
                     sonic_.launch(fwd * std::max(sonic::length(p.vel), p.P.dash_speed) + Vec3(0, 4.0f, 0), 15);
                 }
                 break;
-            case KCL_WEAK_OFFROAD:
-            case KCL_OFFROAD:
-            case KCL_HEAVY_OFFROAD:
-                if (boostFrames_ <= 0) {
-                    const float drag = type == KCL_WEAK_OFFROAD ? 0.992f : type == KCL_OFFROAD ? 0.982f : 0.965f;
-                    p.spd.x *= drag;
-                }
-                break;
+            // Grass, sand and dirt (offroad) slow karts, not Sonic: he is on foot.
             default:
                 break;
         }
