@@ -81,6 +81,10 @@ bool in_display_list();
 // Drain the internal FIFO buffer through the command processor
 void drain();
 
+// Decode a whole command stream, submitting the staging batch whenever a draw does not fit.
+// process() alone stops at that draw, so a caller that ignores its count drops the rest.
+void process_all(const uint8_t* data, uint32_t size, bool bigEndian);
+
 // Internal buffer inspection
 const uint8_t* get_buffer_data();
 uint32_t get_buffer_size();

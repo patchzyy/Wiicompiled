@@ -66,7 +66,7 @@ void GXCallDisplayList(const void* data, u32 nbytes) {
 
   // Decode the display list immediately while its borrowed resources are valid.
   aurora::gx::fifo::drain();
-  aurora::gx::fifo::process(static_cast<const u8*>(data), nbytes, true);
+  aurora::gx::fifo::process_all(static_cast<const u8*>(data), nbytes, true);
 }
 
 void GXCallDisplayListLE(const void* data, u32 nbytes) {
@@ -84,6 +84,6 @@ void GXCallDisplayListLE(const void* data, u32 nbytes) {
   aurora::gx::fifo::drain();
 
   // Process the display list through the command processor (little-endian)
-  aurora::gx::fifo::process(static_cast<const u8*>(data), nbytes, false);
+  aurora::gx::fifo::process_all(static_cast<const u8*>(data), nbytes, false);
 }
 }
