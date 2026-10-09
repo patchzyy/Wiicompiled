@@ -88,6 +88,31 @@ TEST_F(GXFifoTest, SingleExpandedPrimitiveCannotMergeWithTriangles) {
   EXPECT_EQ(aurora::gfx::testing::last_pushed_indices(), (std::vector<u16>{0, 1, 2}));
 }
 
+TEST_F(GXFifoTest, DisplayListSubmitsStagingWhenADrawDoesNotFit) {
+  __GXSetDirtyState();
+  aurora::gx::fifo::clear_buffer();
+  g_gxState.lastVtxFmt = GX_VTXFMT0;
+  g_gxState.lastVtxSize = 1;
+  // admitted=1 refuses the middle draw; admitted=2 refuses the last, so only a replay of the refused draw pushes 0x33.
+  for (const u32 admitted : {1u, 2u}) for (const bool bigEndian : {true, false}) {
+    std::vector<u8> list;
+    for (const u8 fill : {0x11, 0x22, 0x33}) {
+      auto bytes = draw(GX_TRIANGLES, 3);
+      if (!bigEndian) std::swap(bytes[1], bytes[2]);
+      std::fill(bytes.begin() + 3, bytes.end(), fill);
+      list.insert(list.end(), bytes.begin(), bytes.end());
+    }
+    const auto splitsBefore = aurora::gfx::staging_split_count();
+    aurora::gfx::testing::refuse_staging_admission_after(admitted);
+    if (bigEndian) GXCallDisplayList(list.data(), static_cast<u32>(list.size()));
+    else GXCallDisplayListLE(list.data(), static_cast<u32>(list.size()));
+    EXPECT_EQ(aurora::gfx::staging_split_count() - splitsBefore, 1u)
+        << "admitted=" << admitted << " bigEndian=" << bigEndian;
+    EXPECT_EQ(aurora::gfx::testing::last_pushed_vertices(), (std::vector<u8>{0x33, 0x33, 0x33}))
+        << "admitted=" << admitted << " bigEndian=" << bigEndian;
+  }
+}
+
 TEST(StagingMapping, RetiredCallbacksCannotPublishAnotherBuffersReadiness) {
   using namespace aurora::gfx;
   StagingMapState state;

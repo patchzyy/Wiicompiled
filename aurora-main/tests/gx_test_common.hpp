@@ -50,6 +50,9 @@ void reset_uniform_allocations() noexcept;
 const std::vector<uint8_t>& uniform_allocation(size_t index) noexcept;
 void use_draw_command_tracking(bool enabled) noexcept;
 void use_real_vertex_format_helpers(bool enabled) noexcept;
+// Admit this many draws, then refuse one as if the staging batch were full.
+void refuse_staging_admission_after(uint32_t admissions) noexcept;
+void reset_staging_capacity() noexcept;
 } // namespace aurora::gfx::testing
 
 class GXFifoTest : public ::testing::Test {
@@ -65,6 +68,7 @@ protected:
     aurora::gfx::testing::reset_resolve_pass_records();
     aurora::gfx::testing::reset_vertex_push_record();
     aurora::gfx::testing::use_real_vertex_format_helpers(false);
+    aurora::gfx::testing::reset_staging_capacity();
   }
 
   // Copy the internal FIFO buffer contents and clear it

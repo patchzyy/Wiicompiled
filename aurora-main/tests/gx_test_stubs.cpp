@@ -34,6 +34,9 @@ std::optional<aurora::gx::DrawData> s_lastGxDraw;
 bool s_trackDrawCommands = false;
 bool s_useRealVertexFormatHelpers = false;
 std::deque<std::vector<uint8_t>> s_uniformAllocations;
+std::optional<uint32_t> s_stagingAdmissionsBeforeRefusal;
+bool s_stagingRefused = false;
+uint64_t s_stagingSplitCount = 0;
 } // namespace
 
 // --- aurora::g_config ---
@@ -301,8 +304,23 @@ std::pair<ByteBuffer, Range> copy_uniform(Range source) {
 uint32_t align_uniform(uint32_t value) { return (value + 255u) & ~255u; }
 uint64_t staging_uniform_bytes(uint64_t value) { return staging_padded(value, 256); }
 uint64_t staging_storage_bytes(uint64_t value) { return staging_padded(value, 256); }
-bool staging_has_space(const StagingSizes&) { return true; }
-void split_staging_batch() { throw StagingCapacityError("Unexpected split in FIFO unit test"); }
+bool staging_has_space(const StagingSizes&) {
+  if (!s_stagingAdmissionsBeforeRefusal) return true;
+  if (*s_stagingAdmissionsBeforeRefusal > 0) {
+    --*s_stagingAdmissionsBeforeRefusal;
+    return true;
+  }
+  // Refuse once, as a full batch would; the split that follows makes room again.
+  s_stagingAdmissionsBeforeRefusal.reset();
+  s_stagingRefused = true;
+  return false;
+}
+void split_staging_batch() {
+  if (!s_stagingRefused) throw StagingCapacityError("Unexpected split in FIFO unit test");
+  s_stagingRefused = false;
+  ++s_stagingSplitCount;
+}
+uint64_t staging_split_count() noexcept { return s_stagingSplitCount; }
 
 Vec2<uint32_t> get_render_target_size() noexcept { return s_renderTargetSize; }
 Vec2<uint32_t> get_frame_buffer_size() noexcept { return s_renderTargetSize; }
@@ -344,6 +362,15 @@ void use_draw_command_tracking(bool enabled) noexcept {
 }
 void use_real_vertex_format_helpers(bool enabled) noexcept {
   s_useRealVertexFormatHelpers = enabled;
+}
+void refuse_staging_admission_after(uint32_t admissions) noexcept {
+  s_stagingAdmissionsBeforeRefusal = admissions;
+  s_stagingRefused = false;
+}
+void reset_staging_capacity() noexcept {
+  s_stagingAdmissionsBeforeRefusal.reset();
+  s_stagingRefused = false;
+  s_stagingSplitCount = 0;
 }
 } // namespace aurora::gfx::testing
 
@@ -525,6 +552,7 @@ std::optional<TextureHandle> find_replacement(const GXTexObj_&) noexcept { retur
 namespace aurora::window {
 AuroraWindowSize get_window_size() { return {640, 480, 640, 480, 640, 480, 1.0f}; }
 void set_frame_buffer_aspect_fit(bool) {}
+void set_force_aspect_16_9(bool) {}
 } // namespace aurora::window
 
 // --- WebGPU C API stubs (prevent linker errors from wgpu:: destructors) ---
