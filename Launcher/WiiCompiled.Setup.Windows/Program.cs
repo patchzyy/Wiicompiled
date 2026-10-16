@@ -39,6 +39,12 @@ internal static class Program
             if (command.Mode == AppMode.Version)
                 return ConsoleCommands.Version();
 
+            if (command.Mode == AppMode.Capabilities)
+                return ConsoleCommands.Capabilities();
+
+            if (command.Mode == AppMode.LinkGameDirectory)
+                return ConsoleCommands.LinkGameDirectory(command);
+
             if (command.Mode == AppMode.Help)
                 return ConsoleCommands.Help();
 

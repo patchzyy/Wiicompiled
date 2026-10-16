@@ -14,7 +14,9 @@ internal enum AppMode
     CheckProducts,
     RepairProducts,
     Version,
-    EmitPayloadIdentities
+    EmitPayloadIdentities,
+    Capabilities,
+    LinkGameDirectory
 }
 
 /// <summary>
@@ -26,7 +28,12 @@ internal sealed record ModeRules
     public string Flag { get; init; } = "this command";
     public bool AcceptsProgressJson { get; init; }
     public bool AcceptsGame { get; init; }
+
+    /// <summary>The game is required, as either <c>--game &lt;image&gt;</c> or <c>--game-dir &lt;folder&gt;</c>.</summary>
     public bool RequiresGame { get; init; }
+
+    public bool AcceptsGameDirectory { get; init; }
+    public bool RequiresGameDirectory { get; init; }
     public bool AcceptsRetroDirectory { get; init; }
     public bool RequiresRetroDirectory { get; init; }
     public bool AcceptsPayloadMode { get; init; }
@@ -39,6 +46,7 @@ internal sealed class CommandLine
 {
     public AppMode Mode { get; private set; } = AppMode.Help;
     public string? GamePath { get; private set; }
+    public string? GameDirectoryPath { get; private set; }
     public string? RetroDirectoryPath { get; private set; }
     public RetroWfcPayloadMode RetroWfcPayloadMode { get; private set; }
     public string? InstallDirectory { get; private set; }
@@ -70,6 +78,9 @@ internal sealed class CommandLine
                 case "--repair-products": result.Mode = AppMode.RepairProducts; break;
                 case "--portable": result.Portable = true; break;
                 case "--emit-payload-identities": result.Mode = AppMode.EmitPayloadIdentities; break;
+                case "--capabilities": result.Mode = AppMode.Capabilities; break;
+                case "--link-game-dir": result.Mode = AppMode.LinkGameDirectory; break;
+                case "--game-dir": result.GameDirectoryPath = RequireValue(args, ref i); break;
                 case "--payload-root": result.PayloadRootPath = RequireValue(args, ref i); break;
                 case "--quiet": result.Quiet = true; break;
                 case "--progress-json": result.ProgressJson = true; break;
@@ -100,15 +111,21 @@ internal sealed class CommandLine
         [AppMode.SilentInstall] = new ModeRules
         {
             Flag = "--silent",
-            AcceptsProgressJson = true, AcceptsGame = true, RequiresGame = true,
+            AcceptsProgressJson = true, AcceptsGame = true, AcceptsGameDirectory = true, RequiresGame = true,
             AcceptsRetroDirectory = true, AcceptsPayloadMode = true,
             AcceptsPortable = true
         },
         [AppMode.VerifyInputs] = new ModeRules
         {
             Flag = "--verify-inputs",
-            AcceptsProgressJson = true, AcceptsGame = true, RequiresGame = true,
+            AcceptsProgressJson = true, AcceptsGame = true, AcceptsGameDirectory = true, RequiresGame = true,
             AcceptsRetroDirectory = true
+        },
+        [AppMode.LinkGameDirectory] = new ModeRules
+        {
+            Flag = "--link-game-dir",
+            AcceptsProgressJson = true, AcceptsGameDirectory = true, RequiresGameDirectory = true,
+            RequiresInstallDirectory = true
         },
         [AppMode.CheckProducts] = new ModeRules
         {
@@ -147,6 +164,9 @@ internal sealed class CommandLine
         }
 
         Reject(GamePath is not null && !rules.AcceptsGame, "--game");
+        Reject(GameDirectoryPath is not null && !rules.AcceptsGameDirectory, "--game-dir");
+        if (GamePath is not null && GameDirectoryPath is not null)
+            throw new ArgumentException("Pass either --game or --game-dir, not both.");
         Reject(RetroDirectoryPath is not null && !rules.AcceptsRetroDirectory, "--retro-dir");
         Reject(ProgressJson && !rules.AcceptsProgressJson, "--progress-json");
         Reject(PayloadRootPath is not null && !rules.RequiresPayloadRoot, "--payload-root");
@@ -154,8 +174,10 @@ internal sealed class CommandLine
         Reject(RetroWfcPayloadMode != RetroWfcPayloadMode.NotApplicable && !rules.AcceptsPayloadMode,
             "A Retro-WFC payload option");
 
-        if (rules.RequiresGame && string.IsNullOrWhiteSpace(GamePath))
-            throw new ArgumentException("--game is required.");
+        if (rules.RequiresGame && string.IsNullOrWhiteSpace(GamePath) && string.IsNullOrWhiteSpace(GameDirectoryPath))
+            throw new ArgumentException("--game or --game-dir is required.");
+        if (rules.RequiresGameDirectory && string.IsNullOrWhiteSpace(GameDirectoryPath))
+            throw new ArgumentException($"--game-dir is required with {rules.Flag}.");
         if (rules.RequiresRetroDirectory && string.IsNullOrWhiteSpace(RetroDirectoryPath))
             throw new ArgumentException(
                 $"--retro-dir is required with {rules.Flag}. Supply Wheel Wizard's canonical Retro Rewind folder.");

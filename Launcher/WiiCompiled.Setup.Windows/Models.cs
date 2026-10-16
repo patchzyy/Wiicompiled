@@ -12,7 +12,14 @@ internal enum RetroWfcPayloadMode
 
 internal sealed class InstallOptions
 {
-    public required string GamePath { get; init; }
+    /// <summary>A disc image to extract. Exactly one of this and <see cref="GameDirectoryPath"/> is set.</summary>
+    public string? GamePath { get; init; }
+
+    /// <summary>
+    /// A game Wheel Wizard already extracted (its root, holding <c>DATA/</c>). It is read in place through
+    /// <c>dvd_root</c>; nothing is extracted and no copy of it is kept in the installation.
+    /// </summary>
+    public string? GameDirectoryPath { get; init; }
 
     /// <summary>
     /// The canonical Retro Rewind installation Wheel Wizard owns. Its resolved path is recorded as
@@ -102,6 +109,13 @@ internal sealed class InstallState
     /// <c>[paths] retro_rewind_root</c>; this mirror lets uninstall drop only the setting it owns.
     /// </summary>
     public string RetroRewindRoot { get; set; } = "";
+
+    /// <summary>
+    /// The extracted game's <c>DATA</c> folder this installation reads in place (<c>--game-dir</c>). Empty for an
+    /// installation that reads its own extraction in <c>GameAssets\DATA</c>. Wheel Wizard reads this to know
+    /// whether WiiCompiled already uses its extracted game.
+    /// </summary>
+    public string GameDataDir { get; set; } = "";
 }
 
 /// <summary>

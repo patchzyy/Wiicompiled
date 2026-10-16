@@ -11,8 +11,10 @@ internal static class ConsoleCommands
         Console.Out.WriteLine("Wheel Wizard is the graphical interface for installing and launching WiiCompiled.");
         Console.Out.WriteLine();
         Console.Out.WriteLine("Commands:");
-        Console.Out.WriteLine("  --silent --game <image> --install-dir <dir> [--retro-dir <folder>] [--portable]");
-        Console.Out.WriteLine("  --verify-inputs --game <image> [--retro-dir <folder>]");
+        Console.Out.WriteLine("  --silent (--game <image> | --game-dir <folder>) --install-dir <dir> [--retro-dir <folder>] [--portable]");
+        Console.Out.WriteLine("  --verify-inputs (--game <image> | --game-dir <folder>) [--retro-dir <folder>]");
+        Console.Out.WriteLine("  --link-game-dir --install-dir <dir> --game-dir <folder> [--progress-json]");
+        Console.Out.WriteLine("  --capabilities");
         Console.Out.WriteLine("  --check-products [--install-dir <dir>] [--retro-dir <folder>] [--progress-json]");
         Console.Out.WriteLine("  --repair-products --install-dir <dir> --retro-dir <folder> " +
                              "(--download-retro-wfc-payload | --skip-retro-wfc-payload) [--progress-json]");
@@ -26,6 +28,80 @@ internal static class ConsoleCommands
     {
         Console.Out.WriteLine(ProductInfo.Version);
         return 0;
+    }
+
+    /// <summary>
+    /// What this setup supports, so Wheel Wizard can tell before it asks. A setup from before this command rejects
+    /// it as unknown, which the caller reads as supporting nothing new.
+    /// </summary>
+    public static int Capabilities()
+    {
+        Console.Out.WriteLine(JsonSerializer.Serialize(new { type = "capabilities", capabilities = new[] { "game-dir" } }));
+        return 0;
+    }
+
+    /// <summary>
+    /// Points an existing installation at a game Wheel Wizard already extracted: <c>dvd_root</c> and the install
+    /// state name it, and the installation's own extracted copy is removed. Nothing is rebuilt, since the game
+    /// code it was built from is checked to be the same.
+    /// </summary>
+    public static int LinkGameDirectory(CommandLine command)
+    {
+        var reporter = command.ProgressJson ? new NdjsonInstallReporter() : null;
+        var installation = new Installation(Path.GetFullPath(command.InstallDirectory!));
+        try
+        {
+            if (!installation.IsPresent)
+                throw new InvalidOperationException($"WiiCompiled is not installed at {installation.Root}.");
+
+            using var operationLock = InstallOperationLock.Acquire(installation.Root, reporter);
+            PortableInstallHealing.HealMovedInstall(installation, reporter);
+            var state = installation.ReadInstallState() is { SchemaVersion: 1 } current
+                ? current
+                : throw new InvalidDataException("The installation has no current install state. Apply setup again.");
+
+            reporter?.Progress(InstallStages.Validate, "Checking the extracted game...", 20);
+            var dataDirectory = ExtractedGameDirectory.ResolveDataDirectory(command.GameDirectoryPath!);
+            var header = InputValidation.ReadDiscHeaderFromDirectory(dataDirectory);
+            var installedManifest = JsonState.TryRead<PayloadManifest>(
+                Path.Combine(installation.Root, InstalledLayout.PayloadManifestFileName));
+            if (installedManifest is not null)
+                InputValidation.EnsureCompatibleDisc(header, installedManifest);
+            // The products were built from exactly this game code; anything else needs a rebuild, not a link.
+            foreach (var (file, expected) in new[]
+                     {
+                         (Path.Combine(dataDirectory, "sys", "main.dol"), state.DolSha256),
+                         (Path.Combine(dataDirectory, "files", "rel", "StaticR.rel"), state.RelSha256),
+                     })
+            {
+                if (!File.Exists(file) ||
+                    !InputValidation.Sha256File(file).Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException(
+                        $"{Path.GetFileName(file)} in the extracted game is not the clean game code WiiCompiled was built from.");
+            }
+
+            RunningProductGuard.EnsureProductsNotRunning(installation.Root);
+            reporter?.Progress(InstallStages.Publish, "Pointing WiiCompiled at the extracted game...", 70);
+            RuntimeConfiguration.SetDvdRoot(installation.ConfigPath, dataDirectory);
+            state.GameDataDir = dataDirectory;
+            JsonState.Write(installation.InstallStatePath, state);
+            InstallerEngine.RemoveOwnGameAssets(installation, reporter ?? (IInstallReporter)new ConsoleInstallReporter(_ => { }));
+
+            if (reporter is null)
+                Console.Out.WriteLine($"WiiCompiled now reads the game from {dataDirectory}.");
+            reporter?.Success(installation.Root);
+            return 0;
+        }
+        catch (Exception ex) when (reporter is not null)
+        {
+            reporter.Failure(ex.Message);
+            Console.Error.WriteLine(ex);
+            return 1;
+        }
+        finally
+        {
+            reporter?.EnsureFinished("Linking the extracted game stopped before it reached a result.");
+        }
     }
 
 
@@ -68,7 +144,10 @@ internal static class ConsoleCommands
             payload.ExtractEntry(InstalledLayout.ToolkitEntryPrefix + "nodtool.exe", tool);
             payload.ExtractDirectory(InstalledLayout.ToolkitEntryPrefix + "Redist", temp);
             reporter?.Progress(InstallStages.Validate, "Checking the Wii disc image...", 10);
-            var header = InputValidation.ReadDiscHeaderAsync(tool, command.GamePath!).GetAwaiter().GetResult();
+            var header = command.GameDirectoryPath is null
+                ? InputValidation.ReadDiscHeaderAsync(tool, command.GamePath!).GetAwaiter().GetResult()
+                : InputValidation.ReadDiscHeaderFromDirectory(
+                    ExtractedGameDirectory.ResolveDataDirectory(command.GameDirectoryPath));
             InputValidation.EnsureCompatibleDisc(header, manifest);
 
             if (command.RetroDirectoryPath is not null)
@@ -115,7 +194,8 @@ internal static class ConsoleCommands
             var engine = new InstallerEngine(reporter);
             await engine.InstallAsync(new InstallOptions
             {
-                GamePath = command.GamePath!,
+                GamePath = command.GamePath,
+                GameDirectoryPath = command.GameDirectoryPath,
                 RetroDirectoryPath = command.RetroDirectoryPath,
                 RetroWfcPayloadMode = command.RetroWfcPayloadMode,
                 InstallDirectory = installDirectory,

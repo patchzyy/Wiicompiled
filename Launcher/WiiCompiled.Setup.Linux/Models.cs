@@ -32,4 +32,10 @@ internal sealed class InstallState
     public int SchemaVersion { get; set; } = 1;
     public string Workspace { get; set; } = "";
     public List<ProductInstallRecord> Products { get; set; } = new();
+
+    /// <summary>
+    /// The <c>DATA</c> folder of a game Wheel Wizard already extracted (<c>--game-dir</c>), read in place through
+    /// <c>dvd_root</c>. Empty when the game was extracted into the workspace's own <c>Assets/DATA</c>.
+    /// </summary>
+    public string GameDataDir { get; set; } = "";
 }

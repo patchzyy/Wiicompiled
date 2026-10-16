@@ -55,6 +55,10 @@ internal static class UninstallService
             TryCleanup("remove the installed game path from the runtime configuration", quiet,
                 () => RuntimeConfiguration.RemoveDvdRootIfOwned(configPath,
                     Path.Combine(installDirectory, "GameAssets", "DATA")));
+            // A game Wheel Wizard extracted is only unregistered here; the folder itself is Wheel Wizard's, and stays.
+            if (!string.IsNullOrEmpty(state?.GameDataDir))
+                TryCleanup("remove the extracted game path from the runtime configuration", quiet,
+                    () => RuntimeConfiguration.RemoveDvdRootIfOwned(configPath, state.GameDataDir));
         }
 
         // Remove only this install's Retro Rewind setting; leave user-owned paths untouched.

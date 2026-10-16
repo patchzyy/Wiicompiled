@@ -13,7 +13,12 @@ internal sealed class InstallerEngine
         var installDirectory = Path.GetFullPath(options.InstallDirectory);
         ValidateInstallDirectory(installDirectory);
 
-        InputValidation.ValidateExtension(options.GamePath);
+        // A game Wheel Wizard already extracted is read in place; only a disc image is extracted here.
+        var externalGameData = options.GameDirectoryPath is null
+            ? null
+            : ExtractedGameDirectory.ResolveDataDirectory(options.GameDirectoryPath);
+        if (externalGameData is null)
+            InputValidation.ValidateExtension(options.GamePath ?? throw new ArgumentException("A game is required."));
         var parent = Directory.GetParent(installDirectory)?.FullName
                      ?? throw new InvalidOperationException("The installation directory has no parent.");
         Directory.CreateDirectory(parent);
@@ -49,7 +54,8 @@ internal sealed class InstallerEngine
         var installedToolkitPackageFingerprint = existing.IsPresent
             ? existing.ResolveToolkitPackageFingerprint()
             : "";
-        var reusableGameAssets = FindReusableGameAssets(existing, manifest);
+        var reusableGameAssets = externalGameData ?? FindReusableGameAssets(existing, manifest);
+        var gameDataDir = GameDataDirFor(externalGameData, reusableGameAssets, previousState);
 
         var sameToolkit = existing.IsPresent && reusableGameAssets is not null &&
                           installedToolkitFingerprint.Equals(candidateToolkitFingerprint,
@@ -84,9 +90,12 @@ internal sealed class InstallerEngine
 
         var nodTool = extractToolkit ? Path.Combine(toolkit, "nodtool.exe") : installedNodTool;
         _reporter.Progress(InstallStages.Validate, "Checking the Wii disc image...", 2);
-        var header = await InputValidation.ReadDiscHeaderAsync(nodTool, options.GamePath,
-            cancellationToken);
+        var header = externalGameData is null
+            ? await InputValidation.ReadDiscHeaderAsync(nodTool, options.GamePath!, cancellationToken)
+            : InputValidation.ReadDiscHeaderFromDirectory(externalGameData);
         InputValidation.EnsureCompatibleDisc(header, manifest);
+        if (externalGameData is not null)
+            ValidateExtractedGame(externalGameData, manifest);
         var canonicalRetroRoot = options.RetroDirectoryPath is null
             ? null
             : RetroRewindSource.ResolveRetroRewind6(options.RetroDirectoryPath);
@@ -130,6 +139,7 @@ internal sealed class InstallerEngine
 
             var updatedState = BuildInstallState(existing.ReadInstallState(), installDirectory, manifest,
                 retroCompileInputs, canonicalRetroRoot, options.RetroWfcPayloadMode);
+            updatedState.GameDataDir = gameDataDir;
             PrepareMetadata(staging, manifest, updatedState);
             remainingCancellation.ThrowIfCancellationRequested();
 
@@ -158,14 +168,28 @@ internal sealed class InstallerEngine
 
         if (reusableGameAssets is null)
         {
-            await ExtractGameAssetsAsync(nodTool, options.GamePath,
+            await ExtractGameAssetsAsync(nodTool, options.GamePath!,
                 Path.Combine(staging, "GameAssets"), manifest, cancellationToken);
         }
 
         await PublishToolkitAndReconcileProductsAsync(existing, staging, workspace, manifest,
             previousState, options, canonicalRetroRoot, retroCompileInputs,
-            publishGameAssets: reusableGameAssets is null, createShortcuts: firstInstall,
+            publishGameAssets: reusableGameAssets is null, gameDataDir, createShortcuts: firstInstall,
             cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// What <see cref="InstallState.GameDataDir"/> becomes: the extracted game this operation was given, or the
+    /// one a previous operation linked when that is what is being reused; empty for the installation's own copy.
+    /// </summary>
+    private static string GameDataDirFor(string? externalGameData, string? reusableGameAssets, InstallState? previousState)
+    {
+        if (externalGameData is not null)
+            return externalGameData;
+        if (reusableGameAssets is not null && previousState is { GameDataDir.Length: > 0 } previous &&
+            FileSystemUtilities.PathsEqual(reusableGameAssets, previous.GameDataDir))
+            return previous.GameDataDir;
+        return "";
     }
 
 
@@ -190,7 +214,7 @@ internal sealed class InstallerEngine
         string stagedWorkspace, PayloadManifest manifest, InstallState? previousState,
         InstallOptions options, string? canonicalRetroRoot,
         RetroRewindCompileInputs? retroCompileInputs,
-        bool publishGameAssets, bool createShortcuts, CancellationToken cancellationToken)
+        bool publishGameAssets, string gameDataDir, bool createShortcuts, CancellationToken cancellationToken)
     {
         var installDirectory = existing.Root;
 
@@ -208,6 +232,7 @@ internal sealed class InstallerEngine
 
         var state = BuildInstallState(previousState, installDirectory, manifest,
             compileInputs: null, canonicalRetroRoot, options.RetroWfcPayloadMode);
+        state.GameDataDir = gameDataDir;
         PrepareMetadata(staging, manifest, state);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -305,7 +330,9 @@ internal sealed class InstallerEngine
         using var transaction = InstallTransaction.Begin(installDirectory, _reporter, entries.ToArray());
         transaction.Publish();
         transaction.RecordRuntimeConfigurationMutation(configSnapshot);
-        RuntimeConfiguration.SetDvdRoot(configPath, Path.Combine(installDirectory, "GameAssets", "DATA"));
+        RuntimeConfiguration.SetDvdRoot(configPath, string.IsNullOrEmpty(state.GameDataDir)
+            ? Path.Combine(installDirectory, "GameAssets", "DATA")
+            : state.GameDataDir);
         // The runtime scans this directory live for its asset overlay, so it is recorded on every
         // operation that receives one and is never rewritten by a base-only operation.
         if (canonicalRetroRoot is not null)
@@ -336,7 +363,24 @@ internal sealed class InstallerEngine
                                  ex.Message);
         }
 
+        // Reading Wheel Wizard's extracted game, the installation no longer needs a copy of its own.
+        if (!string.IsNullOrEmpty(state.GameDataDir))
+            RemoveOwnGameAssets(new Installation(installDirectory), _reporter);
+
         _reporter.Progress(InstallStages.Publish, "Installation complete.", completionPercent);
+    }
+
+    /// <summary>Deletes the installation's own extraction; it is only ever this installation's own folder.</summary>
+    internal static void RemoveOwnGameAssets(Installation installation, IInstallReporter reporter)
+    {
+        try
+        {
+            FileSystemUtilities.DeleteDirectoryIfExists(installation.OwnGameAssetsDirectory);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            reporter.Diagnostic("The game copy WiiCompiled no longer uses could not be removed yet: " + ex.Message);
+        }
     }
 
     private static void PrepareMetadata(string staging, PayloadManifest manifest, InstallState state)

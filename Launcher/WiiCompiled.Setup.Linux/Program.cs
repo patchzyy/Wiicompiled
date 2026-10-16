@@ -11,6 +11,13 @@ internal static class Program
         // --workspace <cache> ahead of whatever the caller passed, so these can't assume position 0.
         if (args.Length == 0 || args.Contains("-h") || args.Contains("--help")) { PrintUsage(); return 0; }
         if (args.Contains("--version")) { Console.WriteLine(ProductInfo.Version); return 0; }
+        // Lets Wheel Wizard tell what this AppImage supports before it asks; an older one rejects the flag.
+        if (args.Contains("--capabilities"))
+        {
+            Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(
+                new { type = "capabilities", capabilities = new[] { "game-dir" } }));
+            return 0;
+        }
 
         using var cts = new CancellationTokenSource();
         // Replaces CancellationSignal.cs's named-EventWaitHandle IPC (Windows-only): SIGINT/SIGTERM
@@ -49,6 +56,9 @@ internal static class Program
                     return Launch("retro-rewind", flags);
                 case "check-products":
                     CheckProducts();
+                    break;
+                case "link-game-dir":
+                    LinkGameDirectory(flags, reporter);
                     break;
                 default:
                     Console.Error.WriteLine($"Unknown command: {command}");
@@ -99,10 +109,23 @@ internal static class Program
         var assetsDir = Path.Combine(workspace, "Assets");
 
         reporter.Progress(InstallStages.Validate, "Checking prerequisites", 1);
-        if (flags.TryGetValue("game", out var isoPath) && !string.IsNullOrEmpty(isoPath))
+        var gameDirectory = flags.GetValueOrDefault("game-dir");
+        flags.TryGetValue("game", out var isoPath);
+        if (!string.IsNullOrEmpty(isoPath) && !string.IsNullOrEmpty(gameDirectory))
+            throw new ArgumentException("Pass either --game or --game-dir, not both.");
+
+        var previousState = JsonState.TryRead<InstallState>(StatePath);
+        // Where the runtime reads the game: an extracted game it was given or already linked, else its own copy.
+        var gameDataDir = previousState?.GameDataDir ?? "";
+        if (!string.IsNullOrEmpty(gameDirectory))
+        {
+            gameDataDir = DiscTool.ValidateExtracted(gameDirectory, manifest, assetsDir, reporter);
+        }
+        else if (!string.IsNullOrEmpty(isoPath))
         {
             await DiscTool.ValidateAndExtractAsync(isoPath, manifest, assetsDir, workspace,
                 flags.GetValueOrDefault("disc-tool-bin"), reporter, token);
+            gameDataDir = "";
         }
         else
         {
@@ -116,8 +139,9 @@ internal static class Program
             }
         }
 
-        var state = JsonState.TryRead<InstallState>(StatePath) ?? new InstallState { Workspace = workspace };
+        var state = previousState ?? new InstallState { Workspace = workspace };
         state.Workspace = workspace;
+        state.GameDataDir = gameDataDir;
 
         var profile = installsRetro ? "both" : "base";
         var profiles = installsRetro ? new[] { "base", "retro-rewind" } : new[] { "base" };
@@ -218,17 +242,52 @@ internal static class Program
         // per-user Config.toml (RuntimeConfiguration.ResolveConfigPath's Windows-only portable-root
         // lookup has nothing to find here either way).
         var configPath = RuntimeConfiguration.ApplicationDataConfigPath;
-        var dataDir = Path.Combine(assetsDir, "DATA");
+        var dataDir = string.IsNullOrEmpty(gameDataDir) ? Path.Combine(assetsDir, "DATA") : gameDataDir;
         if (Directory.Exists(dataDir))
         {
             RuntimeConfiguration.SetDvdRoot(configPath, dataDir);
         }
+        if (!string.IsNullOrEmpty(gameDataDir))
+            DiscTool.RemoveOwnExtraction(assetsDir, reporter);
         if (installsRetro)
         {
             RuntimeConfiguration.SetRetroRewindRoot(configPath, retroDir!);
         }
 
         reporter.Progress(InstallStages.Shortcuts, "Install complete", 99);
+    }
+
+    /// <summary>
+    /// Points the installation at a game Wheel Wizard already extracted, without rebuilding: the game code is
+    /// checked to be exactly what the installed products were built from, then <c>dvd_root</c> and the state name
+    /// it and the workspace's own copy is removed.
+    /// </summary>
+    private static void LinkGameDirectory(Dictionary<string, string?> flags, IInstallReporter reporter)
+    {
+        var gameDirectory = flags.GetValueOrDefault("game-dir");
+        if (string.IsNullOrEmpty(gameDirectory))
+            throw new ArgumentException("link-game-dir needs --game-dir <folder>.");
+        var state = JsonState.TryRead<InstallState>(StatePath);
+        if (state is null || state.Products.Count == 0)
+            throw new InvalidOperationException("WiiCompiled is not installed yet.");
+
+        var workspace = flags.GetValueOrDefault("workspace") ??
+                        (string.IsNullOrEmpty(state.Workspace) ? WorkspaceLocator.FindFrom(AppContext.BaseDirectory) : state.Workspace);
+        var manifest = ProjectManifest.Load(Path.Combine(workspace, "projects", "mkwii", "recomp.yml"));
+        var assetsDir = Path.Combine(workspace, "Assets");
+        var dataDir = DiscTool.ValidateExtracted(gameDirectory, manifest, assetsDir, reporter);
+
+        var dolSha = Sha256Of(Path.Combine(dataDir, "sys", "main.dol"));
+        var relSha = Sha256Of(Path.Combine(dataDir, "files", "rel", "StaticR.rel"));
+        if (state.Products.Any(record => record.DolSha256 != dolSha || record.RelSha256 != relSha))
+            throw new InvalidOperationException(
+                "The installed products were built from different game code; install again with --game-dir instead.");
+
+        reporter.Progress(InstallStages.Shortcuts, "Pointing WiiCompiled at the extracted game", 70);
+        RuntimeConfiguration.SetDvdRoot(RuntimeConfiguration.ApplicationDataConfigPath, dataDir);
+        state.GameDataDir = dataDir;
+        JsonState.Write(StatePath, state);
+        DiscTool.RemoveOwnExtraction(assetsDir, reporter);
     }
 
     private static void Uninstall()
@@ -351,7 +410,7 @@ internal static class Program
         Console.WriteLine("""
         Usage: wiicompiled-setup <command> [options]
 
-          install [--game ISO_PATH] [--install-dir DIR] [--retro-dir DIR
+          install [--game ISO_PATH | --game-dir EXTRACTED_GAME] [--install-dir DIR] [--retro-dir DIR
                   {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
                   [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
                   [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
@@ -360,7 +419,9 @@ internal static class Program
           launch-base
           launch-retro
           check-products
+          link-game-dir --game-dir EXTRACTED_GAME [--progress-json]
           --version
+          --capabilities
         """);
     }
 }

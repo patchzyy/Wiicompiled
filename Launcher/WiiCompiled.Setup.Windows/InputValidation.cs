@@ -42,6 +42,19 @@ internal static class InputValidation
         };
     }
 
+    /// <summary>The disc header of a game Wheel Wizard already extracted, read from its <c>sys/boot.bin</c>.</summary>
+    public static DiscHeader ReadDiscHeaderFromDirectory(string dataDirectory)
+    {
+        var header = ExtractedGameDirectory.ReadHeader(dataDirectory);
+        return new DiscHeader
+        {
+            GameId = header.GameId,
+            InternalName = header.InternalName,
+            Region = RegionFromGameId(header.GameId),
+            Revision = header.Revision,
+        };
+    }
+
     private static string RegionFromGameId(string gameId) => gameId.Length >= 4
         ? gameId[3] switch
         {

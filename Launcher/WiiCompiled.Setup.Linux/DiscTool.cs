@@ -64,6 +64,54 @@ internal static class DiscTool
         reporter.Progress(InstallStages.ExtractDisc, "Disc validated and extracted", 6);
     }
 
+    /// <summary>
+    /// Checks a game Wheel Wizard already extracted against the pinned clean disc and copies only its two code
+    /// files into <paramref name="assetsDirectory"/> for translation. The game itself stays where it is; the
+    /// runtime reads it in place. Returns its <c>DATA</c> folder.
+    /// </summary>
+    public static string ValidateExtracted(string gameDirectory, ProjectManifest manifest, string assetsDirectory,
+        IInstallReporter reporter)
+    {
+        reporter.Progress(InstallStages.ExtractDisc, "Checking the extracted game", 2);
+        var dataDir = ExtractedGameDirectory.ResolveDataDirectory(gameDirectory);
+        var header = ExtractedGameDirectory.ReadHeader(dataDir);
+        if (!string.Equals(header.GameId, manifest.GameId, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"This game is '{header.GameId}', not the expected '{manifest.GameId}' (Mario Kart Wii, region {manifest.Region}).");
+        }
+
+        var dolPath = Path.Combine(dataDir, "sys", "main.dol");
+        var relPath = Path.Combine(dataDir, "files", "rel", "StaticR.rel");
+        if (!File.Exists(relPath)) throw new FileNotFoundException("The extracted game has no StaticR.rel", relPath);
+        if (!string.Equals(Sha256Of(dolPath), manifest.DolSha256, StringComparison.Ordinal) ||
+            !string.Equals(Sha256Of(relPath), manifest.RelSha256, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The extracted game's main.dol or StaticR.rel is not the clean game code this project is pinned to.");
+        }
+
+        Directory.CreateDirectory(assetsDirectory);
+        File.Copy(dolPath, Path.Combine(assetsDirectory, "main.dol"), overwrite: true);
+        File.Copy(relPath, Path.Combine(assetsDirectory, "StaticR.rel"), overwrite: true);
+        reporter.Progress(InstallStages.ExtractDisc, "Extracted game validated", 6);
+        return dataDir;
+    }
+
+    /// <summary>Removes the workspace's own extraction once the extracted game is read in place instead.</summary>
+    public static void RemoveOwnExtraction(string assetsDirectory, IInstallReporter reporter)
+    {
+        var own = Path.Combine(assetsDirectory, "DATA");
+        try
+        {
+            if (Directory.Exists(own)) Directory.Delete(own, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            reporter.Diagnostic("The game copy WiiCompiled no longer uses could not be removed yet: " + ex.Message);
+        }
+    }
+
     private static async Task<string> RunInfoAsync(string nodTool, string isoPath, CancellationToken cancellationToken)
     {
         var startInfo = new System.Diagnostics.ProcessStartInfo(nodTool)

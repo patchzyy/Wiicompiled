@@ -99,7 +99,17 @@ internal sealed class Installation
     public string BaseExecutable => Path.Combine(BaseDirectory, "WiiCompiled.exe");
     public string RetroDirectory => Path.Combine(Root, "RetroRewind");
     public string RetroExecutable => Path.Combine(RetroDirectory, "RetroRewind.exe");
-    public string GameDataDirectory => Path.Combine(Root, "GameAssets", "DATA");
+    /// <summary>
+    /// Where the game data is read from: Wheel Wizard's extracted game when the installation was pointed at it,
+    /// otherwise the extraction this installation keeps itself.
+    /// </summary>
+    public string GameDataDirectory =>
+        ReadInstallState() is { GameDataDir.Length: > 0 } state ? state.GameDataDir : OwnGameDataDirectory;
+
+    /// <summary>The installation's own extraction, which only an installation given a disc image has.</summary>
+    public string OwnGameDataDirectory => Path.Combine(Root, "GameAssets", "DATA");
+
+    public string OwnGameAssetsDirectory => Path.Combine(Root, "GameAssets");
     public string InstallStatePath => Path.Combine(Root, InstalledLayout.InstallStateFileName);
     public string ToolkitStatePath => Path.Combine(Root, ToolkitState.FileName);
 

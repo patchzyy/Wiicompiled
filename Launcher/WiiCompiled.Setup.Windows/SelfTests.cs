@@ -53,6 +53,10 @@ internal static class SelfTests
         Test("Runtime configuration key matching", TestRuntimeConfigurationKeyMatching, failures);
         Test("Install location validation", TestInstallLocationValidation, failures);
         Test("Command line contract", TestCommandLineContract, failures);
+        Test("Extracted game command line contract", TestGameDirectoryCommandLine, failures);
+        Test("Extracted game directory", TestExtractedGameDirectory, failures);
+        Test("Game data follows the install state", TestGameDataDirectoryFollowsState, failures);
+        Test("Capabilities report", TestCapabilitiesReport, failures);
         Test("Portable root discovery", TestPortableRootDiscovery, failures);
         Test("Portable install validation failure leaves no marker",
             TestPortableValidationFailureLeavesNoMarker, failures);
@@ -263,6 +267,139 @@ internal static class SelfTests
             }
             catch (InvalidOperationException) { }
         }
+    }
+
+    private static void TestGameDirectoryCommandLine()
+    {
+        void Rejects(string description, params string[] args)
+        {
+            try
+            {
+                CommandLine.Parse(args);
+                throw new Exception(description + " was accepted.");
+            }
+            catch (ArgumentException) { }
+        }
+
+        var silent = CommandLine.Parse(["--silent", "--game-dir", "D:\\WW\\GAME", "--install-dir", "C:\\MKW", "--progress-json"]);
+        if (silent.Mode != AppMode.SilentInstall || silent.GameDirectoryPath != "D:\\WW\\GAME" || silent.GamePath is not null)
+            throw new Exception("An install from an extracted game did not parse.");
+
+        var link = CommandLine.Parse(["--link-game-dir", "--install-dir", "C:\\MKW", "--game-dir", "D:\\WW\\GAME", "--progress-json"]);
+        if (link.Mode != AppMode.LinkGameDirectory || link.GameDirectoryPath != "D:\\WW\\GAME" || !link.ProgressJson)
+            throw new Exception("The link command did not parse.");
+
+        if (CommandLine.Parse(["--capabilities"]).Mode != AppMode.Capabilities)
+            throw new Exception("--capabilities was not recognised.");
+
+        Rejects("Both a disc image and an extracted game", "--silent", "--game", "g.iso", "--game-dir", "GAME", "--install-dir", "x");
+        Rejects("An install with no game at all", "--silent", "--install-dir", "x");
+        Rejects("A link without the extracted game", "--link-game-dir", "--install-dir", "x");
+        Rejects("A link without an installation", "--link-game-dir", "--game-dir", "GAME");
+        Rejects("A link from a disc image", "--link-game-dir", "--install-dir", "x", "--game-dir", "GAME", "--game", "g.iso");
+        Rejects("--game-dir where nothing reads it", "--check-products", "--install-dir", "x", "--game-dir", "GAME");
+    }
+
+    private static byte[] BootBin(string gameId)
+    {
+        var boot = new byte[0x440];
+        System.Text.Encoding.ASCII.GetBytes(gameId).CopyTo(boot, 0);
+        boot[7] = 2;
+        BinaryPrimitives.WriteUInt32BigEndian(boot.AsSpan(0x18), 0x5D1C9EA3);
+        System.Text.Encoding.ASCII.GetBytes("MARIO KART WII").CopyTo(boot, 0x20);
+        return boot;
+    }
+
+    private static void TestExtractedGameDirectory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkwc-gamedir-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var sys = Path.Combine(root, "GAME", "DATA", "sys");
+            Directory.CreateDirectory(sys);
+            File.WriteAllBytes(Path.Combine(sys, "main.dol"), [1, 2, 3]);
+            File.WriteAllBytes(Path.Combine(sys, "boot.bin"), BootBin("RMCP01"));
+
+            var fromRoot = ExtractedGameDirectory.ResolveDataDirectory(Path.Combine(root, "GAME"));
+            var fromData = ExtractedGameDirectory.ResolveDataDirectory(Path.Combine(root, "GAME", "DATA"));
+            if (!FileSystemUtilities.PathsEqual(fromRoot, Path.Combine(root, "GAME", "DATA")) ||
+                !FileSystemUtilities.PathsEqual(fromData, fromRoot))
+                throw new Exception("The DATA folder was not found from the game root or from itself.");
+
+            var header = InputValidation.ReadDiscHeaderFromDirectory(fromRoot);
+            if (header.GameId != "RMCP01" || header.Revision != 2 || header.InternalName != "MARIO KART WII" ||
+                header.Region != "PAL")
+                throw new Exception("The extracted game's header was misread.");
+
+            try
+            {
+                ExtractedGameDirectory.ResolveDataDirectory(root);
+                throw new Exception("A folder without a game was accepted.");
+            }
+            catch (InvalidDataException) { }
+
+            File.WriteAllBytes(Path.Combine(sys, "boot.bin"), new byte[0x440]);
+            try
+            {
+                ExtractedGameDirectory.ReadHeader(fromRoot);
+                throw new Exception("A boot.bin without the Wii magic was accepted.");
+            }
+            catch (InvalidDataException) { }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void TestGameDataDirectoryFollowsState()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkwc-gamedata-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            var installation = new Installation(root);
+            if (!FileSystemUtilities.PathsEqual(installation.GameDataDirectory, installation.OwnGameDataDirectory))
+                throw new Exception("An installation without state did not read its own game copy.");
+
+            var external = Path.Combine(root, "elsewhere", "GAME", "DATA");
+            JsonState.Write(installation.InstallStatePath, new InstallState { InstallDir = root, GameDataDir = external });
+            if (!FileSystemUtilities.PathsEqual(installation.GameDataDirectory, external))
+                throw new Exception("A linked installation did not read the extracted game.");
+
+            // Removing the installation's own copy never reaches the extracted game it reads.
+            Directory.CreateDirectory(Path.Combine(installation.OwnGameAssetsDirectory, "DATA"));
+            Directory.CreateDirectory(external);
+            File.WriteAllText(Path.Combine(external, "keep.bin"), "keep");
+            InstallerEngine.RemoveOwnGameAssets(installation, new ConsoleInstallReporter(_ => { }));
+            if (Directory.Exists(installation.OwnGameAssetsDirectory) || !File.Exists(Path.Combine(external, "keep.bin")))
+                throw new Exception("Removing the own game copy removed the wrong folder.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void TestCapabilitiesReport()
+    {
+        var output = new StringWriter();
+        var original = Console.Out;
+        Console.SetOut(output);
+        try
+        {
+            if (ConsoleCommands.Capabilities() != 0)
+                throw new Exception("--capabilities did not succeed.");
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        using var document = System.Text.Json.JsonDocument.Parse(output.ToString());
+        if (document.RootElement.GetProperty("type").GetString() != "capabilities" ||
+            !document.RootElement.GetProperty("capabilities").EnumerateArray().Any(item => item.GetString() == "game-dir"))
+            throw new Exception("--capabilities did not report game-dir.");
     }
 
     private static void TestCommandLineContract()
