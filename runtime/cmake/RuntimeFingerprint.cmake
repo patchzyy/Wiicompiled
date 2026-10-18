@@ -2,11 +2,13 @@
 # a precompiled runtime archive may replace compiling it. Script mode prints
 # exactly one stdout line, runtime_fingerprint=<sha256 hex>:
 #   cmake -DMKW_RUNTIME_DIR=<abs runtime dir> [-DMKW_CPPWINRT_INCLUDE_DIR=<dir>]
-#         [-DMKW_X86_CPU_PROFILE=v2|v3] -P runtime/cmake/RuntimeFingerprint.cmake
+#         [-DMKW_X86_CPU_PROFILE=v2|v3] [-DCMAKE_OSX_DEPLOYMENT_TARGET=<ver>]
+#         -P runtime/cmake/RuntimeFingerprint.cmake
 #
 # Inputs: src/, include/, cmake/ and CMakeLists.txt (sorted relative paths and
-# content hashes), winrt/base.h and the CPU profile. third_party/ has its own
-# package fingerprint; game/ is per-user. Dot-files differ between machines.
+# content hashes), winrt/base.h, the CPU profile and the macOS deployment target.
+# third_party/ has its own package fingerprint; game/ is per-user. Dot-files
+# differ between machines.
 
 function(mkw_runtime_fingerprint_inputs out_var runtime_dir)
     get_filename_component(_root "${runtime_dir}" ABSOLUTE)
@@ -37,6 +39,10 @@ function(mkw_runtime_fingerprint out_var runtime_dir cppwinrt_dir cpu_profile)
         string(APPEND _manifest "cppwinrt:winrt/base.h ${_hash}\n")
     endif()
     string(APPEND _manifest "x86_cpu_profile ${cpu_profile}\n")
+    # Omitted when empty so Windows and Linux fingerprints are unaffected.
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+        string(APPEND _manifest "osx_deployment_target ${CMAKE_OSX_DEPLOYMENT_TARGET}\n")
+    endif()
     string(SHA256 _fingerprint "${_manifest}")
     set(${out_var} "${_fingerprint}" PARENT_SCOPE)
 endfunction()

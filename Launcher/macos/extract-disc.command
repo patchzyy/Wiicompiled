@@ -39,9 +39,12 @@ done
 
 assets_dir=$(mkdir -p "$assets_dir" && cd "$assets_dir" && pwd)
 
-# DATA is published before main.dol and StaticR.rel, so verified files imply a complete extraction.
-if [[ -d "$assets_dir/DATA/files" && -f "$assets_dir/main.dol" && -f "$assets_dir/StaticR.rel" ]] && \
-   [[ $(sha256 "$assets_dir/main.dol") == "$EXPECTED_DOL_SHA256" && $(sha256 "$assets_dir/StaticR.rel") == "$EXPECTED_REL_SHA256" ]]; then
+# Sorted "<size> <path>" of every extracted file; recorded at extraction, compared on reuse.
+data_manifest() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 stat -f '%z %N'); }
+
+if [[ -d "$assets_dir/DATA/files" && -f "$assets_dir/.data-manifest" && -f "$assets_dir/main.dol" && -f "$assets_dir/StaticR.rel" ]] && \
+   [[ $(sha256 "$assets_dir/main.dol") == "$EXPECTED_DOL_SHA256" && $(sha256 "$assets_dir/StaticR.rel") == "$EXPECTED_REL_SHA256" ]] && \
+   [[ "$(data_manifest "$assets_dir/DATA")" == "$(cat "$assets_dir/.data-manifest")" ]]; then
     printf 'MKWCBUILD:STEP:disc-ready Reusing the verified extracted game assets\n'
     exit 0
 fi
@@ -73,15 +76,17 @@ mkdir -p "$stage"
 ditto "$data_root" "$stage/DATA"
 ditto "$dol" "$stage/main.dol"
 ditto "$rel" "$stage/StaticR.rel"
+data_manifest "$stage/DATA" > "$stage/.data-manifest"
 
 backup="$assets_dir/.previous-extraction-$(date +%Y%m%d-%H%M%S)"
-if [[ -e "$assets_dir/DATA" || -e "$assets_dir/main.dol" || -e "$assets_dir/StaticR.rel" ]]; then
+if [[ -e "$assets_dir/DATA" || -e "$assets_dir/.data-manifest" || -e "$assets_dir/main.dol" || -e "$assets_dir/StaticR.rel" ]]; then
     mkdir -p "$backup"
-    for item in DATA main.dol StaticR.rel; do
+    for item in DATA .data-manifest main.dol StaticR.rel; do
         [[ -e "$assets_dir/$item" ]] && mv "$assets_dir/$item" "$backup/$item"
     done
 fi
 mv "$stage/DATA" "$assets_dir/DATA"
+mv "$stage/.data-manifest" "$assets_dir/.data-manifest"
 mv "$stage/main.dol" "$assets_dir/main.dol"
 mv "$stage/StaticR.rel" "$assets_dir/StaticR.rel"
 rmdir "$stage"

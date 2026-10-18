@@ -68,7 +68,7 @@ internal static class DiscTool
         Directory.CreateDirectory(assetsDirectory);
         File.Copy(dolPath, Path.Combine(assetsDirectory, "main.dol"), overwrite: true);
         File.Copy(relPath, Path.Combine(assetsDirectory, "StaticR.rel"), overwrite: true);
-        File.WriteAllText(Path.Combine(assetsDirectory, ExtractionMarker), dolSha);
+        File.WriteAllText(Path.Combine(assetsDirectory, ExtractionMarker), ExtractionRecord(dolSha, dataDir));
         reporter.Progress(InstallStages.ExtractDisc, "Disc validated and extracted", 6);
     }
 
@@ -102,12 +102,26 @@ internal static class DiscTool
         var marker = Path.Combine(assetsDirectory, ExtractionMarker);
         var dol = Path.Combine(assetsDirectory, "main.dol");
         var rel = Path.Combine(assetsDirectory, "StaticR.rel");
+        var dataDir = Path.Combine(assetsDirectory, "DATA");
         if (!File.Exists(marker) || !File.Exists(dol) || !File.Exists(rel) ||
-            !Directory.Exists(Path.Combine(assetsDirectory, "DATA", "files")))
+            !Directory.Exists(Path.Combine(dataDir, "files")))
             return false;
-        return string.Equals(File.ReadAllText(marker).Trim(), manifest.DolSha256, StringComparison.Ordinal) &&
+        return string.Equals(File.ReadAllText(marker), ExtractionRecord(manifest.DolSha256, dataDir),
+                   StringComparison.Ordinal) &&
                string.Equals(Sha256Of(dol), manifest.DolSha256, StringComparison.Ordinal) &&
                string.Equals(Sha256Of(rel), manifest.RelSha256, StringComparison.Ordinal);
+    }
+
+    // The DOL hash plus every extracted file's path and size, so a later deletion or truncation inside
+    // DATA forces a fresh extraction.
+    private static string ExtractionRecord(string dolSha, string dataDir)
+    {
+        var record = new System.Text.StringBuilder(dolSha).Append('\n');
+        foreach (var path in Directory.EnumerateFiles(dataDir, "*", SearchOption.AllDirectories)
+                     .Select(path => Path.GetRelativePath(dataDir, path).Replace('\\', '/'))
+                     .Order(StringComparer.Ordinal))
+            record.Append(new FileInfo(Path.Combine(dataDir, path)).Length).Append(' ').Append(path).Append('\n');
+        return record.ToString();
     }
 
     private static string Sha256Of(string path)
