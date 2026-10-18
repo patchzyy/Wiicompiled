@@ -153,7 +153,7 @@ done
 # The translation identity (build-cache.sh) covers the runtime's native registrations through this
 # index, so it is extracted from exactly the packaged runtime sources.
 if [[ "$host_arch" == arm64 ]]; then host_translator=$translator_arm64; else host_translator=$translator_x86_64; fi
-"$host_translator" emit-native-index --project "$resources/workspace/projects/mkwii/recomp.yml" \
+"$host_translator" emit-native-index --native-source-dir "$resources/workspace/runtime/src" \
     --out "$resources/workspace/runtime/native-index.json" || fail 'the runtime native index could not be extracted'
 [[ -f "$resources/workspace/runtime/native-index.json" ]] || fail 'the runtime native index was not written'
 mkdir -p "$resources/workspace/Launcher/macos"

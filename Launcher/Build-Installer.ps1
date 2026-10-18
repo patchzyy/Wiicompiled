@@ -244,7 +244,8 @@ foreach ($name in $requiredDependencies) { Copy-Directory (Join-Path $dependency
 # The translation identity covers the runtime's native registrations through this index (see
 # ToolkitFingerprint), so it is extracted from exactly the staged runtime sources.
 $nativeIndex = Join-Path $workspace 'runtime\native-index.json'
-& $translator emit-native-index --project (Join-Path $workspace 'projects\mkwii\recomp.yml') --out $nativeIndex
+# The payload has no game inputs, so the project file (which validates them) cannot be loaded here.
+& $translator emit-native-index --native-source-dir (Join-Path $workspace 'runtime\src') --out $nativeIndex
 if ($LASTEXITCODE -ne 0) { throw "Native index extraction failed with exit code $LASTEXITCODE." }
 Assert-File $nativeIndex 'Runtime native index'
 # A staged runtime that fingerprints differently from the shipped archive would make every

@@ -182,7 +182,7 @@ cp "$workspace/Launcher/local-build.sh" "$workspace/Launcher/build-cache.sh" "$a
 # index, so it is extracted from exactly the bundled runtime sources.
 echo "Extracting the runtime native index..."
 "$appdir/usr/bin/translator-cli" emit-native-index \
-    --project "$appdir/workspace/projects/mkwii/recomp.yml" \
+    --native-source-dir "$appdir/workspace/runtime/src" \
     --out "$appdir/workspace/runtime/native-index.json"
 [[ -f "$appdir/workspace/runtime/native-index.json" ]] || { echo "build-appimage.sh: the native index was not written" >&2; exit 1; }
 

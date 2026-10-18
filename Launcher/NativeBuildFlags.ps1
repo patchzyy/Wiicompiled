@@ -208,13 +208,14 @@ function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
     SHA-256 over runtime/third_party, the vendored sources behind the prebuilt package. The
     precompiled Crypto++ archive is linked while first-party TUs compile against the same headers,
     so a workspace whose vendored tree moved on must not consume archives harvested from an older
-    one (same reasoning as the aurora fingerprint below). Unlike that scan this hashes hidden files
-    too, since Build-Installer stages this tree with Copy-Item -Force. Returns '' when absent.
+    one (same reasoning as the aurora fingerprint below), skipping dot-paths by name the same way.
+    Returns '' when absent.
     #>
     if ([string]::IsNullOrWhiteSpace($ThirdPartyDirectory)) { return '' }
     if (-not (Test-Path -LiteralPath $ThirdPartyDirectory -PathType Container)) { return '' }
     $root = [IO.Path]::GetFullPath($ThirdPartyDirectory).TrimEnd('\')
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File |
+    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
+        Where-Object { -not ($_.FullName.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') }) } |
         Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
@@ -245,13 +246,13 @@ function Get-MkwAuroraSourceFingerprint([string]$AuroraDirectory) {
         (Join-Path $root 'extern') + '\',
         (Join-Path $root 'build') + '\'
     )
-    # Hidden files are skipped deliberately: Build-Installer.ps1 stages this tree
-    # with Copy-Item -Recurse (no -Force), so they never reach the payload and
-    # hashing them would make the two sides disagree by construction.
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File |
+    # Dot-paths (the submodule's .git pointer) are skipped by name, not by the hidden attribute:
+    # the payload zip drops that attribute, so the installed side would otherwise hash them.
+    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
         Where-Object {
             $full = $_.FullName
-            -not ($excludedPrefixes | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
+            -not ($excludedPrefixes | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) -and
+            -not ($full.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') })
         } |
         Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
     $sha = [Security.Cryptography.SHA256]::Create()
