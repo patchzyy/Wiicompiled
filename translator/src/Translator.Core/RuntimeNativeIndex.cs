@@ -87,6 +87,9 @@ public static class RuntimeNativeIndexBuilder
             : null;
         if (RuntimeNativeIndexFile.TryLoad(indexPath, expectedDigest, out var index, out var reason))
             return index;
+        if (expectedDigest is null)
+            throw new InvalidOperationException(
+                $"The native index {indexPath} is unusable ({reason}) and the native sources it describes are missing: {sourceRoot}");
 
         diagnostics?.WriteLine($"[translator] ignoring native index {indexPath} ({reason}); scanning {sourceRoot}");
         return Build(sourceRoot);

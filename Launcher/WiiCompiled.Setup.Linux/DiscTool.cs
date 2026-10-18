@@ -41,6 +41,7 @@ internal static class DiscTool
         // time, so it has to survive past this install (see Program.cs, which points dvd_root here).
         reporter.Progress(InstallStages.ExtractDisc, "Extracting the disc image", 4);
         var dataDir = Path.Combine(assetsDirectory, "DATA");
+        Directory.CreateDirectory(assetsDirectory);
         File.Delete(Path.Combine(assetsDirectory, ExtractionMarker));
         if (Directory.Exists(dataDir)) Directory.Delete(dataDir, recursive: true);
         await RunExtractAsync(nodTool, isoPath, dataDir, cancellationToken);

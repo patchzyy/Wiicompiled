@@ -149,6 +149,10 @@ public sealed class RuntimeNativeIndexTests
             AssertIndexEqual(built, RuntimeNativeIndexBuilder.Resolve(sources, indexPath, diagnostics));
             Assert.Equal("", diagnostics.ToString());
             Assert.Empty(RuntimeNativeIndexBuilder.Build(sources).Registrations);
+
+            File.WriteAllText(indexPath, "{}");
+            Assert.Throws<InvalidOperationException>(
+                () => RuntimeNativeIndexBuilder.Resolve(sources, indexPath, diagnostics));
         }
         finally
         {
