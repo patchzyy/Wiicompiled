@@ -127,7 +127,7 @@ foreach ($mandatory in ([regex]::Matches($parameterBlock,
 }
 
 # --- The build steps the installer's progress bar acts on.
-$installProgress = Read-SourceFile (Join-Path $setup 'InstallProgress.cs') 'InstallProgress.cs'
+$installProgress = Read-SourceFile (Join-Path $common 'InstallProgress.cs') 'InstallProgress.cs'
 $knownSteps = Get-QuotedList $installProgress '(?s)class BuildStepIds\s*\{(.*?)\n\}' `
     'const string \w+ = "([^"]+)";' 'BuildStepIds'
 $emittedSteps = @([regex]::Matches($localBuild, "(?:-StepId|Write-MkwBuildStep)\s+'([^']+)'") |

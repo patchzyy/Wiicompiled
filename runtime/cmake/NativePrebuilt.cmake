@@ -3,10 +3,10 @@
 #
 # Produced by launcher/Prepare-NativePrebuilt.ps1 with the same toolchain and the
 # same canonical flag set the consuming build uses, which is what makes a single
-# package valid for every user. Nothing about this project's own code changes:
-# the runtime, the translated shards and the products still compile locally and
-# still link targets named aurora::gx / aurora::pad / aurora::si / aurora::vi /
-# aurora::mtx, so cmake/PublicProducts.cmake needs no prebuilt-specific branch.
+# package valid for every user. The translated shards and the products still
+# compile locally and still link targets named aurora::gx / aurora::pad /
+# aurora::si / aurora::vi / aurora::mtx. The package may also carry the native
+# runtime archive; cmake/RuntimeLibrary.cmake decides whether it can be used.
 #
 # The aurora and dependency source trees are still present in the workspace - the
 # runtime includes aurora headers directly - so the package records include
@@ -42,6 +42,10 @@ endfunction()
 mkw_np_resolve(_mkw_np_includes ${MKW_NP_INCLUDE_DIRECTORIES})
 mkw_np_resolve(_mkw_np_links ${MKW_NP_LINK_LIBRARIES})
 mkw_np_resolve(_mkw_np_dawn_config ${MKW_NP_DAWN_CONFIG_DIR})
+set(MKW_NP_RUNTIME_ARCHIVE_PATH "")
+if(MKW_NP_RUNTIME_ARCHIVE)
+    mkw_np_resolve(MKW_NP_RUNTIME_ARCHIVE_PATH "${MKW_NP_RUNTIME_ARCHIVE}")
+endif()
 if(NOT MKW_PLATFORM_WINDOWS)
     if(NOT MKW_NP_MBEDTLS_LIBRARIES OR NOT MKW_NP_MBEDTLS_INCLUDE_DIR)
         message(FATAL_ERROR

@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using WiiCompiled.Setup.Common;
 
 namespace WiiCompiled.Setup.Windows;
@@ -12,9 +14,10 @@ namespace WiiCompiled.Setup.Windows;
 internal static class ToolkitFingerprint
 {
     // v6/native-toolchain v2 forces one clean rebuild past a Ninja stale-object bug.
-    // translation v2 added runtime/src, which the translator regex-scans for native overrides.
+    // translation v2 added runtime/src, which the translator regex-scans for native overrides;
+    // v3 replaced it with the native index extracted from it, whenever that index is current.
     private const string Version = "mkwc-toolkit-compile-v6";
-    private const string TranslationVersion = "mkwc-toolkit-translation-v2";
+    private const string TranslationVersion = "mkwc-toolkit-translation-v3";
     private const string NativeToolchainVersion = "mkwc-toolkit-native-toolchain-v2";
     private const string PackageVersion = "mkwc-toolkit-package-v1";
     private const string RuntimeAssetsVersion = "mkwc-product-runtime-assets-v3";
@@ -25,19 +28,24 @@ internal static class ToolkitFingerprint
          ".cmake", ".txt", ".yml", ".yaml", ".toml", ".json", ".ps1", ".in", ".def", ".patch"];
 
     /// <summary>
-    /// Inputs that decide translator output: translator, translation project, runtime sources it
-    /// scans for native override registrations/effect contracts, and the build script's translator
-    /// command lines. Unchanged means the completed base translation can be reused instead of re-run.
+    /// Inputs that decide translator output: translator, translation project, the native override
+    /// registrations/effect contracts it extracts from runtime/src (see
+    /// <see cref="AddNativeRegistrations"/>), and the build script's translator command lines.
+    /// Unchanged means the completed base translation can be reused instead of re-run.
     /// </summary>
     private static readonly string[] TranslationPrefixes =
     [
         InstalledLayout.ToolkitEntryPrefix + "Translator/",
-        InstalledLayout.WorkspaceEntryPrefix + "projects/",
-        InstalledLayout.WorkspaceEntryPrefix + "runtime/src/"
+        InstalledLayout.WorkspaceEntryPrefix + "projects/"
     ];
 
     private static readonly string[] TranslationFiles =
         [InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1"];
+
+    private const string NativeSourcePrefix = InstalledLayout.WorkspaceEntryPrefix + "runtime/src/";
+    private const string NativeIndexEntry = InstalledLayout.WorkspaceEntryPrefix + "runtime/native-index.json";
+    // The file set the translator's native index source digest covers.
+    private static readonly string[] NativeIndexSourceExtensions = [".cpp", ".h", ".hpp"];
 
     /// <summary>
     /// Inputs that make compiled objects unsafe to reuse: the compiler/CMake/Ninja toolchain, the
@@ -108,14 +116,16 @@ internal static class ToolkitFingerprint
         if (entries.Count == 0)
             throw new InvalidDataException($"No toolkit files were found under {root}; the installation is incomplete.");
 
+        var translation = SelectSubset(entries, TranslationPrefixes, TranslationFiles);
+        AddNativeRegistrations(translation, entries, root);
         return new ToolkitFingerprintComponents(
             BuildIdentity(Version, entries),
-            BuildSubsetIdentity(TranslationVersion, entries, TranslationPrefixes, TranslationFiles),
-            BuildSubsetIdentity(NativeToolchainVersion, entries, NativeToolchainPrefixes,
-                NativeToolchainFiles));
+            BuildIdentity(TranslationVersion, translation),
+            BuildIdentity(NativeToolchainVersion,
+                SelectSubset(entries, NativeToolchainPrefixes, NativeToolchainFiles)));
     }
 
-    private static string BuildSubsetIdentity(string version, SortedDictionary<string, string> entries,
+    private static SortedDictionary<string, string> SelectSubset(SortedDictionary<string, string> entries,
         string[] prefixes, string[] files)
     {
         var subset = new SortedDictionary<string, string>(StringComparer.Ordinal);
@@ -125,8 +135,60 @@ internal static class ToolkitFingerprint
                 files.Any(file => relative.Equals(file, StringComparison.Ordinal)))
                 subset[relative] = hash;
         }
-        return BuildIdentity(version, subset);
+        return subset;
     }
+
+    /// <summary>
+    /// A native-index.json extracted from exactly the shipped runtime/src stands in for those
+    /// sources, minus its source digest, so a runtime change that leaves the registrations alone
+    /// keeps the base translation. A missing, unreadable or stale index keeps the sources instead.
+    /// </summary>
+    private static void AddNativeRegistrations(SortedDictionary<string, string> subset,
+        SortedDictionary<string, string> entries, string root)
+    {
+        var sources = entries.Where(entry => entry.Key.StartsWith(NativeSourcePrefix, StringComparison.Ordinal))
+            .ToList();
+        var registrations = TryHashCurrentNativeIndex(
+            Path.Combine(InstalledLayout.Workspace(root), "runtime", "native-index.json"), sources);
+        if (registrations is not null)
+        {
+            subset[NativeIndexEntry] = registrations;
+            return;
+        }
+        foreach (var (relative, hash) in sources) subset[relative] = hash;
+    }
+
+    private static string? TryHashCurrentNativeIndex(string path, List<KeyValuePair<string, string>> sources)
+    {
+        if (!File.Exists(path)) return null;
+        JsonObject? document;
+        try { document = JsonNode.Parse(File.ReadAllText(path)) as JsonObject; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+        if (document?["sourceDigest"] is not JsonValue recorded || !recorded.TryGetValue<string>(out var digest))
+            return null;
+
+        // Mirrors the translator's RuntimeNativeIndexFile.ComputeSourceDigest.
+        var manifest = new StringBuilder();
+        foreach (var (relative, hash) in sources)
+        {
+            if (!NativeIndexSourceExtensions.Any(extension =>
+                    relative.EndsWith(extension, StringComparison.OrdinalIgnoreCase)))
+                continue;
+            manifest.Append(hash).Append("  ").Append(relative, NativeSourcePrefix.Length,
+                relative.Length - NativeSourcePrefix.Length).Append('\n');
+        }
+        if (!digest.Equals(Sha256Hex(manifest.ToString()), StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        document.Remove("sourceDigest");
+        return Sha256Hex(document.ToJsonString());
+    }
+
+    private static string Sha256Hex(string text) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
 
     /// <summary>
     /// Content identity of the source-owned files copied verbatim beside every product. This is
@@ -273,8 +335,7 @@ internal static class ToolkitFingerprint
         var builder = new StringBuilder(version).Append('\n');
         foreach (var (relative, hash) in entries)
             builder.Append(relative).Append('|').Append(hash).Append('\n');
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())))
-            .ToLowerInvariant();
+        return Sha256Hex(builder.ToString());
     }
 }
 

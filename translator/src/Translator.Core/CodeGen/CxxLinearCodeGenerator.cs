@@ -176,10 +176,7 @@ public sealed partial class CxxLinearCodeGenerator
             : LeafRegisterCacheInitializers.Empty;
         var sb = new StringBuilder();
         sb.AppendLine("#include <cstdint>");
-        sb.AppendLine("#include \"ppc_runtime.h\"");
-        sb.AppendLine("#include \"abi_bridge.h\"");
-        sb.AppendLine("#include \"memory.h\"");
-        sb.AppendLine("#include \"recomp_mod_loader.h\"");
+        sb.AppendLine("#include \"guest_abi/guest_abi.h\"");
         sb.AppendLine();
 
         var forwardDecls = CollectCallTargets(func)

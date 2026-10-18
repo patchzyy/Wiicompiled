@@ -15,5 +15,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WiiCompiled.Setup.Common\WiiCompiled.Setup.Common.csproj" />
+    <Using Include="WiiCompiled.Setup.Common" />
   </ItemGroup>
 </Project>

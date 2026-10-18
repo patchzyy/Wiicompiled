@@ -4,11 +4,12 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 default_workspace=$(cd "$script_dir/.." && pwd)
+# shellcheck source=build-cache.sh
+source "$script_dir/build-cache.sh"
 
 fail() { printf 'local-build-macos.command: error: %s\n' "$*" >&2; exit 1; }
 step() { printf 'MKWCBUILD:STEP:%s %s\n' "$1" "$2"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 is missing: $1"; }
-sha256() { shasum -a 256 "$1" | awk '{ print $1 }'; }
 
 usage() {
     cat <<'EOF'
@@ -118,11 +119,30 @@ if (( builds_retro )); then
     fi
 fi
 
-step translate-base 'Translating the user-owned base game'
-rm -rf "$functions" "$metadata" "$manifest_dir"; mkdir -p "$functions" "$manifest_dir"
-translator translate-recursive "$entry_point" --project "$project" --outdir "$functions" --output-metadata "$metadata" --production-source-bundle "$generated/base_translation_sources.bin" --no-function-files --prune-stale --threads "$translator_threads"
-step emit-base-manifest 'Creating the local base translation manifest'
-translator emit-base-manifest --project "$project" --out "$manifest_dir" --functions-dir "$functions" --translation-output-metadata "$metadata" --region P
+translation_provenance="$generated/translation-provenance.json"
+translation_fingerprint=$(mkw_translation_identity "$workspace" "${translator_bin:-$(dirname "${translator_dll:-}")}" "$script_dir/local-build-macos.command")
+reuse_base=0
+if [[ "$(mkw_read_identity "$translation_provenance" TranslationFingerprint)" == "$translation_fingerprint" && -f "$metadata" && -f "$manifest" ]]; then
+    reuse_base=1
+fi
+if (( reuse_base && builds_retro )); then
+    # A base tree that never saw this Code.pul would bake vanilla code into the modded product.
+    pul_sha=$(mkw_sha256 "$retro_root/Binaries/Code.pul")
+    if ! grep -q "\"codePulSha256\":\"$pul_sha\"" "$metadata" && \
+       ! translator check-base-mod-awareness --project "$project" --profile retro-rewind --translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul"; then
+        reuse_base=0
+    fi
+fi
+if (( reuse_base )); then
+    step reuse-base-translation 'Reusing the completed base translation'
+else
+    rm -f "$translation_provenance"; mkdir -p "$functions" "$manifest_dir"
+    step translate-base 'Translating the user-owned base game'
+    translator translate-recursive "$entry_point" --project "$project" --outdir "$functions" --output-metadata "$metadata" --production-source-bundle "$generated/base_translation_sources.bin" --no-function-files --prune-stale --threads "$translator_threads"
+    step emit-base-manifest 'Creating the local base translation manifest'
+    translator emit-base-manifest --project "$project" --out "$manifest_dir" --functions-dir "$functions" --translation-output-metadata "$metadata" --region P
+    mkw_write_identity "$translation_provenance" TranslationFingerprint "$translation_fingerprint"
+fi
 if (( builds_retro )); then
     mod_out="$workspace/build/mods/retro_rewind_full_cpp"; args=(translate-mod --project "$project" --profile retro-rewind --base-manifest "$manifest" --base-translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul" --mod-root "$retro_root" --mod-name 'Retro Rewind' --region P --out "$mod_out" --prefer-cached-inputs --emit-cpp --threads "$translator_threads")
     if (( skip_retro_wfc )); then args+=(--skip-retro-wfc); else offline_payload="$retro_wfc/binary/payload.RMCPD00.bin"; assert_file "$offline_payload" 'Offline Retro-WFC payload'; args+=(--retro-wfc-payload "$offline_payload"); fi
@@ -133,10 +153,17 @@ args=(emit-build-shards --project "$project" --base-metadata "$metadata" --base-
 if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatch_profile.json" --retro-cpp-dir "$mod_out/cpp"); fi
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 
+toolchain_provenance="$native_build/toolchain-provenance.json"
+toolchain_fingerprint=$(mkw_toolchain_identity "$workspace" clang clang++ "$cmake_bin" "$ninja_bin")
+if [[ -d "$native_build" && "$(mkw_read_identity "$toolchain_provenance" ToolchainFingerprint)" != "$toolchain_fingerprint" ]]; then
+    printf 'MKWCBUILD: The toolchain or a pinned dependency changed; rebuilding the native build from scratch\n'
+    rm -rf "$native_build"
+fi
 step configure-native 'Configuring the native toolchain'
 # Use Aurora's pinned SDL3 source on macOS.  A system SDL3 can be older than
 # Aurora's required API even when find_package() succeeds.
 "$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DAURORA_SDL3_PROVIDER=vendor
+mkw_write_identity "$toolchain_provenance" ToolchainFingerprint "$toolchain_fingerprint"
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"
 if [[ "$profile" != retro-rewind ]]; then "$script_dir/macos/publish-app.command" --build-dir "$native_build" --product WiiCompiled --output-dir "${base_output_dir:-$output_dir}" --architecture "$macos_arch" --minimum-system-version "$macos_deployment_target"; fi

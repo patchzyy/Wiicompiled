@@ -112,6 +112,20 @@ Assert-Directory $dependencySources 'Pinned offline dependency sources'
 # back to compiling aurora from source, which is what this package exists to
 # avoid - and a mismatched one would be an ABI hazard.
 $portableClangHash = Get-MkwFileSha256 (Join-Path $portableTools 'llvm-mingw\bin\clang-22.exe')
+# The identity the runtime build compares against the package's runtime archive.
+function Get-RuntimeSourceFingerprint([string]$RuntimeDirectory, [string]$DependenciesDirectory) {
+    $arguments = @("-DMKW_RUNTIME_DIR=$(ConvertTo-MkwCMakePath $RuntimeDirectory)")
+    $cppWinRt = Join-Path $DependenciesDirectory 'cppwinrt'
+    if (Test-Path -LiteralPath (Join-Path $cppWinRt 'winrt\base.h') -PathType Leaf) {
+        $arguments += "-DMKW_CPPWINRT_INCLUDE_DIR=$(ConvertTo-MkwCMakePath $cppWinRt)"
+    }
+    $arguments += @('-P', (ConvertTo-MkwCMakePath (Join-Path $RuntimeDirectory 'cmake\RuntimeFingerprint.cmake')))
+    $output = @(& (Join-Path $portableTools 'CMake\bin\cmake.exe') @arguments)
+    if ($LASTEXITCODE -ne 0) { throw "Runtime fingerprinting failed with exit code $LASTEXITCODE." }
+    $line = $output | Where-Object { "$_" -match '^runtime_fingerprint=[0-9a-f]{64}$' } | Select-Object -First 1
+    if (-not $line) { throw "RuntimeFingerprint.cmake printed no fingerprint: $($output -join ' ')" }
+    return "$line".Substring('runtime_fingerprint='.Length)
+}
 function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
     $provenancePath = Join-Path $PackageDirectory 'provenance.json'
     if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) { return $false }
@@ -129,6 +143,9 @@ function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
     # release ships runtime/third_party sources that first-party TUs compile
     # against, so archives harvested before a vendored change are stale.
     $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
+    # The precompiled runtime archive must be from these runtime sources; a package without one
+    # would make every installation compile the runtime itself.
+    $recordedRuntime = $provenance.PSObject.Properties['RuntimeSourceFingerprint']
     return ($provenance.CompilerSha256 -eq $portableClangHash) -and
            ($provenance.FlagFingerprint -eq (Get-MkwNativeFlagFingerprint)) -and
            ($null -ne $recordedDawn) -and
@@ -136,11 +153,13 @@ function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
            ($null -ne $recordedAurora) -and
            ($recordedAurora.Value -eq (Get-MkwAuroraSourceFingerprint (Join-Path $repoRoot 'aurora-main'))) -and
            ($null -ne $recordedThirdParty) -and
-           ($recordedThirdParty.Value -eq (Get-MkwThirdPartySourceFingerprint (Join-Path $repoRoot 'runtime\third_party')))
+           ($recordedThirdParty.Value -eq (Get-MkwThirdPartySourceFingerprint (Join-Path $repoRoot 'runtime\third_party'))) -and
+           ($null -ne $recordedRuntime) -and
+           ($recordedRuntime.Value -eq (Get-RuntimeSourceFingerprint (Join-Path $repoRoot 'runtime') $dependencySources))
 }
 $nativePrebuiltPackage = Join-Path $dependencySources 'native_prebuilt'
 if (-not (Test-NativePrebuiltCurrent $nativePrebuiltPackage)) {
-    Write-Host '[0/6] Building the precompiled aurora and third-party package...'
+    Write-Host '[0/6] Building the precompiled aurora, third-party and runtime package...'
     & (Join-Path $PSScriptRoot 'Prepare-NativePrebuilt.ps1') `
         -PortableToolsDirectory $portableTools -DependencySourceDirectory $dependencySources
     if ($LASTEXITCODE -ne 0) { throw 'Precompiled aurora package preparation failed.' }
@@ -221,6 +240,21 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LocalBuild.ps1') -Destination (
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1') -Destination (Join-Path $workspace 'NativeBuildFlags.ps1')
 [IO.Directory]::CreateDirectory((Join-Path $workspace 'Dependencies')) | Out-Null
 foreach ($name in $requiredDependencies) { Copy-Directory (Join-Path $dependencySources $name) (Join-Path $workspace "Dependencies\$name") }
+
+# The translation identity covers the runtime's native registrations through this index (see
+# ToolkitFingerprint), so it is extracted from exactly the staged runtime sources.
+$nativeIndex = Join-Path $workspace 'runtime\native-index.json'
+& $translator emit-native-index --project (Join-Path $workspace 'projects\mkwii\recomp.yml') --out $nativeIndex
+if ($LASTEXITCODE -ne 0) { throw "Native index extraction failed with exit code $LASTEXITCODE." }
+Assert-File $nativeIndex 'Runtime native index'
+# A staged runtime that fingerprints differently from the shipped archive would make every
+# installation silently compile the runtime from source.
+$stagedRuntimeFingerprint = Get-RuntimeSourceFingerprint (Join-Path $workspace 'runtime') (Join-Path $workspace 'Dependencies')
+$packagedRuntimeFingerprint = (Get-Content -LiteralPath (Join-Path $workspace 'Dependencies\native_prebuilt\provenance.json') -Raw |
+    ConvertFrom-Json).RuntimeSourceFingerprint
+if ($stagedRuntimeFingerprint -ne $packagedRuntimeFingerprint) {
+    throw "The staged runtime ($stagedRuntimeFingerprint) does not match the precompiled runtime archive ($packagedRuntimeFingerprint)."
+}
 
 [IO.Directory]::CreateDirectory((Join-Path $payloadRoot 'host')) | Out-Null
 Copy-Item $setupHost (Join-Path $payloadRoot 'host\WiiCompiled-Setup.exe')

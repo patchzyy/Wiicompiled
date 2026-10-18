@@ -87,6 +87,11 @@ mkw_collect_buildsystem_targets("${_mkw_np_aurora_dir}" _mkw_np_all_targets)
 # the scan above cannot see it; it is appended explicitly. The type and closure
 # checks below still apply to it.
 list(APPEND _mkw_np_all_targets "mkw_cryptopp")
+# The game-independent runtime archive (RuntimeLibrary.cmake). It is outside the
+# probe closure, so it ships only when the harvester builds it explicitly.
+if(TARGET mkw_runtime)
+    list(APPEND _mkw_np_all_targets "mkw_runtime")
+endif()
 if(NOT MKW_PLATFORM_WINDOWS)
     set(_mkw_np_mbedtls_targets mbedtls mbedx509 mbedcrypto)
     # mbedcrypto links these third-party archives when upstream defines them.
@@ -168,5 +173,12 @@ file(WRITE "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/meta.txt"
     "cxx_compiler=${CMAKE_CXX_COMPILER}\n"
     "cxx_compiler_version=${CMAKE_CXX_COMPILER_VERSION}\n"
     "library_targets=${_mkw_np_lib_targets_csv}\n")
+if(TARGET mkw_runtime)
+    mkw_runtime_fingerprint(_mkw_np_runtime_fingerprint "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MKW_CPPWINRT_INCLUDE_DIR}" "${MKW_X86_CPU_PROFILE}")
+    file(APPEND "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/meta.txt"
+        "runtime_fingerprint=${_mkw_np_runtime_fingerprint}\n"
+        "runtime_cpu_profile=${MKW_X86_CPU_PROFILE}\n")
+endif()
 
 message(STATUS "Native prebuilt export: ${MKW_NATIVE_PREBUILT_EXPORT_DIR}")

@@ -625,7 +625,7 @@ std::string FormatHostStackTrace(unsigned framesToSkip) {
         symbol->MaxNameLen = MAX_SYM_NAME;
         if (symbolsReady && SymFromAddr(process, addr, &symbolDisp, symbol)) {
             symbolName = symbol->Name;
-        } else if (auto info = TranslatedFunctionRegistry::FindByHostAddress(static_cast<uintptr_t>(addr))) {
+        } else if (auto info = FindTranslatedFunctionByHostAddress(static_cast<uintptr_t>(addr))) {
             // DbgHelp could not name it; the translated-function registry can.
             translatedFuncName = info->name;
             ppcAddress = info->address;

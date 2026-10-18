@@ -39,7 +39,7 @@ require_command() {
 }
 
 sha256_of() {
-    sha256sum "$1" | awk '{print $1}'
+    mkw_sha256 "$1"
 }
 
 # ---------------------------------------------------------------------------
@@ -47,6 +47,8 @@ sha256_of() {
 # ---------------------------------------------------------------------------
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=build-cache.sh
+source "$script_dir/build-cache.sh"
 workspace=$(cd "$script_dir/.." && pwd)
 profile=base
 output_dir=""
@@ -266,10 +268,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Translation cache: this script is the only owner of the reuse decision (unlike LocalBuild.ps1,
-# which is handed caller-computed fingerprints by the Windows installer - there is no Linux
-# installer yet to supply anything). Hash the game inputs the translation actually depends on;
-# a match plus every expected output file present means the previous translation is still good.
+# Translation cache: this script is the only owner of the reuse decision. The identity (see
+# build-cache.sh) covers the game inputs, project, native registrations, translator and this script,
+# matching the Windows installer's translation identity.
 # ---------------------------------------------------------------------------
 
 if (( force_clean_build )); then
@@ -277,13 +278,12 @@ if (( force_clean_build )); then
     rm -rf "$generated" "$base_manifest_dir" "$build"
 fi
 
-translation_fingerprint=$(cat "$assets/main.dol" "$assets/StaticR.rel" "$project" | sha256sum | awk '{print $1}')
+translator_identity_input=${translator_bin:-$(dirname "$translator_dll")}
+translation_fingerprint=$(mkw_translation_identity "$workspace" "$translator_identity_input" "$script_dir/local-build.sh")
 reuse_base=0
-if [[ -f "$translation_provenance" ]]; then
-    recorded=$(grep -o '"TranslationFingerprint" *: *"[^"]*"' "$translation_provenance" 2>/dev/null | sed 's/.*"\([0-9a-f]*\)"$/\1/' || true)
-    if [[ "$recorded" == "$translation_fingerprint" && -f "$base_metadata" && -f "$base_manifest" ]]; then
-        reuse_base=1
-    fi
+if [[ "$(mkw_read_identity "$translation_provenance" TranslationFingerprint)" == "$translation_fingerprint" \
+      && -f "$base_metadata" && -f "$base_manifest" ]]; then
+    reuse_base=1
 fi
 
 if (( builds_retro )); then
@@ -331,8 +331,7 @@ else
     translator emit-base-manifest --project "$project" --out "$base_manifest_dir" \
         --functions-dir "$functions" --translation-output-metadata "$base_metadata" --region P
 
-    printf '{"SchemaVersion":1,"TranslationFingerprint":"%s"}' "$translation_fingerprint" \
-        > "$translation_provenance"
+    mkw_write_identity "$translation_provenance" TranslationFingerprint "$translation_fingerprint"
 fi
 
 if (( builds_retro )); then
@@ -407,6 +406,13 @@ if [[ -f "$build/CMakeCache.txt" ]]; then
         done < <(grep -o ':FILEPATH=.*' "$build/CMakeCache.txt" | sed 's/^:FILEPATH=//')
     fi
 fi
+# The AppImage keeps tool paths stable across updates, so a changed compiler is only visible here.
+toolchain_fingerprint=$(mkw_toolchain_identity "$workspace" "$cc_bin" "$cxx_bin" "$cmake_bin" "$ninja_bin")
+if [[ "$keep_native_build" -eq 1 && \
+      "$(mkw_read_identity "$toolchain_provenance" ToolchainFingerprint)" != "$toolchain_fingerprint" ]]; then
+    keep_native_build=0
+    stale_reason=" (the toolchain or a pinned dependency changed)"
+fi
 if [[ -d "$build" && "$keep_native_build" -eq 0 ]]; then
     echo "MKWCBUILD: The native build cache does not belong to this workspace path or toolchain; rebuilding from scratch$stale_reason"
     rm -rf "$build"
@@ -453,6 +459,7 @@ fi
 
 log_step configure-native "Configuring the native toolchain"
 "$cmake_bin" "${configure_args[@]}"
+mkw_write_identity "$toolchain_provenance" ToolchainFingerprint "$toolchain_fingerprint"
 
 case "$profile" in
     base) targets=(WiiCompiled) ;;

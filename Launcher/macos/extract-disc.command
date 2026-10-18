@@ -38,6 +38,13 @@ done
 [[ -x "$nodtool" ]] || fail "nodtool is not executable: $nodtool"
 
 assets_dir=$(mkdir -p "$assets_dir" && cd "$assets_dir" && pwd)
+
+# DATA is published before main.dol and StaticR.rel, so verified files imply a complete extraction.
+if [[ -d "$assets_dir/DATA/files" && -f "$assets_dir/main.dol" && -f "$assets_dir/StaticR.rel" ]] && \
+   [[ $(sha256 "$assets_dir/main.dol") == "$EXPECTED_DOL_SHA256" && $(sha256 "$assets_dir/StaticR.rel") == "$EXPECTED_REL_SHA256" ]]; then
+    printf 'MKWCBUILD:STEP:disc-ready Reusing the verified extracted game assets\n'
+    exit 0
+fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/wiicompiled-disc.XXXXXX")
 cleanup() { rm -rf "$scratch"; }
 trap cleanup EXIT

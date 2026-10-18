@@ -85,15 +85,12 @@ if (( needs_workspace_refresh )); then
         /usr/bin/ditto "$workspace_source" "$workspace"
     else
         # Refresh only packaged source inputs. Assets and the staged Retro
-        # Rewind package belong to the user and stay in place.
-        for source in aurora-main projects runtime translator Launcher; do
-            rm -rf "$workspace/$source"
-            /usr/bin/ditto "$workspace_source/$source" "$workspace/$source"
-        done
+        # Rewind package belong to the user and stay in place; unchanged files
+        # keep their timestamps so the incremental native build survives.
+        # shellcheck source=../build-cache.sh
+        source "$workspace_source/Launcher/build-cache.sh"
+        mkw_sync_tree "$workspace_source" "$workspace" aurora-main projects runtime translator Launcher
         /usr/bin/ditto "$source_bundle_version" "$workspace_bundle_version"
-        # A dependency provider can be cached in this directory, so make the
-        # refreshed sources configure from a clean native build tree.
-        rm -rf "$workspace/native-build-macos-arm64" "$workspace/native-build-macos-x86_64"
     fi
 fi
 

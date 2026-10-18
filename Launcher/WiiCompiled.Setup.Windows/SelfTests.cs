@@ -1073,10 +1073,10 @@ internal static class SelfTests
             if (topologyChangedRuntimeAssets == changedRuntimeAssets)
                 throw new Exception("An empty copied runtime-asset directory was omitted from its identity.");
 
-            // Cache-reuse subsets: translator or runtime/src changes (the translator regex-scans it
-            // for native overrides and effect contracts) invalidate translation but not toolchain,
-            // since CMake/Ninja rebuild exactly the affected objects; a compiler change invalidates
-            // only toolchain; a native_prebuilt provenance rewrite invalidates neither.
+            // Cache-reuse subsets: translator or native registration changes invalidate translation
+            // but not toolchain, since CMake/Ninja rebuild exactly the affected objects; a compiler
+            // change invalidates only toolchain; a native_prebuilt provenance rewrite invalidates
+            // neither. Without a current native index, runtime/src itself decides translation.
             var components = ToolkitFingerprint.ComputeComponents(root);
             if (components.Compile != afterPatch)
                 throw new Exception("ComputeComponents disagrees with the compile identity.");
@@ -1087,15 +1087,36 @@ internal static class SelfTests
                 throw new Exception("A new translator did not change the translation identity.");
             if (afterNewTranslator.NativeToolchain != components.NativeToolchain)
                 throw new Exception("A new translator needlessly changed the native toolchain identity.");
-            File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "src", "main.cpp"),
-                "int main3();");
+            var runtimeMain = Path.Combine(root, "BuildWorkspace", "runtime", "src", "main.cpp");
+            File.WriteAllText(runtimeMain, "int main3();");
+            var afterUnindexedRuntime = ToolkitFingerprint.ComputeComponents(root);
+            if (afterUnindexedRuntime.Translation == afterNewTranslator.Translation)
+                throw new Exception("A runtime source change without a native index did not change the translation identity.");
+
+            File.WriteAllText(runtimeMain, "int main();");
+            if (WriteFakeNativeIndex(root, "\"a\"") !=
+                "50b9779591f4b205751361c8899accd362f96ea5dfd32febed1bedca534c523a")
+                throw new Exception("The native index source digest no longer matches the translator's.");
+            var indexed = ToolkitFingerprint.ComputeComponents(root);
+            File.WriteAllText(runtimeMain, "int main3();");
+            WriteFakeNativeIndex(root, "\"a\"");
             var afterNewRuntime = ToolkitFingerprint.ComputeComponents(root);
-            if (afterNewRuntime.Translation == afterNewTranslator.Translation)
-                throw new Exception("A runtime source change did not change the translation identity.");
-            if (afterNewRuntime.NativeToolchain != afterNewTranslator.NativeToolchain)
+            if (afterNewRuntime.Translation != indexed.Translation)
+                throw new Exception("A runtime source change with unchanged registrations changed the translation identity.");
+            if (afterNewRuntime.NativeToolchain != indexed.NativeToolchain)
                 throw new Exception("A runtime source change needlessly changed the native toolchain identity.");
-            if (afterNewRuntime.Compile == afterNewTranslator.Compile)
+            if (afterNewRuntime.Compile == indexed.Compile)
                 throw new Exception("A runtime source change did not change the compile identity.");
+            File.WriteAllText(runtimeMain, "int main4();");
+            if (ToolkitFingerprint.ComputeComponents(root).Translation == afterNewRuntime.Translation)
+                throw new Exception("A stale native index was trusted for the translation identity.");
+            File.WriteAllText(runtimeMain, "int main3();");
+            WriteFakeNativeIndex(root, "\"a\", \"b\"");
+            afterNewRuntime = ToolkitFingerprint.ComputeComponents(root);
+            if (afterNewRuntime.Translation == indexed.Translation)
+                throw new Exception("A native registration change did not change the translation identity.");
+            if (afterNewRuntime.NativeToolchain != indexed.NativeToolchain)
+                throw new Exception("A native registration change needlessly changed the native toolchain identity.");
             File.WriteAllText(Path.Combine(root, "Toolkit", "llvm-mingw", "bin", "clang-22.exe"),
                 "clang-v2");
             var afterNewCompiler = ToolkitFingerprint.ComputeComponents(root);
@@ -1146,6 +1167,26 @@ internal static class SelfTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    /// <summary>Writes a native index current for the fake runtime/src; returns its source digest.</summary>
+    private static string WriteFakeNativeIndex(string root, string registrations)
+    {
+        var source = Path.Combine(root, "BuildWorkspace", "runtime", "src");
+        var manifest = new System.Text.StringBuilder();
+        foreach (var (relative, path) in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                     .Where(path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
+                                    path.EndsWith(".h", StringComparison.OrdinalIgnoreCase) ||
+                                    path.EndsWith(".hpp", StringComparison.OrdinalIgnoreCase))
+                     .Select(path => (Path.GetRelativePath(source, path).Replace('\\', '/'), path))
+                     .OrderBy(item => item.Item1, StringComparer.Ordinal))
+            manifest.Append(InputValidation.Sha256File(path)).Append("  ").Append(relative).Append('\n');
+        var digest = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(manifest.ToString())))
+            .ToLowerInvariant();
+        File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "native-index.json"),
+            "{\n  \"format\": \"wiicompiled-runtime-native-index\",\n  \"sourceDigest\": \"" + digest +
+            "\",\n  \"registrations\": [" + registrations + "]\n}\n");
+        return digest;
     }
 
     private static void CreateFakeToolkit(string root)

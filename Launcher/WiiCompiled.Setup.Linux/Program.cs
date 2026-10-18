@@ -31,7 +31,7 @@ internal static class Program
         var (command, flags) = ParseArgs(args);
         if (command is null) { PrintUsage(); return 1; }
         var progressJson = flags.ContainsKey("progress-json");
-        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter() : new ConsoleInstallReporter();
+        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter(ProductInfo.Version) : new ConsoleInstallReporter();
 
         try
         {

@@ -22,7 +22,7 @@
 // the psq_l/psq_st tier that does lives in ppc_isa_quantized.h.
 
 #include "ppc_isa_config.h"
-#include "ppc_isa_context.h"
+#include "guest_abi/cpu_context.h"
 
 #include <array>
 #include <cmath>

@@ -57,8 +57,8 @@ std::optional<std::string> PrintableU32(uint32_t value) {
     return out;
 }
 
-std::optional<TranslatedFunctionInfo> FindNearestTranslatedFunction(uint32_t address) {
-    auto best = TranslatedFunctionRegistry::FindNearestByAddress(address);
+std::optional<TranslatedFunctionInfo> FindNearbyTranslatedFunction(uint32_t address) {
+    auto best = FindNearestTranslatedFunction(address);
 
     // Crash-only heuristic: large gaps are usually data/FourCC values, not code offsets.
     if (best && address - best->address < 0x10000u) {
@@ -161,7 +161,7 @@ void PrintGuestValue(std::ostream& os, std::string_view label, uint32_t value) {
         } else {
             os << "<" << exact->name << ">";
         }
-    } else if (auto nearest = FindNearestTranslatedFunction(value)) {
+    } else if (auto nearest = FindNearbyTranslatedFunction(value)) {
         if (mapName && mapStart >= nearest->address) {
             os << "<" << mapName;
             if (value != mapStart) {
@@ -255,7 +255,7 @@ void DumpGuestStackHints(std::ostream& os, const CpuContext* cpu) {
         if (!value) {
             continue;
         }
-        if (!TranslatedFunctionRegistry::FindByAddressPtr(*value) && !FindNearestTranslatedFunction(*value)) {
+        if (!TranslatedFunctionRegistry::FindByAddressPtr(*value) && !FindNearbyTranslatedFunction(*value)) {
             continue;
         }
         if (printed == 0) {

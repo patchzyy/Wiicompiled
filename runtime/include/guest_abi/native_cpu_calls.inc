@@ -1,9 +1,10 @@
 // Native call catalog used by InvokeDirectCpu. Keep project-specific HLE
-// address mappings here; abi_bridge.h contains only the generic ABI machinery.
+// address mappings here; dispatch.h contains only the generic ABI machinery.
+// Part of the guest ABI: translated shards bind these calls at compile time.
 //
 // This is a .inc, not a header: it has no includes of its own and references
 // CpuContext, KnownTypedNativeCpuCall<> and KnownNativeCpuCall<>, all of which
-// are declared above its single mid-file include site in abi_bridge.h. It
+// are declared above its single mid-file include site in dispatch.h. It
 // cannot compile standalone and must never be included anywhere else.
 
 extern "C" void nw4r__lyt__detail__DrawQuad_800847c0(CpuContext* ctx);

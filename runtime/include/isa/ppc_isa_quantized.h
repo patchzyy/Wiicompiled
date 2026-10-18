@@ -2,7 +2,7 @@
 
 
 #include "ppc_isa_config.h"
-#include "ppc_isa_context.h"
+#include "guest_abi/cpu_context.h"
 #include "ppc_isa_float.h"
 #include "big_endian.h"
 

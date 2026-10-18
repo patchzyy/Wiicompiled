@@ -68,8 +68,8 @@ var canonicalIrStore = new CanonicalIrStore();
 // recursive ABI cache in one stable pass, exactly like translate-mod does.
 var inferredGuestAbi = new Lazy<InferredGuestFunctionAbiProvider>(() =>
     new InferredGuestFunctionAbiProvider(image.Value, canonicalIrStore));
-var runtimeNativeIndex = new Lazy<RuntimeNativeIndex>(() =>
-    RuntimeNativeIndexBuilder.Build(RequireProject().Runtime.NativeRegistrationRoot));
+var runtimeNativeIndex = new Lazy<RuntimeNativeIndex>(() => RuntimeNativeIndexBuilder.Resolve(
+    RequireProject().Runtime.NativeRegistrationRoot, RequireProject().Runtime.NativeIndex, Console.Error));
 // Void-stub signatures are only trusted as declared guest ABIs when the stub
 // lives under runtime.native_abi_directories (the vetted set); everywhere else
 // the C++ signature is documentation and the inferred ABI stays authoritative.
@@ -164,6 +164,7 @@ return command switch
     "translate-recursive" => RunTranslateRecursive(tail),
     "translate-mod" => RunTranslateMod(tail),
     "emit-build-shards" => RunEmitBuildShards(tail),
+    "emit-native-index" => RunEmitNativeIndex(tail),
     "emit-base-manifest" => RunEmitBaseManifest(tail),
     "check-base-mod-awareness" => RunCheckBaseModAwareness(tail),
     "validate-retro-wfc-payload" => RunValidateRetroWfcPayload(tail),
@@ -222,13 +223,21 @@ int RunEmitBuildShards(string[] argsTail)
     var baseFunctions = OptionValue(argsTail, "--base-functions-dir") ?? Path.Combine(root, "generated", "functions");
     var output = OptionValue(argsTail, "--out") ?? Path.Combine(root, "generated", "build_shards");
     var nativeSources = OptionValue(argsTail, "--native-source-dir") ?? Path.Combine(root, "runtime", "src");
+    var nativeIndexOption = OptionValue(argsTail, "--native-index");
     var resolvedProfile = OptionValue(argsTail, "--resolved-profile");
     var retroCpp = OptionValue(argsTail, "--retro-cpp-dir");
 
     try
     {
         var nativeSourcePath = Path.GetFullPath(nativeSources);
-        var nativeIndex = RuntimeNativeIndexBuilder.Build(nativeSourcePath);
+        var nativeIndexPath = string.IsNullOrWhiteSpace(nativeIndexOption)
+            ? Path.Combine(
+                Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(nativeSourcePath))!,
+                RuntimeNativeIndexFile.DefaultFileName)
+            : Path.GetFullPath(nativeIndexOption);
+        if (!Directory.Exists(nativeSourcePath) && !File.Exists(nativeIndexPath))
+            throw new DirectoryNotFoundException(nativeSourcePath);
+        var nativeIndex = RuntimeNativeIndexBuilder.Resolve(nativeSourcePath, nativeIndexPath, Console.Error);
         var result = TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
             Path.GetFullPath(baseMetadata),
             Path.GetFullPath(baseFunctions),
@@ -267,6 +276,33 @@ int RunEmitBuildShards(string[] argsTail)
         Console.Error.WriteLine($"emit-build-shards failed: {ex.Message}");
         return 1;
     }
+}
+
+int RunEmitNativeIndex(string[] argsTail)
+{
+    var output = OptionValue(argsTail, "--out");
+    if (string.IsNullOrWhiteSpace(output))
+    {
+        Console.Error.WriteLine("[translator] emit-native-index needs --out.");
+        return 1;
+    }
+    var nativeSourcePath = Path.GetFullPath(
+        OptionValue(argsTail, "--native-source-dir") ?? RequireProject().Runtime.NativeRegistrationRoot);
+    if (!Directory.Exists(nativeSourcePath))
+    {
+        Console.Error.WriteLine($"[translator] native source directory not found: {nativeSourcePath}");
+        return 1;
+    }
+
+    // Digest first: sources edited mid-scan leave a stale digest, which only forces a rescan.
+    var digest = RuntimeNativeIndexFile.ComputeSourceDigest(nativeSourcePath);
+    var index = RuntimeNativeIndexBuilder.Build(nativeSourcePath);
+    var outputPath = Path.GetFullPath(output);
+    var changed = RuntimeNativeIndexFile.Write(outputPath, index, digest);
+    Console.WriteLine($"[translator] native index {(changed ? "written" : "unchanged")}: {outputPath}");
+    Console.WriteLine($"  registrations/void-stub ABIs/effects: {index.Registrations.Length:N0}/{index.VoidStubAbis.Length:N0}/{index.Effects.Length:N0}");
+    Console.WriteLine($"  source digest: {digest}");
+    return 0;
 }
 
 byte[] LoadBinaryInput(string spec, string outDir, string downloadFileName)
@@ -2940,7 +2976,7 @@ int EmitGuestSymbolTable(FunctionMap? map, string outputPath)
         sb.Append("\",\n");
     }
     sb.Append("};\n\n} // extern \"C\"\n");
-    File.WriteAllText(outputPath, sb.ToString());
+    FileOutput.WriteTextIfChanged(outputPath, sb.ToString());
     return entries.Count;
 }
 
@@ -3573,6 +3609,7 @@ static string[] KnownCommands() => new[]
     "translate-mod",
     "emit-base-manifest",
     "emit-build-shards",
+    "emit-native-index",
     "check-base-mod-awareness",
     "validate-retro-wfc-payload"
 };
@@ -3633,9 +3670,15 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--base-metadata", "path"),
         new("--base-functions-dir", "path"),
         new("--native-source-dir", "path"),
+        new("--native-index", "path"),
         new("--resolved-profile", "path"),
         new("--retro-cpp-dir", "path"),
         new("--out", "generated/build_shards")
+    }),
+    "emit-native-index" => (null, new CommandOption[]
+    {
+        new("--native-source-dir", "path"),
+        new("--out", "path", Required: true)
     }),
     _ => null
 };

@@ -31,7 +31,7 @@ internal static class Program
             {
                 // A command line was supplied, so a caller is driving this process. Rejecting the
                 // command with a modal dialog would hang that caller forever.
-                if (progressJson) new NdjsonInstallReporter().Failure(ex.Message);
+                if (progressJson) new NdjsonInstallReporter(ProductInfo.Version).Failure(ex.Message);
                 else Console.Error.WriteLine(ex.Message);
                 return 1;
             }
@@ -91,7 +91,7 @@ internal static class Program
             // errors raised outside it.
             if (progressJson)
             {
-                new NdjsonInstallReporter().Failure(ex.Message);
+                new NdjsonInstallReporter(ProductInfo.Version).Failure(ex.Message);
                 Console.Error.WriteLine(ex);
             }
             else

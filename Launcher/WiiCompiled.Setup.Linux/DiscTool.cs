@@ -15,6 +15,12 @@ internal static class DiscTool
         string isoPath, ProjectManifest manifest, string assetsDirectory, string workspace,
         string? nodToolBin, IInstallReporter reporter, CancellationToken cancellationToken)
     {
+        if (IsAlreadyExtracted(manifest, assetsDirectory))
+        {
+            reporter.Progress(InstallStages.ExtractDisc, "Reusing the verified extracted disc", 6);
+            return;
+        }
+
         var nodTool = nodToolBin ?? await NodToolProvider.ResolveAsync(workspace, cancellationToken);
 
         // `nodtool info` only decodes the disc/partition headers (milliseconds); `nodtool extract`
@@ -35,6 +41,7 @@ internal static class DiscTool
         // time, so it has to survive past this install (see Program.cs, which points dvd_root here).
         reporter.Progress(InstallStages.ExtractDisc, "Extracting the disc image", 4);
         var dataDir = Path.Combine(assetsDirectory, "DATA");
+        File.Delete(Path.Combine(assetsDirectory, ExtractionMarker));
         if (Directory.Exists(dataDir)) Directory.Delete(dataDir, recursive: true);
         await RunExtractAsync(nodTool, isoPath, dataDir, cancellationToken);
 
@@ -61,6 +68,7 @@ internal static class DiscTool
         Directory.CreateDirectory(assetsDirectory);
         File.Copy(dolPath, Path.Combine(assetsDirectory, "main.dol"), overwrite: true);
         File.Copy(relPath, Path.Combine(assetsDirectory, "StaticR.rel"), overwrite: true);
+        File.WriteAllText(Path.Combine(assetsDirectory, ExtractionMarker), dolSha);
         reporter.Progress(InstallStages.ExtractDisc, "Disc validated and extracted", 6);
     }
 
@@ -84,6 +92,22 @@ internal static class DiscTool
                 $"nodtool could not read this disc image (exit {process.ExitCode}): {stderr}{stdout}".Trim());
         }
         return stdout;
+    }
+
+    private const string ExtractionMarker = ".disc-extracted";
+
+    // Only one disc revision is accepted, so a completed, verified extraction is identical to a fresh one.
+    private static bool IsAlreadyExtracted(ProjectManifest manifest, string assetsDirectory)
+    {
+        var marker = Path.Combine(assetsDirectory, ExtractionMarker);
+        var dol = Path.Combine(assetsDirectory, "main.dol");
+        var rel = Path.Combine(assetsDirectory, "StaticR.rel");
+        if (!File.Exists(marker) || !File.Exists(dol) || !File.Exists(rel) ||
+            !Directory.Exists(Path.Combine(assetsDirectory, "DATA", "files")))
+            return false;
+        return string.Equals(File.ReadAllText(marker).Trim(), manifest.DolSha256, StringComparison.Ordinal) &&
+               string.Equals(Sha256Of(dol), manifest.DolSha256, StringComparison.Ordinal) &&
+               string.Equals(Sha256Of(rel), manifest.RelSha256, StringComparison.Ordinal);
     }
 
     private static string Sha256Of(string path)
