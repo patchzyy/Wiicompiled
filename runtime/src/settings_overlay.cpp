@@ -312,7 +312,7 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
     // SDL's read of the remote's calibration block often times out over Bluetooth
     // and it falls back to a nominal zero point, leaving a small per-axis bias;
     // measured here with the remote at rest.
-    if (WiiRemoteInput::IsAccelCalibrating()) {
+    if (WiiRemoteInput::IsAccelCalibrating(port)) {
         ImGui::ProgressBar(WiiRemoteInput::AccelCalibrationProgress(), ImVec2(220.0f, 0.0f), "Hold still...");
     } else if (ImGui::Button("Calibrate (remote lying flat, buttons up)")) {
         WiiRemoteInput::StartAccelCalibration(port);
@@ -325,12 +325,12 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
     const auto stored = WiiRemoteInput::ReadAccelOffset(port);
     const std::array<double, 3> offset = stored.value_or(std::array<double, 3>{});
     const bool calibrated = offset[0] != 0.0 || offset[1] != 0.0 || offset[2] != 0.0;
-    ImGui::BeginDisabled(!calibrated || WiiRemoteInput::IsAccelCalibrating());
+    ImGui::BeginDisabled(!calibrated || WiiRemoteInput::IsAccelCalibrating(port));
     if (ImGui::Button("Clear calibration")) {
         WiiRemoteInput::ClearAccelCalibration(port);
     }
     ImGui::EndDisabled();
-    if (const char* message = WiiRemoteInput::AccelCalibrationMessage()) {
+    if (const char* message = WiiRemoteInput::AccelCalibrationMessage(port)) {
         ImGui::TextWrapped("%s", message);
     } else if (calibrated) {
         ImGui::TextDisabled("Stored offset: x %+.3f  y %+.3f  z %+.3f g", offset[0], offset[1], offset[2]);

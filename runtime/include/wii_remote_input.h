@@ -89,14 +89,14 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]);
 void StartAccelCalibration(uint32_t chan);
 // Forgets the stored correction of the remote on `chan`.
 void ClearAccelCalibration(uint32_t chan);
-bool IsAccelCalibrating();
+bool IsAccelCalibrating(uint32_t chan);
 // 0..1 while a calibration is collecting samples.
 float AccelCalibrationProgress();
 // Correction in effect for the remote on `chan` (zeros when uncalibrated), or
 // nullopt when the port has no remote.
 std::optional<std::array<double, 3>> ReadAccelOffset(uint32_t chan);
-// Outcome of the last calibration attempt for the overlay, or nullptr.
-const char* AccelCalibrationMessage();
+// Outcome of the last calibration attempt on `chan` for the overlay, or nullptr.
+const char* AccelCalibrationMessage(uint32_t chan);
 
 // Reports "no controller" on the GameCube side for every port served through
 // KPAD, so the game never sees the same remote twice. Runs after aurora's PADRead.

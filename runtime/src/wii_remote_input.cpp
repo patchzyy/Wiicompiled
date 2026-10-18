@@ -126,6 +126,7 @@ struct AccelCalibration {
 };
 AccelCalibration g_calibration;
 char g_calibrationMessage[160] = {};
+uint32_t g_calibrationMessageChan = 0;
 
 // Last accepted KPAD acc per port, for the remote and for the Nunchuk. Reused on
 // frames that bring no sample or a glitched one, so the game never sees a jump.
@@ -185,8 +186,8 @@ int UsbInterfaceForPath(const char* path, Uint16 vendor, Uint16 product) {
 
 // Config key identifying the physical remote behind a gamepad: its HID serial
 // (the Bluetooth address when paired directly), else its USB interface number
-// (a DolphinBar has no serial and one interface per remote slot), else the game
-// port. Only characters valid in a bare TOML key.
+// (a DolphinBar has no serial and one interface per remote slot) and the game
+// port, else the game port. Only characters valid in a bare TOML key.
 std::string RemoteKey(SDL_Gamepad* gamepad, uint32_t port) {
     std::string serial;
     if (const char* raw = SDL_GetGamepadSerial(gamepad)) {
@@ -204,7 +205,8 @@ std::string RemoteKey(SDL_Gamepad* gamepad, uint32_t port) {
     const int interfaceNumber = UsbInterfaceForPath(SDL_GetGamepadPath(gamepad), vendor, product);
     char key[48];
     if (interfaceNumber >= 0) {
-        std::snprintf(key, sizeof(key), "usb_%04x_%04x_if%d", vendor, product, interfaceNumber);
+        std::snprintf(key, sizeof(key), "usb_%04x_%04x_if%d_port%u", vendor, product, interfaceNumber,
+                      port + 1);
     } else {
         std::snprintf(key, sizeof(key), "port_%u", port + 1);
     }
@@ -344,10 +346,15 @@ void TraceSample(uint32_t chan, const KpadSample& sample, const float* rawG, boo
     trace.flush();
 }
 
-// Ends a calibration run with a message for the overlay.
-void FinishAccelCalibration(const char* message) {
-    g_calibration.active = false;
+void SetCalibrationMessage(uint32_t chan, const char* message) {
+    g_calibrationMessageChan = chan;
     std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "%s", message);
+}
+
+// Ends a calibration run with a message for the overlay.
+void FinishAccelCalibration(uint32_t chan, const char* message) {
+    g_calibration.active = false;
+    SetCalibrationMessage(chan, message);
     RT_LOG(RT_TAG_CONFIG) << "Wii Remote accelerometer calibration: " << message << std::endl;
 }
 
@@ -368,7 +375,7 @@ void StepAccelCalibration() {
     SDL_Gamepad* gamepad = RemoteGamepad(g_calibration.chan);
     if (gamepad == nullptr ||
         SDL_GetGamepadID(gamepad) != g_calibration.instance) {
-        FinishAccelCalibration("Cancelled: the Wii Remote went away.");
+        FinishAccelCalibration(g_calibration.chan, "Cancelled: the Wii Remote went away.");
         return;
     }
     EnsureSensors(gamepad, g_calibration.chan);
@@ -386,7 +393,7 @@ void StepAccelCalibration() {
     } else {
         for (int i = 0; i < 3; ++i) {
             if (std::fabs(g[i] - g_calibration.first[i]) > kCalibrationMaxDeviationG) {
-                FinishAccelCalibration("Failed: the remote moved. Put it down, buttons up, and try again.");
+                FinishAccelCalibration(g_calibration.chan, "Failed: the remote moved. Put it down, buttons up, and try again.");
                 return;
             }
         }
@@ -399,7 +406,7 @@ void StepAccelCalibration() {
     for (int i = 0; i < 3; ++i) mean[i] = g_calibration.sum[i] / g_calibration.count;
     const double length = std::sqrt(mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]);
     if (length < kCalibrationMinGravityG || length > kCalibrationMaxGravityG || mean[1] < 0.5) {
-        FinishAccelCalibration("Failed: the remote was not resting flat with the buttons up.");
+        FinishAccelCalibration(g_calibration.chan, "Failed: the remote was not resting flat with the buttons up.");
         return;
     }
     const std::array<double, 3> offset = {mean[0], mean[1] - 1.0, mean[2]};
@@ -410,7 +417,7 @@ void StepAccelCalibration() {
     std::snprintf(message, sizeof(message), "%s offset x %+.3f  y %+.3f  z %+.3f g",
                   saved ? "Calibrated:" : "Calibrated (could not write Config.toml):", offset[0], offset[1],
                   offset[2]);
-    FinishAccelCalibration(message);
+    FinishAccelCalibration(g_calibration.chan, message);
 }
 
 // True when any controller aurora knows about is a Wii device.
@@ -827,7 +834,7 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
 void StartAccelCalibration(uint32_t chan) {
     SDL_Gamepad* gamepad = RemoteGamepad(chan);
     if (gamepad == nullptr) {
-        FinishAccelCalibration("No Wii Remote on this port.");
+        FinishAccelCalibration(chan, "No Wii Remote on this port.");
         return;
     }
     g_calibration = {};
@@ -842,13 +849,13 @@ void ClearAccelCalibration(uint32_t chan) {
     g_calibration.active = false;
     SDL_Gamepad* gamepad = RemoteGamepad(chan);
     if (gamepad == nullptr) {
-        std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "No Wii Remote on this port.");
+        SetCalibrationMessage(chan, "No Wii Remote on this port.");
         return;
     }
     RemoteCalibration& calibration = CalibrationFor(gamepad, chan);
     calibration.offset = {};
     RuntimeConfigFile::SetWiiAccelOffsetFor(calibration.key, {0.0, 0.0, 0.0});
-    std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "Calibration cleared.");
+    SetCalibrationMessage(chan, "Calibration cleared.");
 }
 
 // Correction in effect for the remote on `chan`, for the overlay.
@@ -861,9 +868,9 @@ std::optional<std::array<double, 3>> ReadAccelOffset(uint32_t chan) {
     return std::array<double, 3>{calibration.offset[0], calibration.offset[1], calibration.offset[2]};
 }
 
-// True while a calibration run is collecting samples.
-bool IsAccelCalibrating() {
-    return g_calibration.active;
+// True while a calibration run is collecting samples from `chan`.
+bool IsAccelCalibrating(uint32_t chan) {
+    return g_calibration.active && g_calibration.chan == chan;
 }
 
 // Share of the calibration samples collected so far, 0..1; 0 when idle.
@@ -871,9 +878,9 @@ float AccelCalibrationProgress() {
     return g_calibration.active ? static_cast<float>(g_calibration.count) / kCalibrationSamples : 0.0f;
 }
 
-// Outcome of the last calibration run for the overlay, or nullptr before any.
-const char* AccelCalibrationMessage() {
-    return g_calibrationMessage[0] != '\0' ? g_calibrationMessage : nullptr;
+// Outcome of the last calibration run on `chan` for the overlay, or nullptr.
+const char* AccelCalibrationMessage(uint32_t chan) {
+    return g_calibrationMessage[0] != '\0' && g_calibrationMessageChan == chan ? g_calibrationMessage : nullptr;
 }
 
 } // namespace WiiRemoteInput
