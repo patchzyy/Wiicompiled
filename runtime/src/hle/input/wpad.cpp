@@ -93,12 +93,20 @@ extern "C" int32_t WUDGetStatus_HLE()
 }
 PPC_NATIVE_OVERRIDE(801CDB84, WUDGetStatus_HLE, int32_t, (), ());
 
-// WPADGetDataFormat reads the per-channel format set by WPADSetDataFormat. Can't reuse the
-// translated SDK implementation: it dereferences Bluetooth control blocks that HLE'd WPADInit
-// never constructs.
+// WPADGetDataFormat: the format KPAD runs the attached extension in (WPAD_FMT_*_ACC_DPD).
+// WPADClampStick keys off it. Can't reuse the translated SDK implementation: it dereferences
+// Bluetooth control blocks that HLE'd WPADInit never constructs.
 extern "C" int32_t WPADGetDataFormat_HLE(uint32_t chan)
 {
-    return g_state.contract.GetDataFormat(chan);
+    const int32_t status = g_state.contract.GetDataFormat(chan);
+    if (status < 0) {
+        return status;
+    }
+    switch (WiiRemoteInput::EffectiveKind(chan)) {
+    case WiiRemoteInput::Kind::RemoteWithNunchuk: return 5;
+    case WiiRemoteInput::Kind::RemoteWithClassic: return 8;
+    default: return 2;
+    }
 }
 PPC_NATIVE_OVERRIDE(801C0B54, WPADGetDataFormat_HLE, int32_t, (uint32_t chan), (chan));
 
