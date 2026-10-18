@@ -331,6 +331,7 @@ void apply_port_preferences() noexcept {
   std::array<bool, PAD_MAX_CONTROLLERS> portClaimed{};
   std::array<Uint32, PAD_MAX_CONTROLLERS> claimedInstances{};
   size_t claimedCount = 0;
+  bool upgraded = false;
   for (const auto& candidate : candidates) {
     if (portClaimed[candidate.port] ||
         std::find(claimedInstances.begin(), claimedInstances.begin() + claimedCount, candidate.instance) !=
@@ -339,7 +340,25 @@ void apply_port_preferences() noexcept {
     }
     portClaimed[candidate.port] = true;
     claimedInstances[claimedCount++] = candidate.instance;
-    assign_player_index(g_GameControllers[candidate.instance], static_cast<int32_t>(candidate.port));
+    auto& controller = g_GameControllers[candidate.instance];
+    assign_player_index(controller, static_cast<int32_t>(candidate.port));
+
+    // Preferences saved before path and slot existed gain them on their first GUID match
+    auto& saved = g_portPreferences[candidate.port].identity;
+    if (candidate.score >= kScoreGuid && (saved.path.empty() || saved.slot < 0)) {
+      const auto current = controller_identity(controller);
+      if (saved.path.empty() && !current.path.empty()) {
+        saved.path = current.path;
+        upgraded = true;
+      }
+      if (saved.slot < 0 && current.slot >= 0) {
+        saved.slot = current.slot;
+        upgraded = true;
+      }
+    }
+  }
+  if (upgraded) {
+    save_port_preferences();
   }
 }
 
