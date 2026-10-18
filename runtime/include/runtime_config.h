@@ -138,28 +138,6 @@ inline std::string Trim(std::string_view text) {
     return std::string(text.substr(begin, end - begin));
 }
 
-inline std::string RemoveComment(std::string_view line) {
-    bool inSingle = false;
-    bool inDouble = false;
-    bool escaped = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-        const char ch = line[i];
-        if (inDouble && ch == '\\' && !escaped) {
-            escaped = true;
-            continue;
-        }
-        if (ch == '\'' && !inDouble) {
-            inSingle = !inSingle;
-        } else if (ch == '"' && !inSingle && !escaped) {
-            inDouble = !inDouble;
-        } else if (ch == '#' && !inSingle && !inDouble) {
-            return std::string(line.substr(0, i));
-        }
-        escaped = false;
-    }
-    return std::string(line);
-}
-
 inline bool IsSupportedResolutionMultiplier(float value) {
     static constexpr std::array values{0.0f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f};
     return std::find(values.begin(), values.end(), value) != values.end();
@@ -546,68 +524,44 @@ inline const std::optional<std::string>& ControllerButton(size_t index) {
     return index < Get().controllerButtons.size() ? Get().controllerButtons[index] : empty;
 }
 
-// Update one TOML value without discarding comments, unrelated settings, or
-// user-specific paths. This is used by the in-game F10 settings bar.
+// Sets section.key (section may be a dotted table path) to a TOML literal, keeping the rest of the
+// document's keys, order and comments. Returns nullopt when the document or value does not parse.
+inline std::optional<std::string> UpdateSettingText(const std::string& text, std::string_view section,
+                                                    std::string_view key, std::string_view value) {
+    try {
+        auto root = toml::parse_str<toml::ordered_type_config>(text);
+        auto literal = toml::parse_str<toml::ordered_type_config>("v = " + std::string(value));
+        auto* table = &root;
+        std::istringstream path{std::string(section)};
+        for (std::string part; std::getline(path, part, '.');) {
+            auto& child = table->as_table()[part];
+            if (!child.is_table()) {
+                child = toml::ordered_value(toml::ordered_table{});
+            }
+            table = &child;
+        }
+        auto& slot = table->as_table()[std::string(key)];
+        auto& updated = literal.as_table().at("v");
+        updated.comments() = slot.comments();
+        slot = std::move(updated);
+        return toml::format(root);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+// Update one TOML value without discarding unrelated settings or user-specific paths. This is
+// used by the in-game F10 settings bar. An unparseable file is left untouched.
 inline bool WriteSetting(std::string_view section, std::string_view key, std::string_view value) {
     const auto path = ResolveConfigPath();
-    std::ifstream input(path);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(input, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        lines.push_back(std::move(line));
+    std::ostringstream existing;
+    if (std::ifstream input(path, std::ios::binary); input) {
+        existing << input.rdbuf();
     }
-
-    const std::string normalizedSection = Trim(section);
-    const std::string normalizedKey = Trim(key);
-    size_t sectionStart = lines.size();
-    size_t sectionEnd = lines.size();
-    for (size_t i = 0; i < lines.size(); ++i) {
-        const std::string trimmed = Trim(RemoveComment(lines[i]));
-        if (trimmed.size() >= 2 && trimmed.front() == '[' && trimmed.back() == ']') {
-            const std::string found = Trim(std::string_view(trimmed).substr(1, trimmed.size() - 2));
-            if (sectionStart != lines.size()) {
-                sectionEnd = i;
-                break;
-            }
-            if (found == normalizedSection) {
-                sectionStart = i;
-            }
-        }
-    }
-
-    const std::string replacement = normalizedKey + " = " + std::string(value);
-    if (sectionStart == lines.size()) {
-        if (!lines.empty() && !lines.back().empty()) {
-            lines.emplace_back();
-        }
-        lines.emplace_back("[" + normalizedSection + "]");
-        lines.push_back(replacement);
-    } else {
-        bool replaced = false;
-        for (size_t i = sectionStart + 1; i < sectionEnd; ++i) {
-            const std::string uncommented = Trim(RemoveComment(lines[i]));
-            const size_t equals = uncommented.find('=');
-            if (equals != std::string::npos && Trim(std::string_view(uncommented).substr(0, equals)) == normalizedKey) {
-                lines[i] = replacement;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            // Append after the section's last real line rather than after the blank line that
-            // separates it from the next header: this file is edited by hand and by the host
-            // installer as well, and a key parked below the separator reads as if it belonged to
-            // the next section. The host writer (Launcher/WiiCompiled.Setup/RuntimeConfiguration.cs)
-            // applies exactly this rule.
-            size_t insertAt = sectionEnd;
-            while (insertAt > sectionStart + 1 && Trim(lines[insertAt - 1]).empty()) {
-                --insertAt;
-            }
-            lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertAt), replacement);
-        }
+    const auto updated = UpdateSettingText(existing.str(), section, key, value);
+    if (!updated) {
+        std::cerr << "[runtime-config] Not updating invalid " << PathToUtf8(path) << std::endl;
+        return false;
     }
 
     std::error_code ec;
@@ -619,9 +573,7 @@ inline bool WriteSetting(std::string_view section, std::string_view key, std::st
         std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << std::endl;
         return false;
     }
-    for (const auto& outputLine : lines) {
-        output << outputLine << '\n';
-    }
+    output << *updated;
     return static_cast<bool>(output);
 }
 
