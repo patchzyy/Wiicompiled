@@ -230,6 +230,11 @@ public sealed class PpcDisassembler : IDisposable
                 {
                     foreach (var target in ins.BranchTargets)
                     {
+                        // A conditional call returns to its fallthrough; its target is a callee.
+                        if (ins.IsCall && target != ins.EndAddress)
+                        {
+                            continue;
+                        }
                         localControlFlowTargets.Add(target);
                         if (!reachable.Contains(target))
                         {

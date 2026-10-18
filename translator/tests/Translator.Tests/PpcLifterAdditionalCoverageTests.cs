@@ -37,6 +37,25 @@ public class PpcLifterAdditionalCoverageTests
         Assert.Equal($"0x{branch.EndAddress:X8}", decision.FalseLabel);
     }
 
+    [Fact]
+    public void ConditionalCallTargetIsNotDecodedAsLocalCode()
+    {
+        const uint entry = 0x80000000;
+        const uint callee = entry + 0x10;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x41820011), // beql callee
+            (entry + 0x04, 0x38600001), // li r3, 1
+            (entry + 0x08, 0x4E800020), // blr
+            (callee + 0x00, 0x38600002), // li r3, 2
+            (callee + 0x04, 0x4E800020)); // blr
+
+        using var disassembler = new PpcDisassembler();
+        var instructions = disassembler.DisassembleFunction(image, entry, maxInstructions: 32, maxBytes: 0x80);
+
+        Assert.Equal(new[] { entry, entry + 4, entry + 8 }, instructions.Select(ins => ins.Address));
+    }
+
     [Theory]
     [InlineData(0x41820009u, "beql", "0x80001008")]
     [InlineData(0x41810009u, "bgtl", "0x80001008")]

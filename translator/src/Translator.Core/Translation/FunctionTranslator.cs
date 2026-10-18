@@ -883,11 +883,18 @@ public sealed class FunctionTranslator
 
         if (TryParseLinkBranchLabel(label, LinkBranchPrefix, out fallthrough, out var target))
         {
-            block = new IrBasicBlock(label, new IrInstruction[]
-            {
-                new IrAssign("lr", IrValue.Imm((int)fallthrough)),
-                new IrJump($"0x{target:X8}")
-            });
+            block = new IrBasicBlock(label, target == fallthrough
+                ? new IrInstruction[]
+                {
+                    new IrAssign("lr", IrValue.Imm((int)fallthrough)),
+                    new IrJump($"0x{target:X8}")
+                }
+                : new IrInstruction[]
+                {
+                    new IrAssign("lr", IrValue.Imm((int)fallthrough)),
+                    new IrCall(string.Empty, $"0x{target:X8}", BuildAbiCallArgs()),
+                    new IrJump($"0x{fallthrough:X8}")
+                });
             return true;
         }
 

@@ -451,6 +451,15 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
+        var linkedCallArgs = new object?[] { "link_branch_80002004_800D7FCC", null! };
+        Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", linkedCallArgs));
+        var linkedCall = Assert.IsType<IrBasicBlock>(linkedCallArgs[1]);
+        Assert.Collection(
+            linkedCall.Instructions,
+            ins => Assert.Equal(unchecked((int)0x80002004u), Assert.IsType<IrAssign>(ins).Value.Constant),
+            ins => Assert.Equal("0x800D7FCC", Assert.IsType<IrCall>(ins).Target),
+            ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
+
         var absoluteArgs = new object?[] { "0x800D7FCC", null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", absoluteArgs));
         var absolute = Assert.IsType<IrBasicBlock>(absoluteArgs[1]);
