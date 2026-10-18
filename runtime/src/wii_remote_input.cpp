@@ -15,8 +15,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
+#include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace WiiRemoteInput {
@@ -356,6 +359,76 @@ bool IsKernelWiiNode(SDL_JoystickID id) {
            std::strncmp(path, "/dev/input/", 11) == 0;
 }
 
+bool IsClassicNodeName(const char* name) {
+    return NameContains(name, "Classic Controller");
+}
+
+// HID device behind a kernel evdev node; the remote and its extension nodes share it.
+std::string KernelParent(SDL_JoystickID id) {
+    static std::unordered_map<SDL_JoystickID, std::string> s_parents;
+    if (const auto it = s_parents.find(id); it != s_parents.end()) {
+        return it->second;
+    }
+    const char* path = SDL_GetGamepadPathForID(id);
+    if (path == nullptr) {
+        return {};
+    }
+    std::error_code ec;
+    const auto parent = std::filesystem::canonical(
+        std::filesystem::path("/sys/class/input") / std::filesystem::path(path).filename() / "device" / "device", ec);
+    if (ec) {
+        return {};
+    }
+    return s_parents.emplace(id, parent.string()).first->second;
+}
+
+// The kernel node on the same remote as `gamepad`: its Classic Controller node
+// when `wantClassic`, else its remote node.
+SDL_Gamepad* KernelSibling(SDL_Gamepad* gamepad, bool wantClassic) {
+    const SDL_JoystickID self = SDL_GetGamepadID(gamepad);
+    const std::string parent = KernelParent(self);
+    if (parent.empty()) {
+        return nullptr;
+    }
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (ids == nullptr) {
+        return nullptr;
+    }
+    SDL_Gamepad* sibling = nullptr;
+    for (int i = 0; i < count && sibling == nullptr; ++i) {
+        if (ids[i] != self && IsKernelWiiNode(ids[i]) &&
+            IsClassicNodeName(SDL_GetGamepadNameForID(ids[i])) == wantClassic && KernelParent(ids[i]) == parent) {
+            sibling = SDL_GetGamepadFromID(ids[i]);
+        }
+    }
+    SDL_free(ids);
+    return sibling;
+}
+
+// The kernel exposes a remote and its Classic Controller as separate gamepads.
+// The remote's port reads both, as on a Wii; the Classic node's own port stays empty.
+Kind KindForGamepad(SDL_Gamepad* gamepad) {
+    if (gamepad == nullptr) {
+        return Kind::NotWii;
+    }
+    const char* name = SDL_GetGamepadName(gamepad);
+    const Kind kind = KindForName(name);
+    if ((kind != Kind::Remote && kind != Kind::RemoteWithClassic) || !IsKernelWiiNode(SDL_GetGamepadID(gamepad))) {
+        return kind;
+    }
+    if (IsClassicNodeName(name)) {
+        return KernelSibling(gamepad, false) != nullptr ? Kind::NotWii : kind;
+    }
+    return KernelSibling(gamepad, true) != nullptr ? Kind::RemoteWithClassic : kind;
+}
+
+// A kernel Classic Controller node whose remote node carries it.
+bool IsCarriedKernelNode(SDL_Gamepad* gamepad) {
+    return gamepad != nullptr && IsKernelWiiNode(SDL_GetGamepadID(gamepad)) &&
+           IsClassicNodeName(SDL_GetGamepadName(gamepad)) && KernelSibling(gamepad, false) != nullptr;
+}
+
 // Logs once when the kernel driver serves a Wii controller SDL's driver could have had.
 void WarnIfKernelDriverServing() {
     if (g_hidrawWarned || !g_wiiDriverEnabled) {
@@ -574,8 +647,7 @@ Kind KindForName(const char* name) {
 Kind KindForPort(uint32_t port) {
     if (port >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(port));
-    if (gamepad == nullptr) return Kind::NotWii;
-    return KindForName(SDL_GetGamepadName(gamepad));
+    return KindForGamepad(gamepad);
 }
 
 // Human-readable name of a Kind for the settings overlay.
@@ -601,7 +673,7 @@ Kind EffectiveKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     PortMemory& memory = g_ports[chan];
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind live = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const Kind live = KindForGamepad(gamepad);
     const uint64_t now = SDL_GetTicks();
     if (live != Kind::NotWii) {
         memory.lastKind = live;
@@ -627,7 +699,8 @@ bool IsRemoteChannel(uint32_t chan) {
 // Marks KPAD-served ports as "no controller" in the GameCube pad statuses.
 void HideRemotesFromPad(PADStatus* statuses, uint32_t count) {
     for (uint32_t port = 0; port < count && port < PAD_MAX_CONTROLLERS; ++port) {
-        if (IsRemoteChannel(port)) {
+        if (IsRemoteChannel(port) ||
+            IsCarriedKernelNode(SDL_GetGamepadFromPlayerIndex(static_cast<int>(port)))) {
             statuses[port] = {};
             statuses[port].err = PAD_ERR_NO_CONTROLLER;
         }
@@ -659,7 +732,7 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         return false;
     }
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind kind = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const Kind kind = KindForGamepad(gamepad);
     if (!IsKpadKind(kind)) {
         const Kind remembered = EffectiveKind(chan);
         if (!IsKpadKind(remembered)) {
@@ -675,20 +748,42 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
     EnsureSensors(gamepad, chan);
 
     sample = {};
-    const auto raw = [&](int index, uint32_t bit) {
-        if (SDL_GetJoystickButton(joystick, index)) sample.hold |= bit;
-    };
-    raw(kRawA, kWpadA);
-    raw(kRawB, kWpadB);
-    raw(kRawOne, kWpadOne);
-    raw(kRawTwo, kWpadTwo);
-    raw(kRawPlus, kWpadPlus);
-    raw(kRawMinus, kWpadMinus);
-    raw(kRawHome, kWpadHome);
-    raw(kRawDpadUp, kWpadUp);
-    raw(kRawDpadDown, kWpadDown);
-    raw(kRawDpadLeft, kWpadLeft);
-    raw(kRawDpadRight, kWpadRight);
+    // The kernel's evdev nodes have regular SDL mappings, so they are read as gamepads.
+    const bool kernel = IsKernelWiiNode(SDL_GetGamepadID(gamepad));
+    const bool classicNode = kernel && IsClassicNodeName(SDL_GetGamepadName(gamepad));
+    if (kernel) {
+        const auto mapped = [&](SDL_GamepadButton button, uint32_t bit) {
+            if (SDL_GetGamepadButton(gamepad, button)) sample.hold |= bit;
+        };
+        if (!classicNode) {
+            mapped(SDL_GAMEPAD_BUTTON_EAST, kWpadA);
+            mapped(SDL_GAMEPAD_BUTTON_SOUTH, kWpadB);
+            mapped(SDL_GAMEPAD_BUTTON_WEST, kWpadOne);
+            mapped(SDL_GAMEPAD_BUTTON_NORTH, kWpadTwo);
+            mapped(SDL_GAMEPAD_BUTTON_START, kWpadPlus);
+            mapped(SDL_GAMEPAD_BUTTON_BACK, kWpadMinus);
+            mapped(SDL_GAMEPAD_BUTTON_GUIDE, kWpadHome);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_UP, kWpadUp);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kWpadDown);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kWpadLeft);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kWpadRight);
+        }
+    } else {
+        const auto raw = [&](int index, uint32_t bit) {
+            if (SDL_GetJoystickButton(joystick, index)) sample.hold |= bit;
+        };
+        raw(kRawA, kWpadA);
+        raw(kRawB, kWpadB);
+        raw(kRawOne, kWpadOne);
+        raw(kRawTwo, kWpadTwo);
+        raw(kRawPlus, kWpadPlus);
+        raw(kRawMinus, kWpadMinus);
+        raw(kRawHome, kWpadHome);
+        raw(kRawDpadUp, kWpadUp);
+        raw(kRawDpadDown, kWpadDown);
+        raw(kRawDpadLeft, kWpadLeft);
+        raw(kRawDpadRight, kWpadRight);
+    }
 
     float rawG[3] = {};
     const bool haveRaw = ReadSdlAccel(gamepad, SDL_SENSOR_ACCEL, rawG);
@@ -714,10 +809,15 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         // Home, the L/R clicks as shoulders, the D-pad as buttons 11-14 (never
         // through SDL's gamepad mapping, which expects a hat), ZL/ZR as the
         // trigger axes.
-        // The kernel's evdev node has a regular SDL mapping, so it is read as a gamepad.
-        const bool mapped = IsKernelWiiNode(SDL_GetGamepadID(gamepad));
+        SDL_Gamepad* classic = gamepad;
+        if (kernel && !classicNode) {
+            classic = KernelSibling(gamepad, true);
+            if (classic == nullptr) {
+                classic = gamepad;
+            }
+        }
         const auto cl = [&](SDL_GamepadButton button, uint32_t bit) {
-            if (mapped ? SDL_GetGamepadButton(gamepad, button) : SDL_GetJoystickButton(joystick, button)) {
+            if (kernel ? SDL_GetGamepadButton(classic, button) : SDL_GetJoystickButton(joystick, button)) {
                 sample.clHold |= bit;
             }
         };
@@ -734,12 +834,12 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         cl(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kClDown);
         cl(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kClLeft);
         cl(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kClRight);
-        if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0) sample.clHold |= kClZL;
-        if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0) sample.clHold |= kClZR;
-        const Sint16 lx = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX);
-        const Sint16 ly = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY);
-        const Sint16 rx = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
-        const Sint16 ry = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY);
+        if (SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0) sample.clHold |= kClZL;
+        if (SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0) sample.clHold |= kClZR;
+        const Sint16 lx = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFTX);
+        const Sint16 ly = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFTY);
+        const Sint16 rx = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHTX);
+        const Sint16 ry = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHTY);
         sample.clLStick[0] = std::clamp(static_cast<float>(lx) / 32767.0f, -1.0f, 1.0f);
         sample.clLStick[1] = std::clamp(-static_cast<float>(ly) / 32767.0f, -1.0f, 1.0f);
         sample.clRStick[0] = std::clamp(static_cast<float>(rx) / 32767.0f, -1.0f, 1.0f);
