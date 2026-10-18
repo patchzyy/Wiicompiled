@@ -152,6 +152,8 @@ private:
 #endif
 } // namespace
 
+extern const char* const kMkwSetupVersion;
+
 namespace {
 
 std::string g_lastEntryLabel;
@@ -378,10 +380,13 @@ void AttachParentConsoleForDiagnostics() {
 void AttachParentConsoleForDiagnostics() {}
 #endif
 
-// The setup writes build-fingerprint.json beside every product executable; its SetupVersion is
-// the only version identity the runtime has (products are compiled locally, so nothing is baked
-// into the binary). Surface it at the top of the transcript so every attached log self-identifies.
+// The macOS and Linux local builds bake the setup version in; the Windows setup instead writes it
+// to build-fingerprint.json beside the executable. Surfaced at the top of the transcript so every
+// attached log self-identifies.
 std::string ReadInstalledSetupVersion() {
+    if (const std::string_view builtIn = kMkwSetupVersion; !builtIn.empty()) {
+        return std::string(builtIn);
+    }
     const auto directory = RuntimeConfigFile::ExecutableDirectory();
     if (!directory) {
         return {};

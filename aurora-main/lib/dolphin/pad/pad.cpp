@@ -195,7 +195,7 @@ std::array<PADButtonMapping, PAD_BUTTON_COUNT> g_defaultButtonsJoyPair{{
 }};
 
 // Wii U Pro Controllers through SDL's HIDAPI Wii driver. No SDL_GamepadType
-// singles them out, so they are picked by the name the driver gives them (see
+// singles them out, so they are picked by name or USB id (see
 // __PADSetDefaultMapping). Wii Remotes, with or without a Nunchuk or Classic
 // Controller, are read by the game through KPAD instead and never get a
 // GameCube mapping (the runtime hides those ports from PADRead).
@@ -451,11 +451,14 @@ static void reset_alt_button_mapping(aurora::input::GameController* controller) 
 
 // SDL's hidapi Wii driver names the pad "Nintendo Wii U Pro Controller"; the
 // other names it produces are Wii Remotes, which the game reads through KPAD
-// and which therefore never take a GameCube mapping.
+// and which therefore never take a GameCube mapping. The Linux kernel driver's
+// "Nintendo Wii Remote Pro Controller" is only recognised by its USB id.
 static bool wii_default_mapping(const aurora::input::GameController* controller,
                                 std::array<PADButtonMapping, PAD_BUTTON_COUNT>& out) {
   const char* name = SDL_GetGamepadName(controller->m_controller);
-  if (name == nullptr || SDL_strstr(name, "Wii U Pro Controller") == nullptr) {
+  const bool wiiUProId = SDL_GetGamepadVendor(controller->m_controller) == 0x057e &&
+                         SDL_GetGamepadProduct(controller->m_controller) == 0x0330;
+  if (!wiiUProId && (name == nullptr || SDL_strstr(name, "Wii U Pro Controller") == nullptr)) {
     return false;
   }
   out = g_defaultButtonsWiiUPro;

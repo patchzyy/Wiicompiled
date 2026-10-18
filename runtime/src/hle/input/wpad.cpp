@@ -5,6 +5,9 @@
 
 #include <cstdint>
 
+#include <dolphin/pad.h>
+
+extern "C" bool PAD_HLE_RumbleEnabled();
 void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
 
 namespace {
@@ -143,8 +146,8 @@ PPC_NATIVE_OVERRIDE(801C0990, WPADProbe_HLE, int32_t, (uint32_t chan, uint32_t t
 
 extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
 {
-    (void)chan;
-    (void)command;
+    const bool on = command != 0 && PAD_HLE_RumbleEnabled();
+    PADControlMotor(chan, on ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP_HARD);
 }
 PPC_NATIVE_OVERRIDE(801C0EC4, WPADControlMotor_HLE, void, (uint32_t chan, uint32_t command), (chan, command));
 

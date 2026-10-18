@@ -28,12 +28,15 @@ Usage: local-build-macos.command --output-dir DIR [options]
   --cmake PATH --ninja PATH       Override build tools
   --dotnet PATH                   Override dotnet
   --translator-bin PATH           Use a self-contained Translator.Cli executable
+  --setup-version VERSION         Version recorded in the runtime log (default: <Version> in
+                                  Launcher/Directory.Build.props when present)
 EOF
 }
 
 workspace="$default_workspace"; profile=base; output_dir=""; base_output_dir=""
 game=""; nodtool=""; retro_root=""; retro_wfc=""; skip_retro_wfc=0; force_clean=0
 parallel=0; cmake_bin=cmake; ninja_bin=ninja; dotnet_bin=dotnet; translator_bin=""
+setup_version=""
 while (($#)); do
     case "$1" in
         --workspace) workspace=${2:-}; shift 2 ;;
@@ -51,6 +54,7 @@ while (($#)); do
         --ninja) ninja_bin=${2:-}; shift 2 ;;
         --dotnet) dotnet_bin=${2:-}; shift 2 ;;
         --translator-bin) translator_bin=${2:-}; shift 2 ;;
+        --setup-version) setup_version=${2:-}; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
@@ -61,6 +65,10 @@ macos_arch=$(uname -m)
 case "$macos_arch" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: $macos_arch" ;; esac
 macos_deployment_target=12.0
 workspace=$(cd "$workspace" && pwd)
+if [[ -z "$setup_version" && -f "$workspace/Launcher/Directory.Build.props" ]]; then
+    setup_version=$(sed -nE 's/.*<Version>([^<]+)<\/Version>.*/\1/p' "$workspace/Launcher/Directory.Build.props" | head -n 1)
+fi
+[[ "$setup_version" =~ ^[0-9A-Za-z.+-]*$ ]] || fail '--setup-version contains unsupported characters'
 [[ -n "$output_dir" ]] || fail '--output-dir is required'
 case "$profile" in base|retro-rewind|both) ;; *) fail '--profile must be base, retro-rewind, or both' ;; esac
 builds_retro=0; [[ "$profile" != base ]] && builds_retro=1
@@ -162,7 +170,7 @@ fi
 step configure-native 'Configuring the native toolchain'
 # Use Aurora's pinned SDL3 source on macOS.  A system SDL3 can be older than
 # Aurora's required API even when find_package() succeeds.
-"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DAURORA_SDL3_PROVIDER=vendor
+"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DAURORA_SDL3_PROVIDER=vendor -DMKW_SETUP_VERSION="$setup_version"
 mkw_write_identity "$toolchain_provenance" ToolchainFingerprint "$toolchain_fingerprint"
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"

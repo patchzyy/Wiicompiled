@@ -429,7 +429,8 @@ try {
             }
             $redist = Join-Path $Toolkit 'Redist'
             if (Test-Path -LiteralPath $redist -PathType Container) {
-                Copy-Item -Path (Join-Path $redist '*.dll') -Destination $Destination -Force
+                Get-ChildItem -LiteralPath $redist -Filter '*.dll' -File |
+                    Copy-Item -Destination $Destination -Force
             }
             foreach ($name in @('config','wii_bootstrap')) {
                 $directory = Join-Path $build $name

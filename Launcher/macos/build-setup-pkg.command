@@ -157,6 +157,7 @@ if [[ "$host_arch" == arm64 ]]; then host_translator=$translator_arm64; else hos
     --out "$resources/workspace/runtime/native-index.json" || fail 'the runtime native index could not be extracted'
 [[ -f "$resources/workspace/runtime/native-index.json" ]] || fail 'the runtime native index was not written'
 mkdir -p "$resources/workspace/Launcher/macos"
+copy_clean "$workspace/Launcher/Directory.Build.props" "$resources/workspace/Launcher/Directory.Build.props"
 copy_clean "$workspace/Launcher/local-build-macos.command" "$resources/workspace/Launcher/local-build-macos.command"
 copy_clean "$workspace/Launcher/build-cache.sh" "$resources/workspace/Launcher/build-cache.sh"
 copy_clean "$workspace/Launcher/macos/extract-disc.command" "$resources/workspace/Launcher/macos/extract-disc.command"

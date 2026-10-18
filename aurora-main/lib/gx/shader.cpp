@@ -174,6 +174,12 @@ static std::string color_arg_reg(GXTevColorArg arg, size_t stageIdx, const Shade
   case GX_CC_KONST: {
     switch (stage.kcSel) {
       DEFAULT_FATAL("invalid kcSel {}", underlying(stage.kcSel));
+    // Unsourced encodings evaluate to zero in hardware.
+    case static_cast<GXTevKColorSel>(0x08):
+    case static_cast<GXTevKColorSel>(0x09):
+    case static_cast<GXTevKColorSel>(0x0A):
+    case static_cast<GXTevKColorSel>(0x0B):
+      return "vec3f(0.0)";
     case GX_TEV_KCSEL_8_8:
       return "vec3f(1.0)";
     case GX_TEV_KCSEL_7_8:
@@ -275,6 +281,16 @@ static std::string alpha_arg_reg(GXTevAlphaArg arg, size_t stageIdx, const Shade
   case GX_CA_KONST: {
     switch (stage.kaSel) {
       DEFAULT_FATAL("invalid kaSel {}", underlying(stage.kaSel));
+    // Unsourced encodings evaluate to zero in hardware.
+    case static_cast<GXTevKAlphaSel>(0x08):
+    case static_cast<GXTevKAlphaSel>(0x09):
+    case static_cast<GXTevKAlphaSel>(0x0A):
+    case static_cast<GXTevKAlphaSel>(0x0B):
+    case static_cast<GXTevKAlphaSel>(0x0C):
+    case static_cast<GXTevKAlphaSel>(0x0D):
+    case static_cast<GXTevKAlphaSel>(0x0E):
+    case static_cast<GXTevKAlphaSel>(0x0F):
+      return "0.0";
     case GX_TEV_KASEL_8_8:
       return "1.0";
     case GX_TEV_KASEL_7_8:

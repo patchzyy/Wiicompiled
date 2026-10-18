@@ -5,6 +5,7 @@
 
 #include <dolphin/pad.h>
 #include <SDL3/SDL_gamepad.h>
+#include <SDL3/SDL_hidapi.h>
 #include <SDL3/SDL_hints.h>
 #include <SDL3/SDL_log.h>
 #include <SDL3/SDL_sensor.h>
@@ -12,11 +13,16 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
+#include <system_error>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace WiiRemoteInput {
@@ -63,6 +69,8 @@ constexpr uint32_t kClUp = 0x0001, kClLeft = 0x0002, kClZR = 0x0004, kClX = 0x00
                    kClB = 0x0040, kClZL = 0x0080, kClR = 0x0200, kClPlus = 0x0400, kClHome = 0x0800,
                    kClMinus = 0x1000, kClL = 0x2000, kClDown = 0x4000, kClRight = 0x8000;
 
+constexpr Uint16 kNintendoVendor = 0x057e;
+
 // How long a vanished remote keeps its channel alive with neutral input. SDL's
 // in-place reconnect after an extension change takes well under a second; a
 // remote that is really gone shows up as disconnected after this.
@@ -86,36 +94,46 @@ bool g_scanning = false;
 uint64_t g_driverOffSinceMs = 0;
 // When the current scan started (last Wii controller seen).
 uint64_t g_lostAtMs = 0;
+bool g_hidrawWarned = false;
 
 // Instance ids whose accelerometers have been switched on. SDL keeps sensors
 // off until asked and forgets that when the gamepad is closed, so a re-paired
 // remote gets a fresh id and is enabled again.
 std::array<SDL_JoystickID, PAD_MAX_CONTROLLERS> g_sensorsEnabledFor{};
 
-// Zero-point correction subtracted from the remote's accelerometer, in g and in
-// SDL's sensor frame; loaded from Config.toml on first use, replaced by a
-// calibration run. The Nunchuk accelerometer is left uncorrected.
-std::array<float, 3> g_accelOffset{};
-bool g_accelOffsetLoaded = false;
+// Zero-point correction subtracted from a remote's accelerometer, in g and in
+// SDL's sensor frame, with the config key it is stored under. Resolved once per
+// gamepad instance (a re-created joystick of the same remote resolves to the same
+// key) and replaced by a calibration run. The Nunchuk accelerometer is left
+// uncorrected.
+struct RemoteCalibration {
+    SDL_JoystickID instance = 0;
+    std::string key;
+    std::array<float, 3> offset{};
+};
+std::array<RemoteCalibration, PAD_MAX_CONTROLLERS> g_remoteCalibration{};
 
 // Frames sampled by a calibration run (about 1.5 s at 60 Hz) and how far a
 // sample may stray from the first one before the run is declared "moved".
 constexpr int kCalibrationSamples = 90;
 constexpr float kCalibrationMaxDeviationG = 0.15f;
-// |mean| outside this range means the remote was not at rest or the
-// accelerometer is far off its nominal scale; either way the offset is useless.
-constexpr float kCalibrationMinGravityG = 0.8f;
-constexpr float kCalibrationMaxGravityG = 1.2f;
+// A resting remote reads about 1 g and lies within 20 degrees of face up.
+constexpr double kCalibrationMinGravityG = 0.8;
+constexpr double kCalibrationMaxGravityG = 1.2;
+constexpr double kCalibrationMinTiltCosine = 0.9396926;
 
 struct AccelCalibration {
     bool active = false;
     uint32_t chan = 0;
+    SDL_JoystickID instance = 0;
     int count = 0;
     double sum[3] = {};
     float first[3] = {};
 };
 AccelCalibration g_calibration;
 char g_calibrationMessage[160] = {};
+uint32_t g_calibrationMessageChan = 0;
+SDL_JoystickID g_calibrationMessageRemote = 0;
 
 // Last accepted KPAD acc per port, for the remote and for the Nunchuk. Reused on
 // frames that bring no sample or a glitched one, so the game never sees a jump.
@@ -155,14 +173,73 @@ void EnsureSensors(SDL_Gamepad* gamepad, uint32_t port) {
     }
 }
 
-// Loads the stored zero-point correction once.
-const std::array<float, 3>& AccelOffset() {
-    if (!g_accelOffsetLoaded) {
-        const std::array<double, 3> stored = RuntimeConfigFile::WiiAccelOffset();
-        for (size_t i = 0; i < 3; ++i) g_accelOffset[i] = static_cast<float>(stored[i]);
-        g_accelOffsetLoaded = true;
+// USB interface number of the HID device at `path`, or -1 when it is not a USB
+// interface or cannot be found. A DolphinBar shows each remote slot as one.
+int UsbInterfaceForPath(const char* path, Uint16 vendor, Uint16 product) {
+    if (path == nullptr) {
+        return -1;
     }
-    return g_accelOffset;
+    int interfaceNumber = -1;
+    SDL_hid_device_info* list = SDL_hid_enumerate(vendor, product);
+    for (const SDL_hid_device_info* info = list; info != nullptr; info = info->next) {
+        if (info->path != nullptr && std::strcmp(info->path, path) == 0) {
+            interfaceNumber = info->interface_number;
+            break;
+        }
+    }
+    SDL_hid_free_enumeration(list);
+    return interfaceNumber;
+}
+
+// Config key identifying the physical remote behind a gamepad: its HID serial
+// (the Bluetooth address when paired directly), else its USB interface number
+// (a DolphinBar has no serial and one interface per remote slot) and the game
+// port, else the game port. Only characters valid in a bare TOML key.
+std::string RemoteKey(SDL_Gamepad* gamepad, uint32_t port) {
+    std::string serial;
+    if (const char* raw = SDL_GetGamepadSerial(gamepad)) {
+        for (const char* c = raw; *c != '\0'; ++c) {
+            if (std::isalnum(static_cast<unsigned char>(*c))) {
+                serial += static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+            }
+        }
+    }
+    if (serial.find_first_not_of('0') != std::string::npos) {
+        return "serial_" + serial;
+    }
+    const Uint16 vendor = SDL_GetGamepadVendor(gamepad);
+    const Uint16 product = SDL_GetGamepadProduct(gamepad);
+    const int interfaceNumber = UsbInterfaceForPath(SDL_GetGamepadPath(gamepad), vendor, product);
+    char key[48];
+    if (interfaceNumber >= 0) {
+        std::snprintf(key, sizeof(key), "usb_%04x_%04x_if%d_port%u", vendor, product, interfaceNumber,
+                      port + 1);
+    } else {
+        std::snprintf(key, sizeof(key), "port_%u", port + 1);
+    }
+    return key;
+}
+
+// Calibration of the remote currently on `port`, resolved on first use per gamepad
+// instance. A remote without a stored entry has a zero offset.
+RemoteCalibration& CalibrationFor(SDL_Gamepad* gamepad, uint32_t port) {
+    RemoteCalibration& calibration = g_remoteCalibration[port];
+    const SDL_JoystickID id = SDL_GetGamepadID(gamepad);
+    if (calibration.instance != id) {
+        static bool s_legacyReported = false;
+        if (!s_legacyReported && RuntimeConfigFile::Get().hasLegacyWiiAccelOffset) {
+            s_legacyReported = true;
+            RT_LOG(RT_TAG_CONFIG) << "Old shared Wii Remote calibration ignored; recalibrate each remote in F10"
+                                  << std::endl;
+        }
+        calibration.instance = id;
+        calibration.key = RemoteKey(gamepad, port);
+        const std::optional<std::array<double, 3>> stored = RuntimeConfigFile::WiiAccelOffsetFor(calibration.key);
+        for (size_t i = 0; i < 3; ++i) calibration.offset[i] = stored ? static_cast<float>((*stored)[i]) : 0.0f;
+        RT_LOG(RT_TAG_CONFIG) << "Wii Remote on port " << (port + 1) << ": calibration key " << calibration.key
+                              << (stored ? "" : " (no stored offset)") << std::endl;
+    }
+    return calibration;
 }
 
 // Raw SDL sample in m/s^2, rejecting anything SDL has not delivered yet.
@@ -200,9 +277,10 @@ bool IsGlitchedSample(SDL_SensorType sensor, const float* g) {
 // +x left, +y towards the user, +z out of the button face (wiibrew, Dolphin);
 // SDL_hidapi_wii.c posts (-wiiX, wiiZ, wiiY): x right across the face, y out of
 // the face (+1 at rest, buttons up), z towards the user, i.e. away from the tip.
-// The remote's sample gets the zero-point correction; the Nunchuk's does not.
-// False when there is no sample yet or the sample is a glitch (see above).
-bool ReadAccelG(SDL_Gamepad* gamepad, SDL_SensorType sensor, float* g) {
+// The remote's sample gets the zero-point correction of the remote on `port`; the
+// Nunchuk's does not. False when there is no sample yet or the sample is a glitch
+// (see above).
+bool ReadAccelG(SDL_Gamepad* gamepad, uint32_t port, SDL_SensorType sensor, float* g) {
     float sdl[3] = {};
     if (!ReadSdlAccel(gamepad, sensor, sdl)) {
         return false;
@@ -212,7 +290,7 @@ bool ReadAccelG(SDL_Gamepad* gamepad, SDL_SensorType sensor, float* g) {
         return false;
     }
     if (sensor == SDL_SENSOR_ACCEL) {
-        const std::array<float, 3>& offset = AccelOffset();
+        const std::array<float, 3>& offset = CalibrationFor(gamepad, port).offset;
         for (int i = 0; i < 3; ++i) g[i] -= offset[i];
     }
     return true;
@@ -231,9 +309,9 @@ void AccelGToKpad(const float* g, float* kpad) {
 }
 
 // Sensor -> KPAD acc for ReadKpadSample.
-bool ReadAccelAsKpad(SDL_Gamepad* gamepad, SDL_SensorType sensor, float* kpad) {
+bool ReadAccelAsKpad(SDL_Gamepad* gamepad, uint32_t port, SDL_SensorType sensor, float* kpad) {
     float g[3] = {};
-    if (!ReadAccelG(gamepad, sensor, g)) {
+    if (!ReadAccelG(gamepad, port, sensor, g)) {
         return false;
     }
     AccelGToKpad(g, kpad);
@@ -275,10 +353,25 @@ void TraceSample(uint32_t chan, const KpadSample& sample, const float* rawG, boo
     trace.flush();
 }
 
-// Ends a calibration run with a message for the overlay.
-void FinishAccelCalibration(const char* message) {
-    g_calibration.active = false;
+// Gamepad of the Wii Remote on `chan`, or nullptr.
+SDL_Gamepad* RemoteGamepad(uint32_t chan) {
+    if (chan >= PAD_MAX_CONTROLLERS || !IsRemoteChannel(chan)) {
+        return nullptr;
+    }
+    return SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+}
+
+void SetCalibrationMessage(uint32_t chan, const char* message) {
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    g_calibrationMessageChan = chan;
+    g_calibrationMessageRemote = gamepad != nullptr ? SDL_GetGamepadID(gamepad) : 0;
     std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "%s", message);
+}
+
+// Ends a calibration run with a message for the overlay.
+void FinishAccelCalibration(uint32_t chan, const char* message) {
+    g_calibration.active = false;
+    SetCalibrationMessage(chan, message);
     RT_LOG(RT_TAG_CONFIG) << "Wii Remote accelerometer calibration: " << message << std::endl;
 }
 
@@ -288,9 +381,10 @@ void StepAccelCalibration() {
     if (!g_calibration.active) {
         return;
     }
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(g_calibration.chan));
-    if (gamepad == nullptr || !IsRemoteChannel(g_calibration.chan)) {
-        FinishAccelCalibration("Cancelled: the Wii Remote went away.");
+    SDL_Gamepad* gamepad = RemoteGamepad(g_calibration.chan);
+    if (gamepad == nullptr ||
+        SDL_GetGamepadID(gamepad) != g_calibration.instance) {
+        FinishAccelCalibration(g_calibration.chan, "Cancelled: the Wii Remote went away.");
         return;
     }
     EnsureSensors(gamepad, g_calibration.chan);
@@ -308,7 +402,7 @@ void StepAccelCalibration() {
     } else {
         for (int i = 0; i < 3; ++i) {
             if (std::fabs(g[i] - g_calibration.first[i]) > kCalibrationMaxDeviationG) {
-                FinishAccelCalibration("Failed: the remote moved. Put it down, buttons up, and try again.");
+                FinishAccelCalibration(g_calibration.chan, "Failed: the remote moved. Put it down, buttons up, and try again.");
                 return;
             }
         }
@@ -320,19 +414,20 @@ void StepAccelCalibration() {
     std::array<double, 3> mean{};
     for (int i = 0; i < 3; ++i) mean[i] = g_calibration.sum[i] / g_calibration.count;
     const double length = std::sqrt(mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]);
-    if (length < kCalibrationMinGravityG || length > kCalibrationMaxGravityG || mean[1] < 0.5) {
-        FinishAccelCalibration("Failed: the remote was not resting flat with the buttons up.");
+    if (length < kCalibrationMinGravityG || length > kCalibrationMaxGravityG ||
+        mean[1] / length < kCalibrationMinTiltCosine) {
+        FinishAccelCalibration(g_calibration.chan, "Failed: the remote was not resting flat with the buttons up.");
         return;
     }
     const std::array<double, 3> offset = {mean[0], mean[1] - 1.0, mean[2]};
-    for (int i = 0; i < 3; ++i) g_accelOffset[i] = static_cast<float>(offset[i]);
-    g_accelOffsetLoaded = true;
-    const bool saved = RuntimeConfigFile::SetWiiAccelOffset(offset);
+    RemoteCalibration& calibration = CalibrationFor(gamepad, g_calibration.chan);
+    for (int i = 0; i < 3; ++i) calibration.offset[i] = static_cast<float>(offset[i]);
+    const bool saved = RuntimeConfigFile::SetWiiAccelOffsetFor(calibration.key, offset);
     char message[160];
     std::snprintf(message, sizeof(message), "%s offset x %+.3f  y %+.3f  z %+.3f g",
                   saved ? "Calibrated:" : "Calibrated (could not write Config.toml):", offset[0], offset[1],
                   offset[2]);
-    FinishAccelCalibration(message);
+    FinishAccelCalibration(g_calibration.chan, message);
 }
 
 // True when any controller aurora knows about is a Wii device.
@@ -344,6 +439,110 @@ bool AnyWiiControllerConnected() {
         }
     }
     return false;
+}
+
+// True for an evdev node served by the kernel hid-wiimote driver.
+bool IsKernelWiiNode(SDL_JoystickID id) {
+    const char* path = SDL_GetGamepadPathForID(id);
+    return SDL_GetGamepadVendorForID(id) == kNintendoVendor && path != nullptr &&
+           std::strncmp(path, "/dev/input/", 11) == 0;
+}
+
+bool IsClassicNodeName(const char* name) {
+    return NameContains(name, "Classic Controller");
+}
+
+// HID device behind a kernel evdev node; the remote and its extension nodes share it.
+std::string KernelParent(SDL_JoystickID id) {
+    static std::unordered_map<SDL_JoystickID, std::string> s_parents;
+    if (const auto it = s_parents.find(id); it != s_parents.end()) {
+        return it->second;
+    }
+    const char* path = SDL_GetGamepadPathForID(id);
+    if (path == nullptr) {
+        return {};
+    }
+    std::error_code ec;
+    const auto parent = std::filesystem::canonical(
+        std::filesystem::path("/sys/class/input") / std::filesystem::path(path).filename() / "device" / "device", ec);
+    if (ec) {
+        return {};
+    }
+    return s_parents.emplace(id, parent.string()).first->second;
+}
+
+// The kernel node on the same remote as `gamepad`: its Classic Controller node
+// when `wantClassic`, else its remote node.
+SDL_Gamepad* KernelSibling(SDL_Gamepad* gamepad, bool wantClassic) {
+    const SDL_JoystickID self = SDL_GetGamepadID(gamepad);
+    const std::string parent = KernelParent(self);
+    if (parent.empty()) {
+        return nullptr;
+    }
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (ids == nullptr) {
+        return nullptr;
+    }
+    SDL_Gamepad* sibling = nullptr;
+    for (int i = 0; i < count && sibling == nullptr; ++i) {
+        if (ids[i] != self && IsKernelWiiNode(ids[i]) &&
+            IsClassicNodeName(SDL_GetGamepadNameForID(ids[i])) == wantClassic && KernelParent(ids[i]) == parent) {
+            sibling = SDL_GetGamepadFromID(ids[i]);
+        }
+    }
+    SDL_free(ids);
+    return sibling;
+}
+
+// The kernel exposes a remote and its Classic Controller as separate gamepads.
+// The remote's port reads both, as on a Wii; the Classic node's own port stays empty.
+Kind KindForGamepad(SDL_Gamepad* gamepad) {
+    if (gamepad == nullptr) {
+        return Kind::NotWii;
+    }
+    const char* name = SDL_GetGamepadName(gamepad);
+    const Kind kind = KindForName(name);
+    if ((kind != Kind::Remote && kind != Kind::RemoteWithClassic) || !IsKernelWiiNode(SDL_GetGamepadID(gamepad))) {
+        return kind;
+    }
+    if (IsClassicNodeName(name)) {
+        return KernelSibling(gamepad, false) != nullptr ? Kind::NotWii : kind;
+    }
+    return KernelSibling(gamepad, true) != nullptr ? Kind::RemoteWithClassic : kind;
+}
+
+// A kernel Classic Controller node whose remote node carries it.
+bool IsCarriedKernelNode(SDL_Gamepad* gamepad) {
+    return gamepad != nullptr && IsKernelWiiNode(SDL_GetGamepadID(gamepad)) &&
+           IsClassicNodeName(SDL_GetGamepadName(gamepad)) && KernelSibling(gamepad, false) != nullptr;
+}
+
+// Logs once when the kernel driver serves a Wii controller SDL's driver could have had.
+void WarnIfKernelDriverServing() {
+    if (g_hidrawWarned || !g_wiiDriverEnabled) {
+        return;
+    }
+    const uint64_t now = SDL_GetTicks();
+    static uint64_t s_nextCheckMs = 0;
+    if (now < s_nextCheckMs) {
+        return;
+    }
+    s_nextCheckMs = now + 2000;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (ids == nullptr) {
+        return;
+    }
+    for (int i = 0; i < count && !g_hidrawWarned; ++i) {
+        const Uint16 product = SDL_GetGamepadProductForID(ids[i]);
+        if ((product == 0x0306 || product == 0x0330) && IsKernelWiiNode(ids[i])) {
+            g_hidrawWarned = true;
+            RT_LOG(RT_TAG_CONFIG) << "A Wii controller is served by the kernel hid-wiimote driver. For full Wii "
+                                  << "Remote support see the Linux udev rule in the README." << std::endl;
+        }
+    }
+    SDL_free(ids);
 }
 
 // Route SDL's input diagnostics (HIDAPI open failures, the Wii driver's
@@ -464,6 +663,7 @@ void Poll() {
     for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         (void)EffectiveKind(port);
     }
+    WarnIfKernelDriverServing();
     if (!g_wiiDriverEnabled) {
         return;
     }
@@ -518,11 +718,13 @@ uint32_t ScanCount() {
     return g_scanCount;
 }
 
-// Maps the gamepad name SDL's Wii driver reports to a Kind.
+// Maps the gamepad name SDL reports to a Kind: "Nintendo Wii Remote",
+// "... with Nunchuk", "... with Classic Controller" and "Nintendo Wii U Pro
+// Controller" from SDL's Wii driver; the Linux kernel's "Nintendo Wii Remote
+// Classic Controller" is read like the Classic Controller.
 Kind KindForName(const char* name) {
-    // Names come from SDL's hidapi Wii driver: "Nintendo Wii Remote",
-    // "Nintendo Wii Remote with Nunchuk", "Nintendo Wii Remote with Classic
-    // Controller" and "Nintendo Wii U Pro Controller".
+    // The kernel's Pro Controller is a plain gamepad with a built-in SDL mapping.
+    if (NameContains(name, "Wii Remote Pro Controller")) return Kind::NotWii;
     if (NameContains(name, "Wii U Pro Controller")) return Kind::WiiUPro;
     if (!NameContains(name, "Wii Remote")) return Kind::NotWii;
     if (NameContains(name, "Nunchuk")) return Kind::RemoteWithNunchuk;
@@ -534,8 +736,7 @@ Kind KindForName(const char* name) {
 Kind KindForPort(uint32_t port) {
     if (port >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(port));
-    if (gamepad == nullptr) return Kind::NotWii;
-    return KindForName(SDL_GetGamepadName(gamepad));
+    return KindForGamepad(gamepad);
 }
 
 // Human-readable name of a Kind for the settings overlay.
@@ -561,7 +762,7 @@ Kind EffectiveKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     PortMemory& memory = g_ports[chan];
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind live = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const Kind live = KindForGamepad(gamepad);
     const uint64_t now = SDL_GetTicks();
     if (live != Kind::NotWii) {
         memory.lastKind = live;
@@ -587,7 +788,8 @@ bool IsRemoteChannel(uint32_t chan) {
 // Marks KPAD-served ports as "no controller" in the GameCube pad statuses.
 void HideRemotesFromPad(PADStatus* statuses, uint32_t count) {
     for (uint32_t port = 0; port < count && port < PAD_MAX_CONTROLLERS; ++port) {
-        if (IsRemoteChannel(port)) {
+        if (IsRemoteChannel(port) ||
+            IsCarriedKernelNode(SDL_GetGamepadFromPlayerIndex(static_cast<int>(port)))) {
             statuses[port] = {};
             statuses[port].err = PAD_ERR_NO_CONTROLLER;
         }
@@ -602,15 +804,38 @@ void FillGraceSample(uint32_t chan, Kind kind, KpadSample& sample) {
     sample.hasClassic = kind == Kind::RemoteWithClassic;
 }
 
-// SDL's stick axis (-32767..32767, y down) as WPADCLStatus carries it: WPAD
-// normalises every Classic Controller stick, whatever the report's resolution,
-// to a signed 10-bit value, -512..511 with 0 at the centre and +y up (RVL SDK
-// WPAD.h; wut's WPADStatusClassic documents the same range).
+// The patched SDL Wii driver posts Classic Controller sticks as WPAD's own
+// value times 64 (aurora-main/cmake/AuroraSDL3Patches.cmake), so WPADCLStatus
+// is the axis divided back: signed, 0 at the centre, -512..511, +y up.
 int16_t ClassicStickRaw(Sint16 axis, bool invert) {
+    const long value = invert ? -static_cast<long>(axis) : axis;
+    return static_cast<int16_t>(std::clamp(std::lround(value / 64.0), -512L, 511L));
+}
+
+// The kernel driver's evdev axes span SDL's full range; scaled to WPAD's.
+int16_t KernelClassicStickRaw(Sint16 axis, bool invert) {
     float value = static_cast<float>(axis) / 32767.0f;
     if (invert) value = -value;
     value = std::clamp(value, -1.0f, 1.0f);
     return static_cast<int16_t>(std::clamp(std::lround(value * 512.0f), -512L, 511L));
+}
+
+// KPAD's default Classic Controller stick limits; the game uses the cross clamp.
+constexpr float kKpadStickMin = 60.0f;
+constexpr float kKpadStickMax = 308.0f;
+
+// KPAD cross clamp: per-axis dead zone and scale, then the unit circle.
+void ClassicStickFloat(const int16_t raw[2], float out[2]) {
+    for (int i = 0; i < 2; ++i) {
+        const float magnitude = std::fabs(static_cast<float>(raw[i]));
+        const float scaled = std::clamp((magnitude - kKpadStickMin) / (kKpadStickMax - kKpadStickMin), 0.0f, 1.0f);
+        out[i] = raw[i] < 0 ? -scaled : scaled;
+    }
+    const float length = std::sqrt(out[0] * out[0] + out[1] * out[1]);
+    if (length > 1.0f) {
+        out[0] /= length;
+        out[1] /= length;
+    }
 }
 
 // Samples buttons, accelerometers and the extension of the remote on a port.
@@ -619,7 +844,7 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         return false;
     }
     SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind kind = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const Kind kind = KindForGamepad(gamepad);
     if (!IsKpadKind(kind)) {
         const Kind remembered = EffectiveKind(chan);
         if (!IsKpadKind(remembered)) {
@@ -635,26 +860,48 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
     EnsureSensors(gamepad, chan);
 
     sample = {};
-    const auto raw = [&](int index, uint32_t bit) {
-        if (SDL_GetJoystickButton(joystick, index)) sample.hold |= bit;
-    };
-    raw(kRawA, kWpadA);
-    raw(kRawB, kWpadB);
-    raw(kRawOne, kWpadOne);
-    raw(kRawTwo, kWpadTwo);
-    raw(kRawPlus, kWpadPlus);
-    raw(kRawMinus, kWpadMinus);
-    raw(kRawHome, kWpadHome);
-    raw(kRawDpadUp, kWpadUp);
-    raw(kRawDpadDown, kWpadDown);
-    raw(kRawDpadLeft, kWpadLeft);
-    raw(kRawDpadRight, kWpadRight);
+    // The kernel's evdev nodes have regular SDL mappings, so they are read as gamepads.
+    const bool kernel = IsKernelWiiNode(SDL_GetGamepadID(gamepad));
+    const bool classicNode = kernel && IsClassicNodeName(SDL_GetGamepadName(gamepad));
+    if (kernel) {
+        const auto mapped = [&](SDL_GamepadButton button, uint32_t bit) {
+            if (SDL_GetGamepadButton(gamepad, button)) sample.hold |= bit;
+        };
+        if (!classicNode) {
+            mapped(SDL_GAMEPAD_BUTTON_EAST, kWpadA);
+            mapped(SDL_GAMEPAD_BUTTON_SOUTH, kWpadB);
+            mapped(SDL_GAMEPAD_BUTTON_WEST, kWpadOne);
+            mapped(SDL_GAMEPAD_BUTTON_NORTH, kWpadTwo);
+            mapped(SDL_GAMEPAD_BUTTON_START, kWpadPlus);
+            mapped(SDL_GAMEPAD_BUTTON_BACK, kWpadMinus);
+            mapped(SDL_GAMEPAD_BUTTON_GUIDE, kWpadHome);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_UP, kWpadUp);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kWpadDown);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kWpadLeft);
+            mapped(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kWpadRight);
+        }
+    } else {
+        const auto raw = [&](int index, uint32_t bit) {
+            if (SDL_GetJoystickButton(joystick, index)) sample.hold |= bit;
+        };
+        raw(kRawA, kWpadA);
+        raw(kRawB, kWpadB);
+        raw(kRawOne, kWpadOne);
+        raw(kRawTwo, kWpadTwo);
+        raw(kRawPlus, kWpadPlus);
+        raw(kRawMinus, kWpadMinus);
+        raw(kRawHome, kWpadHome);
+        raw(kRawDpadUp, kWpadUp);
+        raw(kRawDpadDown, kWpadDown);
+        raw(kRawDpadLeft, kWpadLeft);
+        raw(kRawDpadRight, kWpadRight);
+    }
 
     float rawG[3] = {};
     const bool haveRaw = ReadSdlAccel(gamepad, SDL_SENSOR_ACCEL, rawG);
     for (float& v : rawG) v /= kStandardGravity;
     LastAcc& last = g_lastAcc[chan];
-    const bool accepted = ReadAccelAsKpad(gamepad, SDL_SENSOR_ACCEL, sample.acc);
+    const bool accepted = ReadAccelAsKpad(gamepad, chan, SDL_SENSOR_ACCEL, sample.acc);
     if (accepted) {
         last.valid = true;
         for (int i = 0; i < 3; ++i) last.acc[i] = sample.acc[i];
@@ -674,8 +921,17 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         // Home, the L/R clicks as shoulders, the D-pad as buttons 11-14 (never
         // through SDL's gamepad mapping, which expects a hat), ZL/ZR as the
         // trigger axes.
-        const auto cl = [&](int index, uint32_t bit) {
-            if (SDL_GetJoystickButton(joystick, index)) sample.clHold |= bit;
+        SDL_Gamepad* classic = gamepad;
+        if (kernel && !classicNode) {
+            classic = KernelSibling(gamepad, true);
+            if (classic == nullptr) {
+                classic = gamepad;
+            }
+        }
+        const auto cl = [&](SDL_GamepadButton button, uint32_t bit) {
+            if (kernel ? SDL_GetGamepadButton(classic, button) : SDL_GetJoystickButton(joystick, button)) {
+                sample.clHold |= bit;
+            }
         };
         cl(SDL_GAMEPAD_BUTTON_EAST, kClA);
         cl(SDL_GAMEPAD_BUTTON_SOUTH, kClB);
@@ -690,20 +946,29 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         cl(SDL_GAMEPAD_BUTTON_DPAD_DOWN, kClDown);
         cl(SDL_GAMEPAD_BUTTON_DPAD_LEFT, kClLeft);
         cl(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, kClRight);
-        if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0) sample.clHold |= kClZL;
-        if (SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0) sample.clHold |= kClZR;
-        const Sint16 lx = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTX);
-        const Sint16 ly = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY);
-        const Sint16 rx = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
-        const Sint16 ry = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY);
-        sample.clLStick[0] = std::clamp(static_cast<float>(lx) / 32767.0f, -1.0f, 1.0f);
-        sample.clLStick[1] = std::clamp(-static_cast<float>(ly) / 32767.0f, -1.0f, 1.0f);
-        sample.clRStick[0] = std::clamp(static_cast<float>(rx) / 32767.0f, -1.0f, 1.0f);
-        sample.clRStick[1] = std::clamp(-static_cast<float>(ry) / 32767.0f, -1.0f, 1.0f);
-        sample.clLStickRaw[0] = ClassicStickRaw(lx, false);
-        sample.clLStickRaw[1] = ClassicStickRaw(ly, true);
-        sample.clRStickRaw[0] = ClassicStickRaw(rx, false);
-        sample.clRStickRaw[1] = ClassicStickRaw(ry, true);
+        if (SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0) sample.clHold |= kClZL;
+        if (SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0) sample.clHold |= kClZR;
+        const Sint16 lx = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFTX);
+        const Sint16 ly = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_LEFTY);
+        const Sint16 rx = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHTX);
+        const Sint16 ry = SDL_GetGamepadAxis(classic, SDL_GAMEPAD_AXIS_RIGHTY);
+        if (kernel) {
+            sample.clLStickRaw[0] = KernelClassicStickRaw(lx, false);
+            sample.clLStickRaw[1] = KernelClassicStickRaw(ly, true);
+            sample.clRStickRaw[0] = KernelClassicStickRaw(rx, false);
+            sample.clRStickRaw[1] = KernelClassicStickRaw(ry, true);
+            sample.clLStick[0] = std::clamp(static_cast<float>(lx) / 32767.0f, -1.0f, 1.0f);
+            sample.clLStick[1] = std::clamp(-static_cast<float>(ly) / 32767.0f, -1.0f, 1.0f);
+            sample.clRStick[0] = std::clamp(static_cast<float>(rx) / 32767.0f, -1.0f, 1.0f);
+            sample.clRStick[1] = std::clamp(-static_cast<float>(ry) / 32767.0f, -1.0f, 1.0f);
+        } else {
+            sample.clLStickRaw[0] = ClassicStickRaw(lx, false);
+            sample.clLStickRaw[1] = ClassicStickRaw(ly, true);
+            sample.clRStickRaw[0] = ClassicStickRaw(rx, false);
+            sample.clRStickRaw[1] = ClassicStickRaw(ry, true);
+            ClassicStickFloat(sample.clLStickRaw, sample.clLStick);
+            ClassicStickFloat(sample.clRStickRaw, sample.clRStick);
+        }
         // Only the full-press click of L/R reaches SDL; report it as a full pull.
         sample.clTriggerL = (sample.clHold & kClL) ? 255 : 0;
         sample.clTriggerR = (sample.clHold & kClR) ? 255 : 0;
@@ -718,7 +983,7 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         sample.stick[1] = -static_cast<float>(SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY)) / 32767.0f;
         for (float& v : sample.stick) v = std::clamp(v, -1.0f, 1.0f);
         LastAcc& lastNunchuk = g_lastNunchukAcc[chan];
-        if (ReadAccelAsKpad(gamepad, SDL_SENSOR_ACCEL_L, sample.nunchukAcc)) {
+        if (ReadAccelAsKpad(gamepad, chan, SDL_SENSOR_ACCEL_L, sample.nunchukAcc)) {
             lastNunchuk.valid = true;
             for (int i = 0; i < 3; ++i) lastNunchuk.acc[i] = sample.nunchukAcc[i];
         } else {
@@ -738,7 +1003,7 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
         return false;
     }
     EnsureSensors(gamepad, chan);
-    if (!ReadAccelG(gamepad, SDL_SENSOR_ACCEL, sdlG)) {
+    if (!ReadAccelG(gamepad, chan, SDL_SENSOR_ACCEL, sdlG)) {
         return false;
     }
     AccelGToKpad(sdlG, kpadAcc);
@@ -747,28 +1012,47 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
 
 // Begins collecting rest samples from the remote on `chan`.
 void StartAccelCalibration(uint32_t chan) {
-    if (!IsRemoteChannel(chan)) {
-        FinishAccelCalibration("No Wii Remote on this port.");
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    if (gamepad == nullptr) {
+        FinishAccelCalibration(chan, "No Wii Remote on this port.");
         return;
     }
     g_calibration = {};
     g_calibration.active = true;
     g_calibration.chan = chan;
+    g_calibration.instance = SDL_GetGamepadID(gamepad);
     g_calibrationMessage[0] = '\0';
 }
 
-// Drops the stored correction and goes back to SDL's raw reading.
-void ClearAccelCalibration() {
-    g_calibration.active = false;
-    g_accelOffset = {};
-    g_accelOffsetLoaded = true;
-    RuntimeConfigFile::SetWiiAccelOffset({0.0, 0.0, 0.0});
-    std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "Calibration cleared.");
+// Zeroes the stored correction of the remote on `chan`.
+void ClearAccelCalibration(uint32_t chan) {
+    if (g_calibration.chan == chan) {
+        g_calibration.active = false;
+    }
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    if (gamepad == nullptr) {
+        SetCalibrationMessage(chan, "No Wii Remote on this port.");
+        return;
+    }
+    RemoteCalibration& calibration = CalibrationFor(gamepad, chan);
+    calibration.offset = {};
+    RuntimeConfigFile::SetWiiAccelOffsetFor(calibration.key, {0.0, 0.0, 0.0});
+    SetCalibrationMessage(chan, "Calibration cleared.");
 }
 
-// True while a calibration run is collecting samples.
-bool IsAccelCalibrating() {
-    return g_calibration.active;
+// Correction in effect for the remote on `chan`, for the overlay.
+std::optional<std::array<double, 3>> ReadAccelOffset(uint32_t chan) {
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    if (gamepad == nullptr) {
+        return std::nullopt;
+    }
+    const RemoteCalibration& calibration = CalibrationFor(gamepad, chan);
+    return std::array<double, 3>{calibration.offset[0], calibration.offset[1], calibration.offset[2]};
+}
+
+// True while a calibration run is collecting samples from `chan`.
+bool IsAccelCalibrating(uint32_t chan) {
+    return g_calibration.active && g_calibration.chan == chan;
 }
 
 // Share of the calibration samples collected so far, 0..1; 0 when idle.
@@ -776,9 +1060,14 @@ float AccelCalibrationProgress() {
     return g_calibration.active ? static_cast<float>(g_calibration.count) / kCalibrationSamples : 0.0f;
 }
 
-// Outcome of the last calibration run for the overlay, or nullptr before any.
-const char* AccelCalibrationMessage() {
-    return g_calibrationMessage[0] != '\0' ? g_calibrationMessage : nullptr;
+// Outcome of the last calibration run on `chan` for the overlay, or nullptr.
+const char* AccelCalibrationMessage(uint32_t chan) {
+    if (g_calibrationMessage[0] == '\0' || g_calibrationMessageChan != chan) {
+        return nullptr;
+    }
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    const SDL_JoystickID remote = gamepad != nullptr ? SDL_GetGamepadID(gamepad) : 0;
+    return remote == g_calibrationMessageRemote ? g_calibrationMessage : nullptr;
 }
 
 } // namespace WiiRemoteInput

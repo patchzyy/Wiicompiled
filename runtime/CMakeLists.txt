@@ -42,6 +42,12 @@ else()
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, or Apple Clang on macOS x86_64/arm64")
 endif()
 
+if(MKW_PLATFORM_WINDOWS)
+    # CMake and Ninja write response files with Windows quoting, but clang tokenizes them with
+    # POSIX rules by default, where a bare apostrophe in a path opens a quoted span.
+    add_link_options(--rsp-quoting=windows)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
@@ -55,6 +61,8 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" AND
    NOT MKW_X86_CPU_PROFILE MATCHES "^(v2|v3)$")
     message(FATAL_ERROR "MKW_X86_CPU_PROFILE must be v2 or v3 (got '${MKW_X86_CPU_PROFILE}')")
 endif()
+
+set(MKW_SETUP_VERSION "" CACHE STRING "WiiCompiled version recorded in the runtime log")
 
 option(MKW_PLATFORM_TESTS_ONLY "Build host-platform tests without graphics dependencies or game assets" OFF)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/HostLibraries.cmake")
