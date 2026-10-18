@@ -37,6 +37,46 @@ public class PpcLifterAdditionalCoverageTests
         Assert.Equal($"0x{branch.EndAddress:X8}", decision.FalseLabel);
     }
 
+    [Theory]
+    [InlineData(0x41820009u, "beql", "0x80001008")]
+    [InlineData(0x41810009u, "bgtl", "0x80001008")]
+    [InlineData(0x40820009u, "bnel", "0x80001008")]
+    [InlineData(0x42000009u, "bdnzl", "0x80001008")]
+    [InlineData(0x42400009u, "bdzl", "0x80001008")]
+    public void LinkedConditionalRelativeBranchFormsSetLrOnBothPaths(uint word, string mnemonic, string target)
+    {
+        var branch = PpcDecoder.Decode(0x80001000, word);
+        var ir = Assert.Single(new PpcLifter().Lift(new[] { branch })).Ir;
+
+        Assert.Equal(mnemonic, branch.Mnemonic);
+
+        var lrAssign = Assert.Single(ir.OfType<IrAssign>());
+        Assert.Equal("lr", lrAssign.Destination);
+        Assert.Equal(unchecked((int)0x80001004u), lrAssign.Value.Constant);
+        Assert.IsType<IrAssign>(ir[^2]);
+
+        var decision = Assert.IsType<IrBranch>(ir[^1]);
+        Assert.Equal("raw", decision.Condition);
+        Assert.Equal($"link_branch_80001004_{target[2..]}", decision.TrueLabel);
+        Assert.Equal("0x80001004", decision.FalseLabel);
+        Assert.Equal(mnemonic.StartsWith("bd", StringComparison.Ordinal), ir.OfType<IrBinary>().Any(b => b.Destination == "ctr"));
+    }
+
+    [Theory]
+    [InlineData(0x4D820021u)]
+    [InlineData(0x4D820421u)]
+    [InlineData(0x4D030021u)]
+    public void LinkedConditionalRegisterBranchesRouteNotTakenPathThroughLrUpdate(uint word)
+    {
+        var branch = PpcDecoder.Decode(0x80001000, word);
+        var ir = Assert.Single(new PpcLifter().Lift(new[] { branch })).Ir;
+
+        var decision = Assert.IsType<IrBranch>(ir[^1]);
+        Assert.Equal("link_branch_80001004_80001004", decision.FalseLabel);
+        Assert.StartsWith(branch.Mnemonic.Contains("ctr", StringComparison.Ordinal) ? "call_ctr_" : "call_lr_", decision.TrueLabel, StringComparison.Ordinal);
+        Assert.DoesNotContain(ir, ins => ins is IrAssign { Destination: "lr" });
+    }
+
     [Fact]
     public void LiftsAdditionalNonDotArithmeticAndLogicalForms()
     {
@@ -365,6 +405,7 @@ public class PpcLifterAdditionalCoverageTests
         var bclrl = Instruction((12u << 21) | (8u << 16), "bclrl", new PpcConditionRegisterOperand("cr2", 8));
         var bclrlBranch = Assert.IsType<IrBranch>(Assert.Single(Assert.Single(lifter.Lift(new[] { bclrl })).Ir));
         Assert.Contains("call_lr_80000000_80000004", bclrlBranch.TrueLabel, StringComparison.Ordinal);
+        Assert.Equal("link_branch_80000004_80000004", bclrlBranch.FalseLabel);
         Assert.Equal("raw", bclrlBranch.Condition);
         Assert.Contains("GetCRBit(ctx, 2, 0)", bclrlBranch.ConditionRegister, StringComparison.Ordinal);
     }

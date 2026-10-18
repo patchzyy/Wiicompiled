@@ -45,6 +45,37 @@ public class FunctionTranslatorCoverageTests
         Assert.Equal(TimeSpan.Zero, discovery.Metrics.CodeGen);
     }
 
+    [Theory]
+    [InlineData(0x4D820021u)] // beqlrl
+    [InlineData(0x4D820421u)] // bcctrl, BO=12 BI=2
+    public void Discover_LinkedConditionalRegisterBranchUpdatesLrWhenNotTaken(uint branchWord)
+    {
+        var memory = new byte[MemoryLayout.RamSize];
+        WriteWord(memory, 0x80001000, branchWord);
+        WriteWord(memory, 0x80001004, 0x7C6802A6); // mflr r3
+        WriteWord(memory, 0x80001008, 0x4E800020); // blr
+
+        var image = new ProgramImage(
+            memory,
+            AddressRange.FromStartAndSize(0x80001000, 0x1004),
+            AddressRange.FromStartAndSize(0x80001000, 0x1004),
+            default,
+            "test");
+        var discovery = new FunctionTranslator(image).Discover(
+            0x80001000,
+            TranslationOptions.Default with { MaxBytes = 0x20, AllowUnsupportedInstructions = true });
+
+        var blocks = discovery.Ssa.Function.Blocks;
+        var branch = Assert.Single(blocks.SelectMany(b => b.Instructions).OfType<IrBranch>());
+        Assert.Equal("link_branch_80001004_80001004", branch.FalseLabel);
+
+        var notTaken = Assert.Single(blocks, b => b.Label == branch.FalseLabel);
+        var lrAssign = Assert.Single(notTaken.Instructions.OfType<IrAssign>());
+        Assert.StartsWith("lr", lrAssign.Destination, StringComparison.Ordinal);
+        Assert.Equal(unchecked((int)0x80001004u), lrAssign.Value.Constant);
+        Assert.Equal("0x80001004", Assert.IsType<IrJump>(notTaken.Instructions[^1]).TargetLabel);
+    }
+
     [Fact]
     public void Translate_PreservesFallthroughAfterDirectLinkBranch()
     {
@@ -404,6 +435,19 @@ public class FunctionTranslatorCoverageTests
                 var call = Assert.IsType<IrIndirectCall>(ins);
                 Assert.Equal("addr_bclrl_80002000_loc", call.Target.RegisterName);
                 Assert.Equal(21, call.Arguments.Count);
+            },
+            ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
+
+        var notTakenArgs = new object?[] { "link_branch_80002004_80002004", null! };
+        Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", notTakenArgs));
+        var notTaken = Assert.IsType<IrBasicBlock>(notTakenArgs[1]);
+        Assert.Collection(
+            notTaken.Instructions,
+            ins =>
+            {
+                var assign = Assert.IsType<IrAssign>(ins);
+                Assert.Equal("lr", assign.Destination);
+                Assert.Equal(unchecked((int)0x80002004u), assign.Value.Constant);
             },
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
