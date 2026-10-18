@@ -82,6 +82,7 @@ internal static class BuildRunner
         {
             startInfo.ArgumentList.Add("--sysroot"); startInfo.ArgumentList.Add(sysroot);
         }
+        startInfo.ArgumentList.Add("--setup-version"); startInfo.ArgumentList.Add(ProductInfo.Version);
 
         using var process = new Process { StartInfo = startInfo };
         var window = new BuildProgressWindow(reporter, InstallStages.Build, start: 6, end: 96);

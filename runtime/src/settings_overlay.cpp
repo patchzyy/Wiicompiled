@@ -309,9 +309,8 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
     } else {
         ImGui::TextDisabled("No accelerometer data yet.");
     }
-    // SDL's read of the remote's calibration block often times out over Bluetooth
-    // and it falls back to a nominal zero point, leaving a small per-axis bias;
-    // measured here with the remote at rest.
+    // Residual per-axis bias left after SDL's factory-calibrated decode, measured
+    // here with the remote at rest.
     if (WiiRemoteInput::IsAccelCalibrating()) {
         ImGui::ProgressBar(WiiRemoteInput::AccelCalibrationProgress(), ImVec2(220.0f, 0.0f), "Hold still...");
     } else if (ImGui::Button("Calibrate (remote lying flat, buttons up)")) {
@@ -333,7 +332,7 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
         const std::array<double, 3> offset = RuntimeConfigFile::WiiAccelOffset();
         ImGui::TextDisabled("Stored offset: x %+.3f  y %+.3f  z %+.3f g", offset[0], offset[1], offset[2]);
     } else {
-        ImGui::TextDisabled("Not calibrated (using SDL's zero point; see console.log for \"fallback accelerometer calibration\").");
+        ImGui::TextDisabled("No trim stored.");
     }
 }
 

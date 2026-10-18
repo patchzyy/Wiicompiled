@@ -73,15 +73,8 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample);
 // no remote or SDL has not delivered a sample yet.
 bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]);
 
-// Accelerometer zero-point calibration. SDL's Wii driver tries to read the
-// remote's factory calibration block, but over Bluetooth that read often times
-// out ("Using fallback accelerometer calibration" in console.log) and it falls
-// back to a nominal 0x200 zero point; a real remote then carries a per-axis
-// bias of up to ~0.2 g, which held sideways as a wheel is a permanent steering
-// offset.
-// StartAccelCalibration expects the remote lying still with the buttons up;
-// Poll() then collects samples for about a second and stores the difference to
-// the ideal (0, 1, 0) g in Config.toml.
+// Residual zero-point trim on top of SDL's factory-calibrated decode. Expects the
+// remote lying still, buttons up; Poll() averages about a second and stores it.
 void StartAccelCalibration(uint32_t chan);
 // Forgets the stored correction.
 void ClearAccelCalibration();
