@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Translator.Core.Disassembly;
 using Translator.Core.Ir;
@@ -51,9 +52,29 @@ public class PpcLifterAdditionalCoverageTests
             (callee + 0x04, 0x4E800020)); // blr
 
         using var disassembler = new PpcDisassembler();
-        var instructions = disassembler.DisassembleFunction(image, entry, maxInstructions: 32, maxBytes: 0x80);
+        var instructions = disassembler.DisassembleFunction(
+            image, entry, maxInstructions: 32, maxBytes: 0x80, knownFunctionEntryPoints: new HashSet<uint> { entry, callee });
 
         Assert.Equal(new[] { entry, entry + 4, entry + 8 }, instructions.Select(ins => ins.Address));
+    }
+
+    [Fact]
+    public void ConditionalCallToLocalTargetKeepsLocalEdge()
+    {
+        const uint entry = 0x80000000;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x4182000D), // beql local
+            (entry + 0x04, 0x38600001), // li r3, 1
+            (entry + 0x08, 0x4E800020), // blr
+            (entry + 0x0C, 0x38600002), // local: li r3, 2
+            (entry + 0x10, 0x4E800020)); // blr
+
+        using var disassembler = new PpcDisassembler();
+        var instructions = disassembler.DisassembleFunction(
+            image, entry, maxInstructions: 32, maxBytes: 0x80, knownFunctionEntryPoints: new HashSet<uint> { entry });
+
+        Assert.Contains(instructions, ins => ins.Address == entry + 0x0C);
     }
 
     [Theory]

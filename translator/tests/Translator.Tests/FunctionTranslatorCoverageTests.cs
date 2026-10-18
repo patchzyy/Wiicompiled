@@ -385,18 +385,20 @@ public class FunctionTranslatorCoverageTests
         Assert.Equal("f13", abiArgs[^1].RegisterName);
     }
 
+    private static readonly HashSet<string> NoLocalLabels = new();
+
     [Fact]
     public void TryBuildSyntheticBlock_CoversIndirectAndCallForms()
     {
-        var indirectArgs = new object?[] { "indirect_ctr_80001234", null! };
+        var indirectArgs = new object?[] { "indirect_ctr_80001234", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", indirectArgs));
-        var indirect = Assert.IsType<IrBasicBlock>(indirectArgs[1]);
+        var indirect = Assert.IsType<IrBasicBlock>(indirectArgs[2]);
         Assert.Equal("indirect_ctr_80001234", indirect.Label);
         Assert.Equal("ctr", Assert.IsType<IrIndirectJump>(Assert.Single(indirect.Instructions)).Target.RegisterName);
 
-        var callCtrArgs = new object?[] { "call_ctr_80001000_80001004", null! };
+        var callCtrArgs = new object?[] { "call_ctr_80001000_80001004", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", callCtrArgs));
-        var callCtr = Assert.IsType<IrBasicBlock>(callCtrArgs[1]);
+        var callCtr = Assert.IsType<IrBasicBlock>(callCtrArgs[2]);
         Assert.Collection(
             callCtr.Instructions,
             ins =>
@@ -413,9 +415,9 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Equal("0x80001004", Assert.IsType<IrJump>(ins).TargetLabel));
 
-        var callLrArgs = new object?[] { "call_lr_80002000_80002004", null! };
+        var callLrArgs = new object?[] { "call_lr_80002000_80002004", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", callLrArgs));
-        var callLr = Assert.IsType<IrBasicBlock>(callLrArgs[1]);
+        var callLr = Assert.IsType<IrBasicBlock>(callLrArgs[2]);
         Assert.Collection(
             callLr.Instructions,
             ins =>
@@ -438,9 +440,9 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
-        var notTakenArgs = new object?[] { "link_branch_80002004_80002004", null! };
+        var notTakenArgs = new object?[] { "link_branch_80002004_80002004", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", notTakenArgs));
-        var notTaken = Assert.IsType<IrBasicBlock>(notTakenArgs[1]);
+        var notTaken = Assert.IsType<IrBasicBlock>(notTakenArgs[2]);
         Assert.Collection(
             notTaken.Instructions,
             ins =>
@@ -451,18 +453,26 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
-        var linkedCallArgs = new object?[] { "link_branch_80002004_800D7FCC", null! };
+        var linkedCallArgs = new object?[] { "link_branch_80002004_800D7FCC", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", linkedCallArgs));
-        var linkedCall = Assert.IsType<IrBasicBlock>(linkedCallArgs[1]);
+        var linkedCall = Assert.IsType<IrBasicBlock>(linkedCallArgs[2]);
         Assert.Collection(
             linkedCall.Instructions,
             ins => Assert.Equal(unchecked((int)0x80002004u), Assert.IsType<IrAssign>(ins).Value.Constant),
             ins => Assert.Equal("0x800D7FCC", Assert.IsType<IrCall>(ins).Target),
             ins => Assert.Equal("0x80002004", Assert.IsType<IrJump>(ins).TargetLabel));
 
-        var absoluteArgs = new object?[] { "0x800D7FCC", null! };
+        var localLinkedArgs = new object?[] { "link_branch_80002004_80002000", new HashSet<string> { "0x80002000" }, null! };
+        Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", localLinkedArgs));
+        var localLinked = Assert.IsType<IrBasicBlock>(localLinkedArgs[2]);
+        Assert.Collection(
+            localLinked.Instructions,
+            ins => Assert.Equal(unchecked((int)0x80002004u), Assert.IsType<IrAssign>(ins).Value.Constant),
+            ins => Assert.Equal("0x80002000", Assert.IsType<IrJump>(ins).TargetLabel));
+
+        var absoluteArgs = new object?[] { "0x800D7FCC", NoLocalLabels, null! };
         Assert.True(InvokePrivate<bool>("TryBuildSyntheticBlock", absoluteArgs));
-        var absolute = Assert.IsType<IrBasicBlock>(absoluteArgs[1]);
+        var absolute = Assert.IsType<IrBasicBlock>(absoluteArgs[2]);
         Assert.Equal("0x800D7FCC", absolute.Label);
         Assert.Collection(
             absolute.Instructions,
@@ -474,9 +484,9 @@ public class FunctionTranslatorCoverageTests
             },
             ins => Assert.Null(Assert.IsType<IrReturn>(ins).Value));
 
-        var invalidArgs = new object?[] { "plain_label", null! };
+        var invalidArgs = new object?[] { "plain_label", NoLocalLabels, null! };
         Assert.False(InvokePrivate<bool>("TryBuildSyntheticBlock", invalidArgs));
-        Assert.Null(invalidArgs[1]);
+        Assert.Null(invalidArgs[2]);
     }
 
     [Fact]

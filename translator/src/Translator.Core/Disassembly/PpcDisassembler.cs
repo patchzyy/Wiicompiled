@@ -230,8 +230,8 @@ public sealed class PpcDisassembler : IDisposable
                 {
                     foreach (var target in ins.BranchTargets)
                     {
-                        // A conditional call returns to its fallthrough; its target is a callee.
-                        if (ins.IsCall && target != ins.EndAddress)
+                        // A conditional call to another function returns to its fallthrough.
+                        if (ins.IsCall && IsKnownExternalFunctionEntry(target))
                         {
                             continue;
                         }
