@@ -69,10 +69,11 @@ struct RuntimeUserConfig {
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
     // SDL's Wii driver falls back to a nominal zero point when its read of the
     // remote's calibration block times out (common over Bluetooth), so this is
-    // measured in the overlay with the remote at rest.
-    std::optional<double> wiiAccelOffsetX;
-    std::optional<double> wiiAccelOffsetY;
-    std::optional<double> wiiAccelOffsetZ;
+    // measured in the overlay with the remote at rest. Stored per remote under
+    // [controller.wii_accel_offsets]; the old shared
+    // wii_accel_offset_* keys are only detected, to report that they are ignored.
+    std::map<std::string, std::array<double, 3>> wiiAccelOffsets;
+    bool hasLegacyWiiAccelOffset = false;
     // Debugging aid: append every KPAD sample of the Bluetooth remote (raw and
     // corrected accelerometer, buttons) to wii_accel_trace.csv next to Config.toml.
     std::optional<bool> wiiAccelTrace;
@@ -403,6 +404,28 @@ inline void AppendOverlayRoots(RuntimeUserConfig& config, const std::string& roo
 }
 
 // Reads every supported setting out of a parsed Config.toml document.
+// [x, y, z] of finite numbers (integers allowed), else nullopt.
+inline std::optional<std::array<double, 3>> ParseAccelOffset(const toml::value& value) {
+    if (!value.is_array() || value.as_array().size() != 3) {
+        return std::nullopt;
+    }
+    std::array<double, 3> offset{};
+    for (size_t i = 0; i < 3; ++i) {
+        const toml::value& element = value.as_array()[i];
+        if (element.is_floating()) {
+            offset[i] = element.as_floating();
+        } else if (element.is_integer()) {
+            offset[i] = static_cast<double>(element.as_integer());
+        } else {
+            return std::nullopt;
+        }
+        if (!std::isfinite(offset[i])) {
+            return std::nullopt;
+        }
+    }
+    return offset;
+}
+
 inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     RuntimeUserConfig config;
 
@@ -424,6 +447,13 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         for (const auto& [key, value] : section->as_table()) {
             if (key.rfind("expr_", 0) == 0 && value.is_string()) {
                 config.controllerExpressions[key] = value.as_string();
+            }
+        }
+        if (section->contains("wii_accel_offsets") && section->at("wii_accel_offsets").is_table()) {
+            for (const auto& [key, value] : section->at("wii_accel_offsets").as_table()) {
+                if (const auto offset = ParseAccelOffset(value)) {
+                    config.wiiAccelOffsets[key] = *offset;
+                }
             }
         }
     }
@@ -487,9 +517,9 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
     config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
-    config.wiiAccelOffsetX = FindConfigValue<double>(document, "controller", "wii_accel_offset_x");
-    config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
-    config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
+    for (const char* key : {"wii_accel_offset_x", "wii_accel_offset_y", "wii_accel_offset_z"}) {
+        config.hasLegacyWiiAccelOffset |= FindConfigValue<double>(document, "controller", key).value_or(0.0) != 0.0;
+    }
     config.wiiAccelTrace = FindConfigValue<bool>(document, "controller", "wii_accel_trace");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
@@ -884,12 +914,13 @@ inline bool SetWiiContinuousScanEnabled(bool value) {
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
 }
 
-// Wii Remote accelerometer zero-point correction (g, SDL sensor frame); all zero
-// when the remote has not been calibrated.
-inline std::array<double, 3> WiiAccelOffset() {
-    const RuntimeUserConfig& config = Get();
-    return {config.wiiAccelOffsetX.value_or(0.0), config.wiiAccelOffsetY.value_or(0.0),
-            config.wiiAccelOffsetZ.value_or(0.0)};
+// Stored correction of the remote identified by `remoteKey`, if it has one.
+inline std::optional<std::array<double, 3>> WiiAccelOffsetFor(const std::string& remoteKey) {
+    const auto it = Get().wiiAccelOffsets.find(remoteKey);
+    if (it == Get().wiiAccelOffsets.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 // Whether to write the per-frame accelerometer trace (off unless asked for).
@@ -897,26 +928,14 @@ inline bool WiiAccelTraceEnabled(bool fallback = false) {
     return Get().wiiAccelTrace.value_or(fallback);
 }
 
-// True while a non-zero correction is stored ("Clear calibration" writes zeros).
-inline bool HasWiiAccelOffset() {
-    const std::array<double, 3> offset = WiiAccelOffset();
-    return offset[0] != 0.0 || offset[1] != 0.0 || offset[2] != 0.0;
-}
-
-// Persists the accelerometer correction measured by the overlay's calibration.
-inline bool SetWiiAccelOffset(const std::array<double, 3>& offset) {
-    Mutable().wiiAccelOffsetX = offset[0];
-    Mutable().wiiAccelOffsetY = offset[1];
-    Mutable().wiiAccelOffsetZ = offset[2];
-    bool ok = true;
-    const char* keys[3] = {"wii_accel_offset_x", "wii_accel_offset_y", "wii_accel_offset_z"};
-    for (size_t i = 0; i < 3; ++i) {
-        // Always a float literal, so a whole-number offset does not come back as a TOML integer.
-        std::ostringstream formatted;
-        formatted << std::fixed << std::setprecision(4) << offset[i];
-        ok = WriteSetting("controller", keys[i], formatted.str()) && ok;
-    }
-    return ok;
+// Persists the accelerometer correction of one remote. `remoteKey` must be a bare TOML key.
+inline bool SetWiiAccelOffsetFor(const std::string& remoteKey, const std::array<double, 3>& offset) {
+    Mutable().wiiAccelOffsets[remoteKey] = offset;
+    // Always float literals, so a whole-number offset does not come back as a TOML integer.
+    std::ostringstream formatted;
+    formatted << std::fixed << std::setprecision(4) << '[' << offset[0] << ", " << offset[1] << ", " << offset[2]
+              << ']';
+    return WriteSetting("controller.wii_accel_offsets", remoteKey, formatted.str());
 }
 
 // Target frame rate for frame interpolation, or 0 to disable it.

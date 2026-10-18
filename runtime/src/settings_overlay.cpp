@@ -322,15 +322,17 @@ void DrawWiiRemoteAccelerometer(uint32_t port) {
                           "for about two seconds. Corrects the steering offset of a remote held sideways.");
     }
     ImGui::SameLine();
-    ImGui::BeginDisabled(!RuntimeConfigFile::HasWiiAccelOffset() || WiiRemoteInput::IsAccelCalibrating());
+    const auto stored = WiiRemoteInput::ReadAccelOffset(port);
+    const std::array<double, 3> offset = stored.value_or(std::array<double, 3>{});
+    const bool calibrated = offset[0] != 0.0 || offset[1] != 0.0 || offset[2] != 0.0;
+    ImGui::BeginDisabled(!calibrated || WiiRemoteInput::IsAccelCalibrating());
     if (ImGui::Button("Clear calibration")) {
-        WiiRemoteInput::ClearAccelCalibration();
+        WiiRemoteInput::ClearAccelCalibration(port);
     }
     ImGui::EndDisabled();
     if (const char* message = WiiRemoteInput::AccelCalibrationMessage()) {
         ImGui::TextWrapped("%s", message);
-    } else if (RuntimeConfigFile::HasWiiAccelOffset()) {
-        const std::array<double, 3> offset = RuntimeConfigFile::WiiAccelOffset();
+    } else if (calibrated) {
         ImGui::TextDisabled("Stored offset: x %+.3f  y %+.3f  z %+.3f g", offset[0], offset[1], offset[2]);
     } else {
         ImGui::TextDisabled("Not calibrated (using SDL's zero point; see console.log for \"fallback accelerometer calibration\").");
