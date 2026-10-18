@@ -372,6 +372,9 @@ static bool HIDAPI_DriverWii_InitDevice(SDL_HIDAPI_Device *device)
 [==[    x = ((data->rgucAccelerometer[0] << 2) | ((data->rgucBaseButtons[0] >> 5) & 0x03));
     y = ((data->rgucAccelerometer[1] << 2) | ((data->rgucBaseButtons[1] >> 4) & 0x02));
     z = ((data->rgucAccelerometer[2] << 2) | ((data->rgucBaseButtons[1] >> 5) & 0x02));
+    if (x == 0 && y == 0 && z == 0) {
+        return;
+    }
 
     values[0] = -(((float)x - ctx->m_fAccelZeroG[0]) / ctx->m_fAccelPerG[0]) * SDL_STANDARD_GRAVITY;
     values[1] = (((float)z - ctx->m_fAccelZeroG[2]) / ctx->m_fAccelPerG[2]) * SDL_STANDARD_GRAVITY;
