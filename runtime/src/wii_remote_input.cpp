@@ -144,8 +144,8 @@ struct LastAcc {
 std::array<LastAcc, PAD_MAX_CONTROLLERS> g_lastAcc{};
 std::array<LastAcc, PAD_MAX_CONTROLLERS> g_lastNunchukAcc{};
 
-// Any axis beyond this is not a reading the remote's +-3 g sensor can produce.
-constexpr float kMaxPlausibleRemoteG = 4.0f;
+// A zeroed remote report decodes to minus its zero-g point, at least this far out on every axis.
+constexpr float kZeroReportMinG = 4.0f;
 
 // Case-sensitive substring test that tolerates a null name.
 bool NameContains(const char* name, const char* needle) {
@@ -250,10 +250,11 @@ bool ReadSdlAccel(SDL_Gamepad* gamepad, SDL_SensorType sensor, float* sdl) {
 
 // True for a sample that cannot have come from the sensor. Over Bluetooth on
 // Windows the remote delivers, a few times a minute, a report whose
-// accelerometer bytes are all zero; SDL decodes that as -0x200 on every axis,
-// i.e. (+5.12, -5.12, -5.12) g for the remote (100 units/g) and
-// (+2.56, -2.56, -2.56) g for the Nunchuk (200 units/g). Handed to the game as
-// is, one such frame is a full-lock steer plus a 9 g "shake". `g` is the
+// accelerometer bytes are all zero; SDL decodes that as (+a, -b, -c) g with
+// a, b, c the zero-g point over the units per g of each axis: about 5 g for the
+// remote (factory calibration) and exactly 2.56 g for the Nunchuk (200 units/g).
+// Handed to the game as is, one such frame is a full-lock steer plus a 9 g
+// "shake". Single axes past 4 g are real readings of a hard shake. `g` is the
 // uncorrected SDL sample.
 bool IsGlitchedSample(SDL_SensorType sensor, const float* g) {
     // An exact zero vector is SDL's sensor buffer before the first report, not
@@ -261,16 +262,11 @@ bool IsGlitchedSample(SDL_SensorType sensor, const float* g) {
     if (g[0] == 0.0f && g[1] == 0.0f && g[2] == 0.0f) {
         return true;
     }
-    const float zero = sensor == SDL_SENSOR_ACCEL ? 5.12f : 2.56f;
-    if (std::fabs(g[0] - zero) < 0.03f && std::fabs(g[1] + zero) < 0.03f && std::fabs(g[2] + zero) < 0.03f) {
-        return true;
-    }
     if (sensor == SDL_SENSOR_ACCEL) {
-        for (int i = 0; i < 3; ++i) {
-            if (std::fabs(g[i]) > kMaxPlausibleRemoteG) return true;
-        }
+        return g[0] > kZeroReportMinG && g[1] < -kZeroReportMinG && g[2] < -kZeroReportMinG;
     }
-    return false;
+    constexpr float zero = 2.56f;
+    return std::fabs(g[0] - zero) < 0.03f && std::fabs(g[1] + zero) < 0.03f && std::fabs(g[2] + zero) < 0.03f;
 }
 
 // One accelerometer sample in g, SDL's sensor frame. The remote's own axes are
