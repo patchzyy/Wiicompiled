@@ -1,6 +1,7 @@
 #include "controller_mapping_wizard.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
+#include "wheel_ffb.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_gamepad.h>
@@ -24,13 +25,13 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 constexpr int16_t kStickThreshold = 16000;
-constexpr int16_t kTriggerThreshold = 10000;
+constexpr int16_t kPressThreshold = 10000;
+constexpr int16_t kExtremeRestZone = 24000;
 constexpr auto kCaptureDebounce = std::chrono::milliseconds(350);
 
 enum class StepKind {
-    Button,  // button or single-direction hat press
-    Trigger, // button press or axis pull
-    Stick,   // axis motion in the prompted direction
+    Press,
+    Stick,
 };
 
 struct Step {
@@ -43,18 +44,18 @@ struct Step {
 // right GC controls through pad.cpp's "standard" defaults (Z lives on
 // rightshoulder, L/R on the trigger axes).
 constexpr std::array<Step, 16> kSteps = {{
-    {"a", "Press the button for A (accelerate / select)", StepKind::Button},
-    {"b", "Press the button for B (brake / back)", StepKind::Button},
-    {"x", "Press the button for X", StepKind::Button},
-    {"y", "Press the button for Y", StepKind::Button},
-    {"start", "Press the button for pause (Start)", StepKind::Button},
-    {"rightshoulder", "Press the button for rear view (Z)", StepKind::Button},
-    {"lefttrigger", "Press or pull the control for using items (L)", StepKind::Trigger},
-    {"righttrigger", "Press or pull the control for hop / drift (R)", StepKind::Trigger},
-    {"dpup", "Press D-pad Up", StepKind::Button},
-    {"dpdown", "Press D-pad Down", StepKind::Button},
-    {"dpleft", "Press D-pad Left", StepKind::Button},
-    {"dpright", "Press D-pad Right", StepKind::Button},
+    {"a", "Press the button or pedal for A (accelerate / select)", StepKind::Press},
+    {"b", "Press the button or pedal for B (brake / back)", StepKind::Press},
+    {"x", "Press the button for X", StepKind::Press},
+    {"y", "Press the button for Y", StepKind::Press},
+    {"start", "Press the button for pause (Start)", StepKind::Press},
+    {"rightshoulder", "Press the button for rear view (Z)", StepKind::Press},
+    {"lefttrigger", "Press or pull the control for using items (L)", StepKind::Press},
+    {"righttrigger", "Press or pull the control for hop / drift (R)", StepKind::Press},
+    {"dpup", "Press D-pad Up", StepKind::Press},
+    {"dpdown", "Press D-pad Down", StepKind::Press},
+    {"dpleft", "Press D-pad Left", StepKind::Press},
+    {"dpright", "Press D-pad Right", StepKind::Press},
     {"leftx", "Move the Control Stick LEFT", StepKind::Stick},
     {"lefty", "Move the Control Stick UP", StepKind::Stick},
     {"rightx", "Move the C-Stick LEFT (or Skip)", StepKind::Stick},
@@ -75,6 +76,13 @@ struct WizardState {
 };
 
 WizardState g_wizard;
+
+std::vector<std::string> g_userMappedGuids;
+std::vector<std::string> g_builtinMappedGuids;
+
+constexpr const char* kWheelMappingFields =
+    "a:b0,b:b2,x:b1,y:b3,rightshoulder:b7,lefttrigger:b5,righttrigger:b4,start:b9,back:b8,"
+    "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8,leftx:a0,platform:Windows,";
 
 std::filesystem::path MappingDbPath() {
     return RuntimeConfigFile::ApplicationDataDirectory() / "gamecontrollerdb.txt";
@@ -103,7 +111,6 @@ void AdvanceStep(std::optional<std::string> value) {
     g_wizard.bindings[g_wizard.stepIndex] = std::move(value);
     ++g_wizard.stepIndex;
     g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
-    SnapshotAxes();
 }
 
 void StopWizard() {
@@ -135,6 +142,8 @@ void StartWizard(SDL_JoystickID instance) {
     const char* name = SDL_GetJoystickNameForID(instance);
     g_wizard.deviceName = name != nullptr ? name : "Controller";
     g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
+    // Keep the resting positions for the whole wizard. Sampling again after a
+    // press would treat a held control as neutral and could bind its release.
     SnapshotAxes();
 }
 
@@ -186,12 +195,15 @@ void FinishWizard() {
                               << std::endl;
         return;
     }
+    // The SDL remapped event may arrive next frame; discard cached pedal bindings now.
+    wheel_ffb::NotifyControllersChanged();
     if (!PersistMapping(guid, mapping)) {
         g_wizard.status =
             "Failed to save mapping to " + RuntimeConfigFile::PathToUtf8(MappingDbPath());
         RT_LOG(RT_TAG_CONFIG) << "controller wizard: " << g_wizard.status << std::endl;
         return;
     }
+    g_userMappedGuids.push_back(guid);
     RT_LOG(RT_TAG_CONFIG) << "controller wizard: applied mapping " << mapping << std::endl;
     StopWizard();
 }
@@ -200,11 +212,13 @@ struct SetupCandidate {
     SDL_JoystickID id;
     std::string name;
     bool incompleteMapping;
+    bool wheelLayout = false;
 };
 
 // A device needs setup when SDL has no gamepad mapping for it at all, or when
-// the mapping it matched has no analog stick even though the hardware reports
-// axes (SDL's built-in raphnet WUSBMote entry is button-only).
+// the mapping it matched lacks the required stick axes even though the hardware
+// reports them (SDL's built-in raphnet WUSBMote entry is button-only). Wheels only
+// need a steering axis; all of their layouts remain available to customize.
 std::vector<SetupCandidate> CollectCandidates() {
     std::vector<SetupCandidate> candidates;
     int count = 0;
@@ -220,19 +234,24 @@ std::vector<SetupCandidate> CollectCandidates() {
             candidates.push_back({id, name, false});
             continue;
         }
-        SDL_Gamepad* gamepad = SDL_GetGamepadFromID(id);
-        if (gamepad == nullptr) {
-            continue;
-        }
+        const bool isWheel = wheel_ffb::IsWheelInstance(id);
         char* mapping = SDL_GetGamepadMappingForID(id);
         if (mapping == nullptr) {
+            if (isWheel) {
+                candidates.push_back({id, name, true});
+            }
             continue;
         }
         const std::string mappingStr = mapping;
         SDL_free(mapping);
         const bool hasStick = mappingStr.find("leftx:") != std::string::npos &&
-                              mappingStr.find("lefty:") != std::string::npos;
-        SDL_Joystick* joystick = SDL_GetGamepadJoystick(gamepad);
+                              (isWheel || mappingStr.find("lefty:") != std::string::npos);
+        if (isWheel) {
+            candidates.push_back({id, name, !hasStick, hasStick});
+            continue;
+        }
+        SDL_Gamepad* gamepad = SDL_GetGamepadFromID(id);
+        SDL_Joystick* joystick = gamepad != nullptr ? SDL_GetGamepadJoystick(gamepad) : nullptr;
         if (!hasStick && joystick != nullptr && SDL_GetNumJoystickAxes(joystick) >= 2) {
             candidates.push_back({id, name, true});
         }
@@ -275,33 +294,42 @@ void HandleHatMotion(const SDL_JoyHatEvent& event) {
     AdvanceStep(value);
 }
 
+bool AxisBindingConflicts(const std::string& value, const std::string& axis) {
+    if (value[0] == '+' || value[0] == '-') {
+        return BindingUsed(value) || BindingUsed(axis) || BindingUsed(axis + "~");
+    }
+    return BindingUsed(axis) || BindingUsed(axis + "~") || BindingUsed("+" + axis) ||
+           BindingUsed("-" + axis);
+}
+
 void HandleAxisMotion(const SDL_JoyAxisEvent& event) {
     const Step& step = kSteps[g_wizard.stepIndex];
-    if (step.kind == StepKind::Button) {
-        return;
-    }
     if (event.axis >= g_wizard.axisBaseline.size()) {
         return;
     }
-    const int32_t delta =
-        static_cast<int32_t>(event.value) - static_cast<int32_t>(g_wizard.axisBaseline[event.axis]);
-    const int16_t threshold = step.kind == StepKind::Stick ? kStickThreshold : kTriggerThreshold;
+    const int16_t baseline = g_wizard.axisBaseline[event.axis];
+    const int32_t delta = static_cast<int32_t>(event.value) - static_cast<int32_t>(baseline);
+    const int16_t threshold = step.kind == StepKind::Stick ? kStickThreshold : kPressThreshold;
     if (std::abs(delta) < threshold) {
         return;
     }
-    // Stick prompts ask for LEFT/UP, which SDL expects to be negative; triggers
-    // are expected to increase when pulled. A wrong-way delta means the raw
-    // axis is inverted, which the mapping expresses with a '~' suffix.
-    const bool expectNegative = step.kind == StepKind::Stick;
-    const bool inverted = expectNegative ? delta > 0 : delta < 0;
-    std::string value = "a" + std::to_string(event.axis);
-    // Reject reusing an axis already bound (with or without inversion).
-    if (BindingUsed(value) || BindingUsed(value + "~")) {
-        g_wizard.status = "That axis is already bound";
+    const bool restsAtExtreme = std::abs(static_cast<int32_t>(baseline)) > kExtremeRestZone;
+    if (step.kind == StepKind::Stick && restsAtExtreme) {
+        g_wizard.status = "That control rests at an extreme, like a pedal; use the wheel or a stick";
         return;
     }
-    if (inverted) {
-        value += "~";
+    const std::string axis = "a" + std::to_string(event.axis);
+    std::string value;
+    if (step.kind == StepKind::Press && !restsAtExtreme) {
+        value = (delta < 0 ? "-" : "+") + axis;
+    } else if (step.kind == StepKind::Stick ? delta > 0 : delta < 0) {
+        value = axis + "~";
+    } else {
+        value = axis;
+    }
+    if (AxisBindingConflicts(value, axis)) {
+        g_wizard.status = "That axis is already bound";
+        return;
     }
     g_wizard.status.clear();
     AdvanceStep(value);
@@ -321,6 +349,10 @@ void LoadPersistedMappings() {
         if (trimmed.empty() || trimmed[0] == '#') {
             continue;
         }
+        const size_t comma = trimmed.find(',');
+        if (comma != std::string::npos) {
+            g_userMappedGuids.push_back(trimmed.substr(0, comma));
+        }
         if (SDL_AddGamepadMapping(trimmed.c_str()) >= 0) {
             ++added;
         } else {
@@ -334,7 +366,42 @@ void LoadPersistedMappings() {
     }
 }
 
+void ApplyBuiltinWheelMappings() {
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&count);
+    if (ids == nullptr) {
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        if (!wheel_ffb::HasBuiltinLayout(ids[i])) {
+            continue;
+        }
+        const std::string guid = GuidString(ids[i]);
+        if (std::find(g_userMappedGuids.begin(), g_userMappedGuids.end(), guid) !=
+                g_userMappedGuids.end() ||
+            std::find(g_builtinMappedGuids.begin(), g_builtinMappedGuids.end(), guid) !=
+                g_builtinMappedGuids.end()) {
+            continue;
+        }
+        const char* rawName = SDL_GetJoystickNameForID(ids[i]);
+        std::string name = rawName != nullptr ? rawName : "Racing Wheel";
+        std::replace(name.begin(), name.end(), ',', ' ');
+        const std::string mapping = guid + "," + name + "," + kWheelMappingFields;
+        if (SDL_AddGamepadMapping(mapping.c_str()) < 0) {
+            RT_LOG(RT_TAG_CONFIG) << "wheel profile: rejected for " << name << ": " << SDL_GetError()
+                                  << std::endl;
+            continue;
+        }
+        g_builtinMappedGuids.push_back(guid);
+        RT_LOG(RT_TAG_CONFIG) << "wheel profile: applied built-in layout for " << name << std::endl;
+    }
+    SDL_free(ids);
+}
+
 void HandleSdlEvent(const SDL_Event& event) {
+    if (event.type == SDL_EVENT_JOYSTICK_ADDED) {
+        ApplyBuiltinWheelMappings();
+    }
     if (!g_wizard.active) {
         return;
     }
@@ -346,7 +413,10 @@ void HandleSdlEvent(const SDL_Event& event) {
         StopWizard();
         return;
     }
-    if (g_wizard.stepIndex >= kSteps.size() || Clock::now() < g_wizard.acceptAfter) {
+    if (g_wizard.stepIndex >= kSteps.size()) {
+        return;
+    }
+    if (Clock::now() < g_wizard.acceptAfter) {
         return;
     }
     switch (event.type) {
@@ -375,21 +445,29 @@ void DrawSetupList() {
     if (candidates.empty()) {
         return;
     }
-    ImGui::SeparatorText("Unrecognized controllers");
+    ImGui::SeparatorText("Controller setup");
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
     ImGui::TextDisabled(
-        "These devices have no usable gamepad mapping. Set one up by pressing "
-        "each control when asked.");
+        "Configure devices without a usable mapping, or customize a wheel layout "
+        "by pressing each control when asked. Center sticks and steering, and release "
+        "buttons and pedals before starting.");
     ImGui::PopTextWrapPos();
     for (const auto& candidate : candidates) {
         ImGui::PushID(static_cast<int>(candidate.id));
         ImGui::TextUnformatted(candidate.name.c_str());
         ImGui::SameLine();
-        if (ImGui::SmallButton(candidate.incompleteMapping ? "Fix mapping" : "Set up")) {
+        const char* action = candidate.wheelLayout          ? "Customize"
+                             : candidate.incompleteMapping ? "Fix mapping"
+                                                           : "Set up";
+        if (ImGui::SmallButton(action)) {
             StartWizard(candidate.id);
         }
-        if (candidate.incompleteMapping && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("SDL matched a mapping without an analog stick for this device");
+        if (ImGui::IsItemHovered()) {
+            if (candidate.wheelLayout) {
+                ImGui::SetTooltip("This wheel has a layout that you can customize");
+            } else if (candidate.incompleteMapping) {
+                ImGui::SetTooltip("SDL matched a mapping without all required stick axes");
+            }
         }
         ImGui::PopID();
     }
@@ -428,7 +506,6 @@ void Draw() {
                 g_wizard.bindings[g_wizard.stepIndex].reset();
                 g_wizard.status.clear();
                 g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
-                SnapshotAxes();
             }
             ImGui::EndDisabled();
             ImGui::SameLine();
@@ -455,7 +532,6 @@ void Draw() {
                 --g_wizard.stepIndex;
                 g_wizard.bindings[g_wizard.stepIndex].reset();
                 g_wizard.acceptAfter = Clock::now() + kCaptureDebounce;
-                SnapshotAxes();
             }
             ImGui::SameLine();
             if (ImGui::Button("Cancel")) {
