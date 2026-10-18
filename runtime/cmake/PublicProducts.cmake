@@ -226,7 +226,7 @@ function(mkw_configure_product target)
        (MKW_SQLITE_TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR
         MKW_SQLITE_TARGET_TYPE STREQUAL "MODULE_LIBRARY"))
         add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:sqlite3> $<TARGET_FILE_DIR:${target}>)
+            $<TARGET_FILE:sqlite3> $<TARGET_FILE_DIR:${target}> VERBATIM)
     endif()
 
     if(MKW_PLATFORM_WINDOWS)
@@ -260,7 +260,7 @@ function(mkw_configure_product target)
             endif()
             add_custom_command(TARGET ${target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${runtime_dll_path}" $<TARGET_FILE_DIR:${target}>)
+                    "${runtime_dll_path}" $<TARGET_FILE_DIR:${target}> VERBATIM)
         endforeach()
     endif()
 
@@ -269,7 +269,7 @@ function(mkw_configure_product target)
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${MKW_WII_BOOTSTRAP_SOURCE_DIR}")
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap")
+        "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap" VERBATIM)
 
     set(MKW_DSP_COEFFICIENT_ROM "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
     if(NOT EXISTS "${MKW_DSP_COEFFICIENT_ROM}")
@@ -281,7 +281,7 @@ function(mkw_configure_product target)
         message(FATAL_ERROR "Wii DSP coefficient ROM hash mismatch: ${MKW_DSP_COEFFICIENT_ROM_SHA256}")
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin")
+        "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin" VERBATIM)
 
     # Aurora imports this portable recipe database into each user's writable
     # pipeline cache. Keep the upstream filename so its default resourcesPath
@@ -293,7 +293,7 @@ function(mkw_configure_product target)
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${MKW_INITIAL_PIPELINE_CACHE}"
-        "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+        "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db" VERBATIM)
 
     # Non-Windows TLS (runtime/src/hle/net/network_ssl.cpp's mbed TLS path) needs a trusted root
     # CA bundle to verify server certificates against - Windows gets this for free from the OS via
@@ -307,7 +307,7 @@ function(mkw_configure_product target)
             message(FATAL_ERROR "Missing TLS root CA bundle: ${MKW_CA_CERTIFICATE_BUNDLE}")
         endif()
         add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem")
+            "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem" VERBATIM)
     endif()
 endfunction()
 

@@ -437,7 +437,9 @@ if [[ "$cc_bin" == */* ]]; then
     configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
 fi
 if [[ -n "$fuse_ld_override" ]]; then
-    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
+    # CMAKE_EXE_LINKER_FLAGS is one string that CMake pastes into the shell link command.
+    printf -v fuse_ld_quoted '%q' "$fuse_ld_override"
+    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_quoted")
 fi
 if [[ -n "$native_prebuilt_dir" ]]; then
     configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")

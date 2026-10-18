@@ -15,6 +15,7 @@ function(aurora_copy_runtime_dlls target)
     add_custom_command(TARGET ${target} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_RUNTIME_DLLS:${_t}> $<TARGET_FILE_DIR:${target}>
         COMMAND_EXPAND_LISTS
+        VERBATIM
     )
   endforeach ()
 
@@ -30,6 +31,7 @@ function(aurora_copy_runtime_dlls target)
         if (EXISTS "${_dawn_bin_dir}/${_dll}")
           add_custom_command(TARGET ${target} POST_BUILD
               COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dawn_bin_dir}/${_dll}" $<TARGET_FILE_DIR:${target}>
+              VERBATIM
           )
         endif ()
       endforeach ()

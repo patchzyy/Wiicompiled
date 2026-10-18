@@ -11,7 +11,13 @@ workspace="$support_root/BuildWorkspace"
 products="$support_root/Products"
 
 fail() { printf 'WiiCompiled Setup: %s\n' "$*" >&2; exit 1; }
-notice() { /usr/bin/osascript -e "display dialog \"${1//\"/\\\"}\" buttons {\"OK\"} default button \"OK\" with icon caution" >/dev/null; }
+notice() {
+    /usr/bin/osascript - "$1" >/dev/null <<'APPLESCRIPT'
+on run argv
+    display dialog (item 1 of argv) buttons {"OK"} default button "OK" with icon caution
+end run
+APPLESCRIPT
+}
 usage() {
     cat <<'EOF'
 Usage: setup.command --game IMAGE [--retro-dir DIR] [--install-location {user|applications}]
@@ -146,7 +152,7 @@ fi
 "$workspace/Launcher/local-build-macos.command" "${build_args[@]}" --profile "$profile" --cmake "$cmake_bin" --ninja "$ninja_bin" --translator-bin "$translator"
 
 config="$support_root/Config.toml"
-toml_string() { printf '%s' "$1" | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g'; }
+toml_string() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 set_path() {
     local key=$1 value=$2 encoded line temporary
     encoded=$(toml_string "$value"); line="$key = \"$encoded\""; temporary="$config.tmp"
@@ -172,8 +178,13 @@ install_app() {
     local app=$1
     [[ -d "$products/$app" ]] || return 0
     if [[ "$destination" == /Applications ]]; then
-        command="mkdir -p /Applications && rm -rf '/Applications/$app' && ditto '$products/$app' '/Applications/$app'"
-        /usr/bin/osascript -e "do shell script \"$command\" with administrator privileges"
+        /usr/bin/osascript - "$products/$app" "/Applications/$app" <<'APPLESCRIPT'
+on run argv
+    set sourcePath to quoted form of (item 1 of argv)
+    set installedPath to quoted form of (item 2 of argv)
+    do shell script "mkdir -p /Applications && rm -rf " & installedPath & " && /usr/bin/ditto " & sourcePath & " " & installedPath with administrator privileges
+end run
+APPLESCRIPT
     else
         mkdir -p "$destination"; rm -rf "$destination/$app"; /usr/bin/ditto "$products/$app" "$destination/$app"
     fi

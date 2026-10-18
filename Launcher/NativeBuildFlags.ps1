@@ -145,7 +145,8 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
     else { Write-Host "${LogPrefix}: $Description" }
     $quotedArguments = @($Arguments | ForEach-Object {
         if ($_.Contains('"')) { throw "A native build argument contains an unsupported quote: $_" }
-        '"' + $_ + '"'
+        # Backslashes directly before the closing quote would otherwise escape it.
+        '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
     })
     if ($WaitForProcessTree) {
         $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `

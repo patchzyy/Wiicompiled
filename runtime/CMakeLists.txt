@@ -42,6 +42,12 @@ else()
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, or Apple Clang on macOS x86_64/arm64")
 endif()
 
+if(MKW_PLATFORM_WINDOWS)
+    # CMake and Ninja write response files with Windows quoting, but clang tokenizes them with
+    # POSIX rules by default, where a bare apostrophe in a path opens a quoted span.
+    add_link_options(--rsp-quoting=windows)
+endif()
+
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
