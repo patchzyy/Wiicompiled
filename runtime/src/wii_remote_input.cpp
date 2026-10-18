@@ -63,6 +63,8 @@ constexpr uint32_t kClUp = 0x0001, kClLeft = 0x0002, kClZR = 0x0004, kClX = 0x00
                    kClB = 0x0040, kClZL = 0x0080, kClR = 0x0200, kClPlus = 0x0400, kClHome = 0x0800,
                    kClMinus = 0x1000, kClL = 0x2000, kClDown = 0x4000, kClRight = 0x8000;
 
+constexpr Uint16 kNintendoVendor = 0x057e;
+
 // How long a vanished remote keeps its channel alive with neutral input. SDL's
 // in-place reconnect after an extension change takes well under a second; a
 // remote that is really gone shows up as disconnected after this.
@@ -86,6 +88,7 @@ bool g_scanning = false;
 uint64_t g_driverOffSinceMs = 0;
 // When the current scan started (last Wii controller seen).
 uint64_t g_lostAtMs = 0;
+bool g_hidrawWarned = false;
 
 // Instance ids whose accelerometers have been switched on. SDL keeps sensors
 // off until asked and forgets that when the gamepad is closed, so a re-paired
@@ -346,6 +349,40 @@ bool AnyWiiControllerConnected() {
     return false;
 }
 
+// True for an evdev node served by the kernel hid-wiimote driver.
+bool IsKernelWiiNode(SDL_JoystickID id) {
+    const char* path = SDL_GetGamepadPathForID(id);
+    return SDL_GetGamepadVendorForID(id) == kNintendoVendor && path != nullptr &&
+           std::strncmp(path, "/dev/input/", 11) == 0;
+}
+
+// Logs once when the kernel driver serves a Wii controller SDL's driver could have had.
+void WarnIfKernelDriverServing() {
+    if (g_hidrawWarned || !g_wiiDriverEnabled) {
+        return;
+    }
+    const uint64_t now = SDL_GetTicks();
+    static uint64_t s_nextCheckMs = 0;
+    if (now < s_nextCheckMs) {
+        return;
+    }
+    s_nextCheckMs = now + 2000;
+    int count = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&count);
+    if (ids == nullptr) {
+        return;
+    }
+    for (int i = 0; i < count && !g_hidrawWarned; ++i) {
+        const Uint16 product = SDL_GetGamepadProductForID(ids[i]);
+        if ((product == 0x0306 || product == 0x0330) && IsKernelWiiNode(ids[i])) {
+            g_hidrawWarned = true;
+            RT_LOG(RT_TAG_CONFIG) << "A Wii controller is served by the kernel hid-wiimote driver. For full Wii "
+                                  << "Remote support see the Linux udev rule in the README." << std::endl;
+        }
+    }
+    SDL_free(ids);
+}
+
 // Route SDL's input diagnostics (HIDAPI open failures, the Wii driver's
 // extension/status messages) into console.log, minus the periodic chatter.
 // A sub-warning message is written once: SDL repeats the same line on every
@@ -464,6 +501,7 @@ void Poll() {
     for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
         (void)EffectiveKind(port);
     }
+    WarnIfKernelDriverServing();
     if (!g_wiiDriverEnabled) {
         return;
     }
@@ -518,11 +556,13 @@ uint32_t ScanCount() {
     return g_scanCount;
 }
 
-// Maps the gamepad name SDL's Wii driver reports to a Kind.
+// Maps the gamepad name SDL reports to a Kind: "Nintendo Wii Remote",
+// "... with Nunchuk", "... with Classic Controller" and "Nintendo Wii U Pro
+// Controller" from SDL's Wii driver; the Linux kernel's "Nintendo Wii Remote
+// Classic Controller" is read like the Classic Controller.
 Kind KindForName(const char* name) {
-    // Names come from SDL's hidapi Wii driver: "Nintendo Wii Remote",
-    // "Nintendo Wii Remote with Nunchuk", "Nintendo Wii Remote with Classic
-    // Controller" and "Nintendo Wii U Pro Controller".
+    // The kernel's Pro Controller is a plain gamepad with a built-in SDL mapping.
+    if (NameContains(name, "Wii Remote Pro Controller")) return Kind::NotWii;
     if (NameContains(name, "Wii U Pro Controller")) return Kind::WiiUPro;
     if (!NameContains(name, "Wii Remote")) return Kind::NotWii;
     if (NameContains(name, "Nunchuk")) return Kind::RemoteWithNunchuk;
@@ -674,8 +714,12 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         // Home, the L/R clicks as shoulders, the D-pad as buttons 11-14 (never
         // through SDL's gamepad mapping, which expects a hat), ZL/ZR as the
         // trigger axes.
-        const auto cl = [&](int index, uint32_t bit) {
-            if (SDL_GetJoystickButton(joystick, index)) sample.clHold |= bit;
+        // The kernel's evdev node has a regular SDL mapping, so it is read as a gamepad.
+        const bool mapped = IsKernelWiiNode(SDL_GetGamepadID(gamepad));
+        const auto cl = [&](SDL_GamepadButton button, uint32_t bit) {
+            if (mapped ? SDL_GetGamepadButton(gamepad, button) : SDL_GetJoystickButton(joystick, button)) {
+                sample.clHold |= bit;
+            }
         };
         cl(SDL_GAMEPAD_BUTTON_EAST, kClA);
         cl(SDL_GAMEPAD_BUTTON_SOUTH, kClB);

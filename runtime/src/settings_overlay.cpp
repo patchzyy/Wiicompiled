@@ -790,6 +790,12 @@ void DrawControllerSettings() {
         ImGui::EndMenu();
     }
 
+    if (WiiRemoteInput::IsRemoteChannel(selectedGamePort)) {
+        ImGui::TextDisabled("The game reads this controller as a Wii Remote, so the button mapping does not apply.");
+        DrawRumbleSettings();
+        return;
+    }
+
     uint32_t mappingCount = 0;
     PADButtonMapping* mappings = PADGetButtonMappings(static_cast<uint32_t>(g_controllerPort), &mappingCount);
     if (mappings == nullptr || mappingCount != PAD_BUTTON_COUNT) {
