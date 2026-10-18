@@ -86,5 +86,14 @@ int main() {
     if (!SetsOffset("[controller.\"wii_accel_offsets\"]\nx = 0.1\n", "quoted nested header was not matched")) return 1;
     if (!SetsOffset("[controller]\nwii_accel_offsets.y = 2\n", "dotted-key table was not extended")) return 1;
     if (!SetsOffset("controller.wii_accel_offsets.y = 2\n", "root-level dotted table was not extended")) return 1;
+    if (!Require(!RuntimeConfigFile::UpdateSettingText("controller = \"custom\"\n", "controller.wii_accel_offsets",
+                                                       "x", "0.5"),
+                 "a scalar was replaced by a table")) return 1;
+    {
+        const auto document = Update("[video.advanced]\nfoo = 1\n", "video", "show_fps", "true");
+        if (!Require(document && document->at("video").at("show_fps").as_boolean() &&
+                         document->at("video").at("advanced").at("foo").as_integer() == 1,
+                     "key was not added to an implicit table")) return 1;
+    }
     return 0;
 }

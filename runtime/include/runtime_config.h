@@ -534,11 +534,17 @@ inline std::optional<std::string> UpdateSettingText(const std::string& text, std
         auto* table = &root;
         std::istringstream path{std::string(section)};
         for (std::string part; std::getline(path, part, '.');) {
-            auto& child = table->as_table()[part];
-            if (!child.is_table()) {
-                child = toml::ordered_value(toml::ordered_table{});
+            auto& parent = table->as_table();
+            if (!parent.contains(part)) {
+                parent[part] = toml::ordered_value(toml::ordered_table{});
             }
-            table = &child;
+            table = &parent.at(part);
+            if (!table->is_table()) {
+                return std::nullopt;
+            }
+        }
+        if (table->as_table_fmt().fmt == toml::table_format::implicit) {
+            table->as_table_fmt().fmt = toml::table_format::multiline;
         }
         auto& slot = table->as_table()[std::string(key)];
         auto& updated = literal.as_table().at("v");
