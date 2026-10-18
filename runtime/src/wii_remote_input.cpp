@@ -127,6 +127,7 @@ struct AccelCalibration {
 AccelCalibration g_calibration;
 char g_calibrationMessage[160] = {};
 uint32_t g_calibrationMessageChan = 0;
+SDL_JoystickID g_calibrationMessageRemote = 0;
 
 // Last accepted KPAD acc per port, for the remote and for the Nunchuk. Reused on
 // frames that bring no sample or a glitched one, so the game never sees a jump.
@@ -346,8 +347,18 @@ void TraceSample(uint32_t chan, const KpadSample& sample, const float* rawG, boo
     trace.flush();
 }
 
+// Gamepad of the Wii Remote on `chan`, or nullptr.
+SDL_Gamepad* RemoteGamepad(uint32_t chan) {
+    if (chan >= PAD_MAX_CONTROLLERS || !IsRemoteChannel(chan)) {
+        return nullptr;
+    }
+    return SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+}
+
 void SetCalibrationMessage(uint32_t chan, const char* message) {
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
     g_calibrationMessageChan = chan;
+    g_calibrationMessageRemote = gamepad != nullptr ? SDL_GetGamepadID(gamepad) : 0;
     std::snprintf(g_calibrationMessage, sizeof(g_calibrationMessage), "%s", message);
 }
 
@@ -356,14 +367,6 @@ void FinishAccelCalibration(uint32_t chan, const char* message) {
     g_calibration.active = false;
     SetCalibrationMessage(chan, message);
     RT_LOG(RT_TAG_CONFIG) << "Wii Remote accelerometer calibration: " << message << std::endl;
-}
-
-// Gamepad of the Wii Remote on `chan`, or nullptr.
-SDL_Gamepad* RemoteGamepad(uint32_t chan) {
-    if (chan >= PAD_MAX_CONTROLLERS || !IsRemoteChannel(chan)) {
-        return nullptr;
-    }
-    return SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
 }
 
 // One frame of a calibration run: accumulates the uncorrected sample and, once
@@ -846,7 +849,9 @@ void StartAccelCalibration(uint32_t chan) {
 
 // Zeroes the stored correction of the remote on `chan`.
 void ClearAccelCalibration(uint32_t chan) {
-    g_calibration.active = false;
+    if (g_calibration.chan == chan) {
+        g_calibration.active = false;
+    }
     SDL_Gamepad* gamepad = RemoteGamepad(chan);
     if (gamepad == nullptr) {
         SetCalibrationMessage(chan, "No Wii Remote on this port.");
@@ -880,7 +885,12 @@ float AccelCalibrationProgress() {
 
 // Outcome of the last calibration run on `chan` for the overlay, or nullptr.
 const char* AccelCalibrationMessage(uint32_t chan) {
-    return g_calibrationMessage[0] != '\0' && g_calibrationMessageChan == chan ? g_calibrationMessage : nullptr;
+    if (g_calibrationMessage[0] == '\0' || g_calibrationMessageChan != chan) {
+        return nullptr;
+    }
+    SDL_Gamepad* gamepad = RemoteGamepad(chan);
+    const SDL_JoystickID remote = gamepad != nullptr ? SDL_GetGamepadID(gamepad) : 0;
+    return remote == g_calibrationMessageRemote ? g_calibrationMessage : nullptr;
 }
 
 } // namespace WiiRemoteInput
