@@ -602,15 +602,30 @@ void FillGraceSample(uint32_t chan, Kind kind, KpadSample& sample) {
     sample.hasClassic = kind == Kind::RemoteWithClassic;
 }
 
-// SDL's stick axis (-32767..32767, y down) as WPADCLStatus carries it: WPAD
-// normalises every Classic Controller stick, whatever the report's resolution,
-// to a signed 10-bit value, -512..511 with 0 at the centre and +y up (RVL SDK
-// WPAD.h; wut's WPADStatusClassic documents the same range).
+// The patched SDL Wii driver posts Classic Controller sticks as WPAD's own
+// value times 64 (aurora-main/cmake/AuroraSDL3Patches.cmake), so WPADCLStatus
+// is the axis divided back: signed, 0 at the centre, -512..511, +y up.
 int16_t ClassicStickRaw(Sint16 axis, bool invert) {
-    float value = static_cast<float>(axis) / 32767.0f;
-    if (invert) value = -value;
-    value = std::clamp(value, -1.0f, 1.0f);
-    return static_cast<int16_t>(std::clamp(std::lround(value * 512.0f), -512L, 511L));
+    const long value = invert ? -static_cast<long>(axis) : axis;
+    return static_cast<int16_t>(std::clamp(std::lround(value / 64.0), -512L, 511L));
+}
+
+// KPAD's default Classic Controller stick limits; the game uses the cross clamp.
+constexpr float kKpadStickMin = 60.0f;
+constexpr float kKpadStickMax = 308.0f;
+
+// KPAD cross clamp: per-axis dead zone and scale, then the unit circle.
+void ClassicStickFloat(const int16_t raw[2], float out[2]) {
+    for (int i = 0; i < 2; ++i) {
+        const float magnitude = std::fabs(static_cast<float>(raw[i]));
+        const float scaled = std::clamp((magnitude - kKpadStickMin) / (kKpadStickMax - kKpadStickMin), 0.0f, 1.0f);
+        out[i] = raw[i] < 0 ? -scaled : scaled;
+    }
+    const float length = std::sqrt(out[0] * out[0] + out[1] * out[1]);
+    if (length > 1.0f) {
+        out[0] /= length;
+        out[1] /= length;
+    }
 }
 
 // Samples buttons, accelerometers and the extension of the remote on a port.
@@ -696,14 +711,12 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
         const Sint16 ly = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_LEFTY);
         const Sint16 rx = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTX);
         const Sint16 ry = SDL_GetGamepadAxis(gamepad, SDL_GAMEPAD_AXIS_RIGHTY);
-        sample.clLStick[0] = std::clamp(static_cast<float>(lx) / 32767.0f, -1.0f, 1.0f);
-        sample.clLStick[1] = std::clamp(-static_cast<float>(ly) / 32767.0f, -1.0f, 1.0f);
-        sample.clRStick[0] = std::clamp(static_cast<float>(rx) / 32767.0f, -1.0f, 1.0f);
-        sample.clRStick[1] = std::clamp(-static_cast<float>(ry) / 32767.0f, -1.0f, 1.0f);
         sample.clLStickRaw[0] = ClassicStickRaw(lx, false);
         sample.clLStickRaw[1] = ClassicStickRaw(ly, true);
         sample.clRStickRaw[0] = ClassicStickRaw(rx, false);
         sample.clRStickRaw[1] = ClassicStickRaw(ry, true);
+        ClassicStickFloat(sample.clLStickRaw, sample.clLStick);
+        ClassicStickFloat(sample.clRStickRaw, sample.clRStick);
         // Only the full-press click of L/R reaches SDL; report it as a full pull.
         sample.clTriggerL = (sample.clHold & kClL) ? 255 : 0;
         sample.clTriggerR = (sample.clHold & kClR) ? 255 : 0;

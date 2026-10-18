@@ -118,6 +118,44 @@ static void UpdateDeviceIdentity(SDL_HIDAPI_Device *device)
 
     now = SDL_GetTicks();
 ]==])
+
+  # Classic Controller sticks: the stock path stretches each half-range by learned min/max;
+  # this posts WPAD's linear value (raw - first-report centre) * unit, times 64.
+  _aurora_sdl3_replace("${_wii}" "Wii Classic Controller linear sticks (helper)"
+[==[static void HandleGamepadControllerButtonData(SDL_DriverWii_Context *ctx, SDL_Joystick *joystick, const WiiButtonData *data)
+{
+]==]
+[==[/* WiiCompiled: axis = (raw - centre) * unit * 64, y inverted; see AuroraSDL3Patches.cmake */
+static void PostClassicStickLinear(Uint64 timestamp, SDL_Joystick *joystick, StickCalibrationData *calibration, Uint8 axis, Uint16 data, int unit)
+{
+    int value;
+
+    if (!calibration->center) {
+        // Center on first read
+        calibration->center = data;
+        return;
+    }
+    value = ((int)data - (int)calibration->center) * unit * 64;
+    if (axis == SDL_GAMEPAD_AXIS_LEFTY || axis == SDL_GAMEPAD_AXIS_RIGHTY) {
+        value = -value;
+    }
+    SDL_SendJoystickAxis(timestamp, joystick, axis, (Sint16)SDL_clamp(value, SDL_JOYSTICK_AXIS_MIN, SDL_JOYSTICK_AXIS_MAX));
+}
+
+static void HandleGamepadControllerButtonData(SDL_DriverWii_Context *ctx, SDL_Joystick *joystick, const WiiButtonData *data)
+{
+]==])
+  _aurora_sdl3_replace("${_wii}" "Wii Classic Controller linear sticks (axes)"
+[==[    PostStickCalibrated(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[0], SDL_GAMEPAD_AXIS_LEFTX, lx);
+    PostStickCalibrated(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[1], SDL_GAMEPAD_AXIS_LEFTY, ly);
+    PostStickCalibrated(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[2], SDL_GAMEPAD_AXIS_RIGHTX, rx);
+    PostStickCalibrated(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[3], SDL_GAMEPAD_AXIS_RIGHTY, ry);
+]==]
+[==[    PostClassicStickLinear(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[0], SDL_GAMEPAD_AXIS_LEFTX, lx, 16);
+    PostClassicStickLinear(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[1], SDL_GAMEPAD_AXIS_LEFTY, ly, 16);
+    PostClassicStickLinear(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[2], SDL_GAMEPAD_AXIS_RIGHTX, rx, 32);
+    PostClassicStickLinear(ctx->timestamp, joystick, &ctx->m_StickCalibrationData[3], SDL_GAMEPAD_AXIS_RIGHTY, ry, 32);
+]==])
 endfunction()
 
 # Script mode (FetchContent PATCH_COMMAND).
