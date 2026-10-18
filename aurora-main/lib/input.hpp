@@ -20,6 +20,9 @@ struct GameController {
   bool m_gameCubeUseOrdinaryStop = false;
   Sint32 m_index = -1;
   Sint32 m_playerIndex = -1;
+  // Device path and the SDL player index at connect (the adapter port for GameCube adapters).
+  std::string m_path;
+  Sint32 m_slot = -1;
   bool m_hasRumble = false;
   PADDeadZones m_deadZones{
       .emulateTriggers = true,

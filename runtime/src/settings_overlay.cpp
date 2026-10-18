@@ -779,8 +779,15 @@ void DrawControllerSettings() {
     if (ImGui::BeginMenu("Assign connected controller")) {
         for (uint32_t index = 0; index < controllerCount; ++index) {
             const char* name = PADGetNameForControllerIndex(index);
+            std::string label = name != nullptr ? name : "Unknown controller";
+            for (int port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
+                if (PADGetIndexForPort(port) == static_cast<s32>(index)) {
+                    label += " (Port " + std::to_string(port + 1) + ")";
+                    break;
+                }
+            }
             ImGui::PushID(static_cast<int>(index));
-            if (ImGui::MenuItem(name != nullptr ? name : "Unknown controller")) {
+            if (ImGui::MenuItem(label.c_str())) {
                 PADSetPortForIndex(index, selectedGamePort);
                 g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
                 ApplyConfiguredMappings();
