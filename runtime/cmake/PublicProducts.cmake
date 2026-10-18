@@ -80,6 +80,9 @@ target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
 target_compile_definitions(mkw_runtime_common PRIVATE
     SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
+if(MKW_SETUP_VERSION)
+    target_compile_definitions(mkw_runtime_common PRIVATE MKW_SETUP_VERSION="${MKW_SETUP_VERSION}")
+endif()
 target_link_libraries(mkw_runtime_common PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
 target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
