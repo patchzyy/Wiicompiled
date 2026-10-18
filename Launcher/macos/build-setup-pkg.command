@@ -151,6 +151,7 @@ for source in aurora-main projects runtime translator; do
     copy_clean "$workspace/$source" "$resources/workspace/$source"
 done
 mkdir -p "$resources/workspace/Launcher/macos"
+copy_clean "$workspace/Launcher/Directory.Build.props" "$resources/workspace/Launcher/Directory.Build.props"
 copy_clean "$workspace/Launcher/local-build-macos.command" "$resources/workspace/Launcher/local-build-macos.command"
 copy_clean "$workspace/Launcher/macos/extract-disc.command" "$resources/workspace/Launcher/macos/extract-disc.command"
 copy_clean "$workspace/Launcher/macos/publish-app.command" "$resources/workspace/Launcher/macos/publish-app.command"

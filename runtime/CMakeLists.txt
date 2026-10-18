@@ -56,6 +56,8 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$" AND
     message(FATAL_ERROR "MKW_X86_CPU_PROFILE must be v2 or v3 (got '${MKW_X86_CPU_PROFILE}')")
 endif()
 
+set(MKW_SETUP_VERSION "" CACHE STRING "WiiCompiled version recorded in the runtime log")
+
 option(MKW_PLATFORM_TESTS_ONLY "Build host-platform tests without graphics dependencies or game assets" OFF)
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/HostLibraries.cmake")
 if(MKW_PLATFORM_TESTS_ONLY)

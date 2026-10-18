@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using Tomlyn;
 using WiiCompiled.Setup.Common;
 
 namespace WiiCompiled.Setup.Windows;
@@ -51,6 +52,7 @@ internal static class SelfTests
             RuntimeConfiguration.SetRetroRewindRoot, RuntimeConfiguration.RemoveRetroRewindRootIfOwned),
             failures);
         Test("Runtime configuration key matching", TestRuntimeConfigurationKeyMatching, failures);
+        Test("Runtime configuration quoted keys", TestRuntimeConfigurationQuotedKeys, failures);
         Test("Install location validation", TestInstallLocationValidation, failures);
         Test("Command line contract", TestCommandLineContract, failures);
         Test("Portable root discovery", TestPortableRootDiscovery, failures);
@@ -222,6 +224,70 @@ internal static class SelfTests
             File.WriteAllText(config, "[paths]\r\ndvd_root = \"a\\\"#b\"\r\n");
             if (RuntimeConfiguration.GetPath(config, "dvd_root") != "a\"#b")
                 throw new Exception("A '#' inside an escaped quoted value was treated as a comment.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Quoted and bare spellings of a key or table are the same TOML key, so rewriting replaces the
+    /// entry in place, keeps everything else byte-identical, and never touches an unparseable file.
+    /// </summary>
+    private static void TestRuntimeConfigurationQuotedKeys()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkwc-tomlquoted-" + Guid.NewGuid().ToString("N"));
+        var config = Path.Combine(root, RuntimeConfiguration.ConfigFileName);
+        var owned = Path.Combine(root, "Owned Location");
+        var fullOwned = Path.GetFullPath(owned);
+        try
+        {
+            Directory.CreateDirectory(owned);
+            foreach (var header in new[] { "[\"paths\"]", "[ 'paths' ]", "[paths]" })
+            foreach (var key in new[] { "\"dvd_root\"", "'dvd_root'", "\"dvd\\u005Froot\"", "dvd_root" })
+            {
+                File.WriteAllText(config,
+                    $"# top\r\n[video]\r\nwidescreen = true # keep\r\n\r\n{header}\r\n  {key}=\"D:\\\\Old\" # note\r\nother = 1\r\n");
+                RuntimeConfiguration.SetDvdRoot(config, owned);
+                var text = File.ReadAllText(config);
+                var expected = $"# top\r\n[video]\r\nwidescreen = true # keep\r\n\r\n{header}\r\n  {key}=" +
+                               $"\"{fullOwned.Replace("\\", "\\\\")}\" # note\r\nother = 1\r\n";
+                if (text != expected)
+                    throw new Exception($"{header} {key} was not replaced in place:\r\n{text}");
+                if (RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                    throw new Exception($"The replaced {key} could not be read back.");
+            }
+
+            File.WriteAllText(config, "[paths]\r\nother = 1\r\n\r\n# next\r\n[video]\r\nx = 2");
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            var appended = File.ReadAllText(config);
+            if (!appended.StartsWith("[paths]\r\nother = 1\r\ndvd_root = ", StringComparison.Ordinal) ||
+                !appended.EndsWith("\r\n\r\n# next\r\n[video]\r\nx = 2", StringComparison.Ordinal))
+                throw new Exception("A missing key was not appended to its section:\r\n" + appended);
+
+            File.WriteAllText(config, "dvd_root = \"D:\\\\Root\"\r\n[video]\r\nx = 2\r\n");
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            var created = File.ReadAllText(config);
+            if (!created.StartsWith("dvd_root = \"D:\\\\Root\"\r\n[video]\r\nx = 2\r\n\r\n[paths]\r\n", StringComparison.Ordinal) ||
+                RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                throw new Exception("A missing section was not created without touching a same-named root key:\r\n" + created);
+
+            File.Delete(config);
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            if (RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                throw new Exception("A missing config file was not created.");
+
+            const string broken = "[paths]\r\ndvd_root = 1\r\ndvd_root = 2\r\n";
+            File.WriteAllText(config, broken);
+            try
+            {
+                RuntimeConfiguration.SetDvdRoot(config, owned);
+                throw new Exception("An unparseable config was rewritten.");
+            }
+            catch (TomlException) { }
+            if (File.ReadAllText(config) != broken)
+                throw new Exception("An unparseable config was modified.");
         }
         finally
         {

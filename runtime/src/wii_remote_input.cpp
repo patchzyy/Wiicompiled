@@ -111,10 +111,10 @@ std::array<RemoteCalibration, PAD_MAX_CONTROLLERS> g_remoteCalibration{};
 // sample may stray from the first one before the run is declared "moved".
 constexpr int kCalibrationSamples = 90;
 constexpr float kCalibrationMaxDeviationG = 0.15f;
-// |mean| outside this range means the remote was not at rest or the
-// accelerometer is far off its nominal scale; either way the offset is useless.
-constexpr float kCalibrationMinGravityG = 0.8f;
-constexpr float kCalibrationMaxGravityG = 1.2f;
+// A resting remote reads about 1 g and lies within 20 degrees of face up.
+constexpr double kCalibrationMinGravityG = 0.8;
+constexpr double kCalibrationMaxGravityG = 1.2;
+constexpr double kCalibrationMinTiltCosine = 0.9396926;
 
 struct AccelCalibration {
     bool active = false;
@@ -408,7 +408,8 @@ void StepAccelCalibration() {
     std::array<double, 3> mean{};
     for (int i = 0; i < 3; ++i) mean[i] = g_calibration.sum[i] / g_calibration.count;
     const double length = std::sqrt(mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]);
-    if (length < kCalibrationMinGravityG || length > kCalibrationMaxGravityG || mean[1] < 0.5) {
+    if (length < kCalibrationMinGravityG || length > kCalibrationMaxGravityG ||
+        mean[1] / length < kCalibrationMinTiltCosine) {
         FinishAccelCalibration(g_calibration.chan, "Failed: the remote was not resting flat with the buttons up.");
         return;
     }
