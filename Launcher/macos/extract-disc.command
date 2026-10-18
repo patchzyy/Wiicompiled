@@ -51,8 +51,10 @@ dol=$(find "$scratch/extracted" -type f -path '*/sys/main.dol' -print -quit)
 rel=$(find "$scratch/extracted" -type f -path '*/files/rel/StaticR.rel' -print -quit)
 [[ -n "$dol" ]] || fail 'nodtool extraction did not contain sys/main.dol'
 [[ -n "$rel" ]] || fail 'nodtool extraction did not contain files/rel/StaticR.rel'
-[[ $(sha256 "$dol") == "$EXPECTED_DOL_SHA256" ]] || fail 'disc is not the supported clean PAL RMCP01 Mario Kart Wii image'
-[[ $(sha256 "$rel") == "$EXPECTED_REL_SHA256" ]] || fail 'disc has an unexpected StaticR.rel; use a clean PAL RMCP01 image'
+dol_sha=$(sha256 "$dol")
+rel_sha=$(sha256 "$rel")
+[[ $dol_sha == "$EXPECTED_DOL_SHA256" ]] || fail "main.dol does not match the clean PAL RMCP01 image (expected $EXPECTED_DOL_SHA256, got $dol_sha)"
+[[ $rel_sha == "$EXPECTED_REL_SHA256" ]] || fail "StaticR.rel does not match the clean PAL RMCP01 image (expected $EXPECTED_REL_SHA256, got $rel_sha)"
 
 data_root=$(dirname "$(dirname "$dol")")
 [[ -d "$data_root/files" ]] || fail 'nodtool extraction did not contain the Wii files directory'

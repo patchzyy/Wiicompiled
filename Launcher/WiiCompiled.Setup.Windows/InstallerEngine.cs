@@ -501,17 +501,31 @@ internal sealed class InstallerEngine
         var dol = Path.Combine(dataRoot, "sys", "main.dol");
         var rel = Path.Combine(dataRoot, "files", "rel", "StaticR.rel");
         var fst = Path.Combine(dataRoot, "sys", "fst.bin");
-        if (!File.Exists(dol) || !File.Exists(rel) || !File.Exists(fst))
-            throw new InvalidDataException("The disc extraction is missing required Mario Kart Wii files.");
-        var dolHash = InputValidation.Sha256File(dol);
-        var relHash = InputValidation.Sha256File(rel);
-        if (!dolHash.Equals(manifest.ExpectedDolSha256, StringComparison.OrdinalIgnoreCase) ||
-            !relHash.Equals(manifest.ExpectedRelSha256, StringComparison.OrdinalIgnoreCase))
-        {
+        var missing = new[] { dol, rel, fst }.Where(path => !File.Exists(path))
+            .Select(path => Path.GetRelativePath(dataRoot, path)).ToList();
+        if (missing.Count > 0)
             throw new InvalidDataException(
-                "The disc is RMCP01 but does not match the supported clean PAL revision. " +
-                "Patched or otherwise modified game code cannot be installed safely.");
+                "The disc extraction is missing required Mario Kart Wii files: " +
+                string.Join(", ", missing) + ".");
+
+        var mismatches = new List<string>();
+        foreach (var (name, path, expected) in new[]
+                 {
+                     ("main.dol", dol, manifest.ExpectedDolSha256),
+                     ("StaticR.rel", rel, manifest.ExpectedRelSha256)
+                 })
+        {
+            var actual = InputValidation.Sha256File(path);
+            if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                mismatches.Add($"{name} is {new FileInfo(path).Length:N0} bytes with SHA-256 {actual} " +
+                               $"(expected {expected})");
         }
+
+        if (mismatches.Count > 0)
+            throw new InvalidDataException(
+                "The disc is RMCP01 but its game code does not match the supported clean PAL revision: " +
+                string.Join("; ", mismatches) + ". " +
+                "Patched or otherwise modified game code cannot be installed safely.");
     }
 
     private static void ValidateInstallDirectory(string path) =>

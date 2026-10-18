@@ -66,6 +66,7 @@ translator_bin_override=""
 fuse_ld_override=""
 native_prebuilt_dir=""
 sysroot=""
+setup_version=""
 
 usage() {
     cat <<'EOF'
@@ -90,6 +91,8 @@ Usage: local-build.sh --output-dir DIR [options]
                                    skips compiling aurora-main from source entirely
   --sysroot PATH                   Passed to CMake as -DCMAKE_SYSROOT: where the compiler resolves
                                    standard headers/startup files
+  --setup-version VERSION          Version recorded in the runtime log (default: <Version> in
+                                   Launcher/Directory.Build.props when present)
 EOF
 }
 
@@ -114,10 +117,16 @@ while [[ $# -gt 0 ]]; do
         --translator-bin) translator_bin_override=$2; shift 2 ;;
         --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
         --sysroot) sysroot=$2; shift 2 ;;
+        --setup-version) setup_version=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
 done
+
+if [[ -z "$setup_version" && -f "$workspace/Launcher/Directory.Build.props" ]]; then
+    setup_version=$(sed -nE 's/.*<Version>([^<]+)<\/Version>.*/\1/p' "$workspace/Launcher/Directory.Build.props" | head -n 1)
+fi
+[[ "$setup_version" =~ ^[0-9A-Za-z.+-]*$ ]] || fail "--setup-version contains unsupported characters"
 
 [[ -n "$output_dir" ]] || { usage; fail "--output-dir is required"; }
 case "$profile" in
@@ -418,7 +427,8 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
     -DCMAKE_BUILD_TYPE=Release
     -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin"
     -DCMAKE_MAKE_PROGRAM="$ninja_bin"
-    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs")
+    -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
+    -DMKW_SETUP_VERSION="$setup_version")
 # CMAKE_C_COMPILER/CXX_COMPILER stay stable across AppImage runs on their own (they're exactly
 # what's passed via -D above, and AppRun points --cc/--cxx at a symlink it re-targets at the
 # current mount every launch - see build-appimage.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT
@@ -437,7 +447,9 @@ if [[ "$cc_bin" == */* ]]; then
     configure_args+=(-DCMAKE_ASM_COMPILER="$cc_bin")
 fi
 if [[ -n "$fuse_ld_override" ]]; then
-    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_override")
+    # CMAKE_EXE_LINKER_FLAGS is one string that CMake pastes into the shell link command.
+    printf -v fuse_ld_quoted '%q' "$fuse_ld_override"
+    configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_quoted")
 fi
 if [[ -n "$native_prebuilt_dir" ]]; then
     configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")
