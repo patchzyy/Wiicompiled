@@ -36,6 +36,10 @@ function(aurora_sdl3_apply_patches sdl_source_dir)
   if (NOT EXISTS "${_rumble}")
     message(FATAL_ERROR "aurora: SDL3 source tree at ${sdl_source_dir} has no SDL_hidapi_rumble.c")
   endif ()
+  set(_hidapi "${sdl_source_dir}/src/joystick/hidapi/SDL_hidapijoystick.c")
+  if (NOT EXISTS "${_hidapi}")
+    message(FATAL_ERROR "aurora: SDL3 source tree at ${sdl_source_dir} has no SDL_hidapijoystick.c")
+  endif ()
 
   # Backport of SDL 71f4af732 (drop once SDL includes it): rumble writes must not hold dev_lock.
   _aurora_sdl3_replace("${_rumble}" "HIDAPI rumble writes no longer hold the device lock"
@@ -56,6 +60,23 @@ function(aurora_sdl3_apply_patches sdl_source_dir)
 #endif
                 SDL_hid_write(request->device->dev, request->data, request->size);
             }
+]==])
+
+  # Without the lock, closing the handle must wait for in-flight rumble writes.
+  _aurora_sdl3_replace("${_hidapi}" "HIDAPI device close waits for pending rumble"
+[==[    device->driver->FreeDevice(device);
+    device->driver = NULL;
+
+    SDL_LockMutex(device->dev_lock);
+]==]
+[==[    device->driver->FreeDevice(device);
+    device->driver = NULL;
+
+    while (SDL_GetAtomicInt(&device->rumble_pending) > 0) {
+        SDL_Delay(10);
+    }
+
+    SDL_LockMutex(device->dev_lock);
 ]==])
 
   # Wii Remote: rebuild the joystick in place after an extension change.
