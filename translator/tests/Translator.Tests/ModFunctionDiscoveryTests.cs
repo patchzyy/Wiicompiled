@@ -834,6 +834,50 @@ public sealed class ModFunctionDiscoveryTests
         Assert.Equal("module data pointer", starts[moduleBase + 0x50]);
     }
 
+    [Fact]
+    public void IgnoresSkippedConditionalPointerWrite()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // lwz r12,0x220(r4), expected value did not match
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+        WriteU32(code, 0x300, 0x38600002u); // li r3,2
+        WriteU32(code, 0x304, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(code, RelativeCommand(KamekCommandId.CondWritePointer, 0x100, 0x300, 0x12345678u));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220);
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x300);
+    }
+
+    [Fact]
+    public void IgnoresPointerRelocationOverwrittenByLaterWrite()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // Write32 result applied after the relocation
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+        WriteU32(code, 0x2FC, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x300, 0x38600002u); // li r3,2
+        WriteU32(code, 0x304, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(
+            code,
+            PointerRelocation(0x100, 0x300),
+            RelativeCommand(KamekCommandId.Write32, 0x100, 0x81840220u));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220);
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x300);
+    }
+
     [Theory]
     [InlineData(KamekCommandId.Addr16Lo, 2u)]
     [InlineData(KamekCommandId.Addr16Ha, 2u)]
