@@ -350,7 +350,13 @@ void DrawWiiRemoteSetup() {
     }
     ImGui::Indent();
     PushMenuTextWrap();
+#if defined(_WIN32)
     ImGui::TextUnformatted("1. Windows Settings > Bluetooth > Add device.");
+#elif defined(__APPLE__)
+    ImGui::TextUnformatted("1. System Settings > Bluetooth.");
+#else
+    ImGui::TextUnformatted("1. Open your system's Bluetooth settings.");
+#endif
     ImGui::TextUnformatted("2. Press 1+2 (or the red SYNC button) on the remote. Leave the PIN empty.");
     ImGui::TextDisabled("Paired before? Press 1+2 to turn it on. It then appears in the player list.");
     ImGui::PopTextWrapPos();
