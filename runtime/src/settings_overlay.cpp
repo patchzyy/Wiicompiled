@@ -1257,6 +1257,7 @@ void DrawStartupScreen() {
         const float startY = std::max(0.0f, (viewport->Size.y - titleSize.y) * 0.5f);
         ImGui::SetCursorPos(ImVec2(titleX, startY));
         ImGui::TextUnformatted(kTitle);
+        float nextY = startY + titleSize.y + 12.0f;
         if (g_bootShaderNotice && !g_bootShadersReady.load(std::memory_order_relaxed)) {
             ImGui::SetWindowFontScale(0.9f);
             char line[96];
@@ -1265,7 +1266,13 @@ void DrawStartupScreen() {
             const float lineX = std::max(0.0f, (viewport->Size.x - ImGui::CalcTextSize(line).x) * 0.5f);
             ImGui::SetCursorPos(ImVec2(lineX, startY + titleSize.y * 1.8f));
             ImGui::TextUnformatted(line);
+            nextY = ImGui::GetCursorPosY() + 4.0f;
         }
+        constexpr const char* kHint = "Press F10 to open settings";
+        ImGui::SetWindowFontScale(0.8f);
+        const ImVec2 hintSize = ImGui::CalcTextSize(kHint);
+        ImGui::SetCursorPos(ImVec2(std::max(0.0f, (viewport->Size.x - hintSize.x) * 0.5f), nextY));
+        ImGui::TextUnformatted(kHint);
     }
     ImGui::End();
     ImGui::PopStyleVar();
