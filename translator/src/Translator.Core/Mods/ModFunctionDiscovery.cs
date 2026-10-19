@@ -69,8 +69,21 @@ public static class ModFunctionDiscovery
 
         // Kamek modules frequently register callbacks through static tables or lists that are
         // walked indirectly by module startup code. Seed those native translations ahead of time.
+        // The Kamek blob is linked at offset zero, so a word inside it only holds a module address
+        // when a pointer relocation wrote one there; anything else is an instruction or data that
+        // happens to encode one. Images appended past the blob are not described by chunk commands.
+        var pointerRelocationOffsets = chunk.Commands
+            .Where(command => command.AddressIsRelative &&
+                command.Id is KamekCommandId.Addr32 or KamekCommandId.CondWritePointer)
+            .Select(command => command.Address)
+            .ToHashSet();
         for (var offset = 0; offset + 4 <= relocatedModuleImage.Length; offset += 4)
         {
+            if ((uint)offset < chunk.CodeSize && !pointerRelocationOffsets.Contains((uint)offset))
+            {
+                continue;
+            }
+
             var value = BinaryPrimitives.ReadUInt32BigEndian(relocatedModuleImage.AsSpan(offset, 4));
             if (LooksLikeFunctionPointerTarget(value, moduleGuestBase, moduleImageEnd, relocatedModuleImage))
             {
