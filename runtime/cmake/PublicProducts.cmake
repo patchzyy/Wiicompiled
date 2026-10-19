@@ -1,55 +1,43 @@
-﻿# Public WiiCompiled product graph.
+# Public WiiCompiled product graph.
 #
 # The translator owns the translated build graph. Mario Kart's profile-neutral
 # functions are compiled once into mkw_base_shared; only callers whose direct
 # ABI differs between profiles receive small base/RR variants.
 
+# Per-game data the runtime reads but does not own. Kept out of the runtime
+# library so that library stays game-independent (and can be precompiled).
+set(MKW_GAME_DATA_SOURCES "")
 set(DATA_INIT_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init.cpp")
 set(DATA_INIT_BLOB_ASM "${MKW_RUNTIME_SOURCE_DIR}/../generated/data_sections_init_blobs.S")
 if(EXISTS "${DATA_INIT_FILE}")
-    list(APPEND SOURCES "${DATA_INIT_FILE}")
+    list(APPEND MKW_GAME_DATA_SOURCES "${DATA_INIT_FILE}")
 endif()
 # Crash-report symbolization table emitted by generate-data-init. The stub
 # (deliberately outside the globbed src/ tree so it is never picked up twice)
 # keeps link succeeding when the generated table has not been produced yet.
 set(GUEST_SYMBOL_TABLE_FILE "${MKW_RUNTIME_SOURCE_DIR}/../generated/guest_symbol_table.cpp")
 if(EXISTS "${GUEST_SYMBOL_TABLE_FILE}")
-    list(APPEND SOURCES "${GUEST_SYMBOL_TABLE_FILE}")
+    list(APPEND MKW_GAME_DATA_SOURCES "${GUEST_SYMBOL_TABLE_FILE}")
 else()
-    list(APPEND SOURCES "${MKW_RUNTIME_SOURCE_DIR}/cmake/guest_symbol_table_stub.cpp")
+    list(APPEND MKW_GAME_DATA_SOURCES "${MKW_RUNTIME_SOURCE_DIR}/cmake/guest_symbol_table_stub.cpp")
 endif()
 if(EXISTS "${DATA_INIT_BLOB_ASM}")
     enable_language(ASM)
     set_source_files_properties("${DATA_INIT_BLOB_ASM}" PROPERTIES LANGUAGE ASM SKIP_UNITY_BUILD_INCLUSION ON)
-    list(APPEND SOURCES "${DATA_INIT_BLOB_ASM}")
+    list(APPEND MKW_GAME_DATA_SOURCES "${DATA_INIT_BLOB_ASM}")
 endif()
-list(REMOVE_DUPLICATES SOURCES)
+# Runtime glue that depends on generated/ headers (e.g. RuntimeConfig.h).
+file(GLOB MKW_GAME_GLUE_SOURCES CONFIGURE_DEPENDS "${MKW_RUNTIME_SOURCE_DIR}/game/*.cpp")
+list(APPEND MKW_GAME_DATA_SOURCES ${MKW_GAME_GLUE_SOURCES})
 
 if(MKW_PLATFORM_MACOS)
     find_library(MKW_IOKIT_FRAMEWORK IOKit REQUIRED)
     find_library(MKW_COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 endif()
 
-function(mkw_apply_common_compile_options target)
-    target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe)
-endfunction()
-
 function(mkw_apply_translated_compile_options target)
     target_compile_options(${target} PRIVATE
         -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize -w -pipe)
-endfunction()
-
-function(mkw_configure_object_target target)
-    target_include_directories(${target} PRIVATE
-        "${MKW_RUNTIME_SOURCE_DIR}/include"
-        "${MKW_RUNTIME_SOURCE_DIR}/src"
-        # Workspace root, so translator output is spelled "generated/<x>.h"
-        # instead of a ../ chain whose depth depends on the includer.
-        "${MKW_RUNTIME_SOURCE_DIR}/.."
-        "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
-    target_compile_definitions(${target} PRIVATE
-        TARGET_PC)
-    set_target_properties(${target} PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 endfunction()
 
 # Translated shard TUs are the memory-hungry compiles; everything else in the build is
@@ -73,83 +61,64 @@ function(mkw_configure_translated_target target)
     mkw_bound_translated_compiles(${target})
 endfunction()
 
-add_library(mkw_runtime_common OBJECT ${SOURCES})
-mkw_configure_object_target(mkw_runtime_common)
-target_compile_features(mkw_runtime_common PRIVATE cxx_std_20)
-target_compile_definitions(mkw_runtime_common PRIVATE
+mkw_select_runtime_provider()
+if(MKW_RUNTIME_USE_PREBUILT)
+    mkw_import_prebuilt_runtime(mkw_runtime_prebuilt "${MKW_NP_RUNTIME_ARCHIVE_PATH}")
+    # A replacement archive can carry an older mtime than the last link, so relink on fingerprint change.
+    set(MKW_RUNTIME_PREBUILT_STAMP "${CMAKE_BINARY_DIR}/mkw_runtime_prebuilt.stamp")
+    file(CONFIGURE OUTPUT "${MKW_RUNTIME_PREBUILT_STAMP}" CONTENT "${MKW_NP_RUNTIME_FINGERPRINT}\n")
+else()
+    mkw_add_runtime_library(mkw_runtime_common OBJECT ${SOURCES})
+endif()
+
+add_library(mkw_game_data OBJECT ${MKW_GAME_DATA_SOURCES})
+mkw_configure_object_target(mkw_game_data)
+target_compile_features(mkw_game_data PRIVATE cxx_std_20)
+target_compile_definitions(mkw_game_data PRIVATE
     SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
-target_link_libraries(mkw_runtime_common PRIVATE
-    aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
-target_link_libraries(mkw_runtime_common PRIVATE mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
-if(MKW_PLATFORM_WINDOWS)
-    target_link_libraries(mkw_runtime_common PRIVATE shell32 windowsapp)
-elseif(MKW_PLATFORM_LINUX)
-    # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
-    # media monitoring). Empty string on glibc >= 2.34 where dl* is in libc.
-    target_link_libraries(mkw_runtime_common PRIVATE mkw::libco ${CMAKE_DL_LIBS})
+if(MKW_SETUP_VERSION)
+    set_property(SOURCE "${MKW_RUNTIME_SOURCE_DIR}/game/setup_version.cpp" APPEND PROPERTY
+        COMPILE_DEFINITIONS "MKW_SETUP_VERSION=\"${MKW_SETUP_VERSION}\"")
 endif()
-if(MKW_CPPWINRT_INCLUDE_DIR)
-    if(NOT EXISTS "${MKW_CPPWINRT_INCLUDE_DIR}/winrt/base.h")
-        message(FATAL_ERROR
-            "MKW_CPPWINRT_INCLUDE_DIR does not contain winrt/base.h: ${MKW_CPPWINRT_INCLUDE_DIR}")
-    endif()
-    target_include_directories(mkw_runtime_common PRIVATE "${MKW_CPPWINRT_INCLUDE_DIR}")
-endif()
+mkw_runtime_link_dependencies(mkw_game_data PRIVATE)
+set_target_properties(mkw_game_data PROPERTIES UNITY_BUILD OFF)
+mkw_apply_common_compile_options(mkw_game_data)
 
-# Keep runtime unity units small and semantically related. The old generated-TU
-# batch size put all 57 native runtime sources into one memory-heavy compiler job.
-foreach(source IN LISTS SOURCES)
-    get_filename_component(source_name "${source}" NAME_WE)
-    string(REPLACE "\\" "/" source_normalized "${source}")
-    if(source_normalized MATCHES "/hle/gx/")
-        set(runtime_group "gx_bridge")
-    elseif(source_name MATCHES "network|socket|dns|dwc|ios")
-        set(runtime_group "network_ios")
-    elseif(source_name MATCHES "os_|system|memory|fiber|scheduler")
-        set(runtime_group "guest_system")
-    elseif(source_name MATCHES "debug|trace|prof")
-        set(runtime_group "diagnostics")
-    else()
-        string(SHA256 source_hash "${source_name}")
-        string(SUBSTRING "${source_hash}" 0 4 source_hash_prefix)
-        math(EXPR runtime_bucket "0x${source_hash_prefix} % 8")
-        set(runtime_group "runtime_${runtime_bucket}")
-    endif()
-    set_source_files_properties("${source}" PROPERTIES UNITY_GROUP "${runtime_group}")
-endforeach()
-# These translation units implement guest-visible floating-point bit
-# semantics.  Keep them out of the fast-math runtime unity groups and apply
-# the same contraction/rounding policy as translated PPC shards.
-set(MKW_PPC_SEMANTIC_RUNTIME_SOURCES
-    "${MKW_RUNTIME_SOURCE_DIR}/src/ppc_helpers.cpp"
-    "${MKW_RUNTIME_SOURCE_DIR}/src/fpu_helpers.cpp")
-set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
-    SKIP_UNITY_BUILD_INCLUSION ON
-    SKIP_PRECOMPILE_HEADERS ON
-    COMPILE_OPTIONS "${MKW_TRANSLATED_PPC_FP_OPTIONS}")
-set_target_properties(mkw_runtime_common PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)
-target_precompile_headers(mkw_runtime_common PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
-mkw_apply_common_compile_options(mkw_runtime_common)
-
-# Host ISA guard. Windows and Linux x86_64 product targets use x86-64-v3, so
-# this object deliberately keeps the plain baseline ISA and checks the CPU
-# before any AVX2/FMA code can execute. AArch64 has no equivalent optional ISA
-# floor to probe: NEON/FMA are architectural requirements.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+# Host ISA guard deliberately keeps the plain baseline ISA and checks the
+# selected x86 profile before optional instructions can execute. AArch64 has
+# no equivalent optional ISA floor to probe: NEON/FMA are architectural
+# requirements.
+if(MKW_HOST_IS_X86_64)
     add_library(mkw_cpu_baseline OBJECT "${MKW_CPU_BASELINE_SOURCE}")
     target_compile_features(mkw_cpu_baseline PRIVATE cxx_std_17)
     set_target_properties(mkw_cpu_baseline PROPERTIES UNITY_BUILD OFF)
     target_compile_options(mkw_cpu_baseline PRIVATE -w)
+    if(MKW_X86_CPU_PROFILE STREQUAL "v2")
+        target_compile_definitions(mkw_cpu_baseline PRIVATE MKW_X86_CPU_PROFILE_V2=1)
+    endif()
 endif()
 
 if(NOT MKW_BASE_COMMON_SHARDS)
     message(FATAL_ERROR "Translator build graph contains no shared base shards")
 endif()
 
+# Translated code compiles against the guest ABI surface only, so runtime
+# implementation edits do not invalidate its PCH.
+set(MKW_TRANSLATED_PCH "${MKW_RUNTIME_SOURCE_DIR}/include/guest_abi/guest_abi_pch.h")
+if(NOT EXISTS "${MKW_TRANSLATED_PCH}")
+    set(MKW_TRANSLATED_PCH "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
+endif()
+
 add_library(mkw_base_shared STATIC ${MKW_BASE_COMMON_SHARDS})
 mkw_configure_translated_target(mkw_base_shared)
-target_precompile_headers(mkw_base_shared PRIVATE "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
+target_precompile_headers(mkw_base_shared PRIVATE "${MKW_TRANSLATED_PCH}")
+
+# Registration and indirect-dispatch tables are translator output too; they
+# compile with the translated configuration rather than inside the products.
+add_library(mkw_base_registration OBJECT ${MKW_BASE_REGISTRATION_SOURCES})
+mkw_configure_translated_target(mkw_base_registration)
+target_precompile_headers(mkw_base_registration REUSE_FROM mkw_base_shared)
 
 if(MKW_BASE_PORTABLE_SENSITIVE_SHARDS)
     add_library(mkw_base_sensitive OBJECT ${MKW_BASE_PORTABLE_SENSITIVE_SHARDS})
@@ -172,16 +141,31 @@ if(MKW_HAVE_RETRO_REWIND)
             set_source_files_properties("${source}" PROPERTIES LANGUAGE ASM SKIP_PRECOMPILE_HEADERS ON)
         endif()
     endforeach()
+    # mod_data_patches (MKW_RETRO_EXTRA_SOURCES) calls runtime APIs directly; it
+    # keeps the full runtime include path this target already has.
     add_library(mkw_retro_rewind_functions OBJECT ${MKW_RETRO_TRANSLATED_SOURCES})
     mkw_configure_translated_target(mkw_retro_rewind_functions)
     target_precompile_headers(mkw_retro_rewind_functions REUSE_FROM mkw_base_shared)
+
+    add_library(mkw_retro_registration OBJECT ${MKW_RETRO_REGISTRATION_SOURCES})
+    mkw_configure_translated_target(mkw_retro_registration)
+    target_precompile_headers(mkw_retro_registration REUSE_FROM mkw_base_shared)
 endif()
 
 function(mkw_configure_product target)
-    target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_runtime_common>)
+    if(TARGET mkw_runtime_common)
+        target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_runtime_common>)
+    else()
+        # Natives self-register from static constructors, so every archive
+        # member must be kept. Listed before mkw_base_shared so single-pass
+        # linkers resolve the runtime's references to translated functions.
+        target_link_libraries(${target} PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,mkw_runtime_prebuilt>")
+        set_property(TARGET ${target} APPEND PROPERTY LINK_DEPENDS "${MKW_RUNTIME_PREBUILT_STAMP}")
+    endif()
+    target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_game_data>)
     # Startup CPU check. Must stay a separate object library so it keeps the
     # plain baseline ISA while everything around it is built for x86-64-v3.
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+    if(MKW_HOST_IS_X86_64)
         target_sources(${target} PRIVATE $<TARGET_OBJECTS:mkw_cpu_baseline>)
     endif()
     target_include_directories(${target} PRIVATE
@@ -190,14 +174,11 @@ function(mkw_configure_product target)
         # Workspace root, so translator output is spelled "generated/<x>.h"
         # instead of a ../ chain whose depth depends on the includer.
         "${MKW_RUNTIME_SOURCE_DIR}/.."
-        "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
+        "${MKW_AURORA_DIR}/include")
     target_compile_definitions(${target} PRIVATE
         SDL_MAIN_HANDLED _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
     target_compile_features(${target} PRIVATE cxx_std_20)
     mkw_apply_common_compile_options(${target})
-    # The dispatch-table and registration shards compile inside the product target itself and
-    # include the same fat translated headers; bound them by the same pool.
-    mkw_bound_translated_compiles(${target})
     target_link_libraries(${target} PRIVATE
         mkw_platform mkw_base_shared mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
 
@@ -205,7 +186,9 @@ function(mkw_configure_product target)
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
     if(MKW_PLATFORM_MACOS)
         target_link_libraries(${target} PRIVATE
-            "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}")
+            "${MKW_IOKIT_FRAMEWORK}" "${MKW_COREFOUNDATION_FRAMEWORK}" "${MKW_COREAUDIO_FRAMEWORK}")
+        target_link_options(${target} PRIVATE
+            "LINKER:-U,_OBJC_CLASS_$_MTLLogStateDescriptor")
     endif()
     if(EXISTS "${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
         include("${MKW_AURORA_DIR}/cmake/AuroraCopyRuntimeDLLs.cmake")
@@ -218,7 +201,7 @@ function(mkw_configure_product target)
        (MKW_SQLITE_TARGET_TYPE STREQUAL "SHARED_LIBRARY" OR
         MKW_SQLITE_TARGET_TYPE STREQUAL "MODULE_LIBRARY"))
         add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            $<TARGET_FILE:sqlite3> $<TARGET_FILE_DIR:${target}>)
+            $<TARGET_FILE:sqlite3> $<TARGET_FILE_DIR:${target}> VERBATIM)
     endif()
 
     if(MKW_PLATFORM_WINDOWS)
@@ -226,7 +209,7 @@ function(mkw_configure_product target)
             dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp)
 
         set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE TRUE)
-    elseif(MKW_PLATFORM_LINUX)
+    elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
         # mkw_runtime_common is an OBJECT library: WiiCompiled/RetroRewind only pull in its .o
         # files via $<TARGET_OBJECTS:>, which does not propagate mkw_runtime_common's own
         # target_link_libraries (object libraries don't carry usage requirements to a consumer
@@ -252,7 +235,7 @@ function(mkw_configure_product target)
             endif()
             add_custom_command(TARGET ${target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${runtime_dll_path}" $<TARGET_FILE_DIR:${target}>)
+                    "${runtime_dll_path}" $<TARGET_FILE_DIR:${target}> VERBATIM)
         endforeach()
     endif()
 
@@ -261,7 +244,7 @@ function(mkw_configure_product target)
         message(FATAL_ERROR "Missing Wii first-run bootstrap payload: ${MKW_WII_BOOTSTRAP_SOURCE_DIR}")
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap")
+        "${MKW_WII_BOOTSTRAP_SOURCE_DIR}" "$<TARGET_FILE_DIR:${target}>/wii_bootstrap" VERBATIM)
 
     set(MKW_DSP_COEFFICIENT_ROM "${MKW_RUNTIME_SOURCE_DIR}/assets/dsp/dsp_coef.bin")
     if(NOT EXISTS "${MKW_DSP_COEFFICIENT_ROM}")
@@ -273,7 +256,7 @@ function(mkw_configure_product target)
         message(FATAL_ERROR "Wii DSP coefficient ROM hash mismatch: ${MKW_DSP_COEFFICIENT_ROM_SHA256}")
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin")
+        "${MKW_DSP_COEFFICIENT_ROM}" "$<TARGET_FILE_DIR:${target}>/dsp_coef.bin" VERBATIM)
 
     # Aurora imports this portable recipe database into each user's writable
     # pipeline cache. Keep the upstream filename so its default resourcesPath
@@ -285,7 +268,7 @@ function(mkw_configure_product target)
     endif()
     add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${MKW_INITIAL_PIPELINE_CACHE}"
-        "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db")
+        "$<TARGET_FILE_DIR:${target}>/initial_pipeline_cache.db" VERBATIM)
 
     # Non-Windows TLS (runtime/src/hle/net/network_ssl.cpp's mbed TLS path) needs a trusted root
     # CA bundle to verify server certificates against - Windows gets this for free from the OS via
@@ -299,12 +282,13 @@ function(mkw_configure_product target)
             message(FATAL_ERROR "Missing TLS root CA bundle: ${MKW_CA_CERTIFICATE_BUNDLE}")
         endif()
         add_custom_command(TARGET ${target} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem")
+            "${MKW_CA_CERTIFICATE_BUNDLE}" "$<TARGET_FILE_DIR:${target}>/cacert.pem" VERBATIM)
     endif()
 endfunction()
 
-add_executable(WiiCompiled "${MKW_BASE_PRODUCT_SOURCE}" ${MKW_BASE_REGISTRATION_SOURCES})
+add_executable(WiiCompiled "${MKW_BASE_PRODUCT_SOURCE}")
 mkw_configure_product(WiiCompiled)
+target_sources(WiiCompiled PRIVATE $<TARGET_OBJECTS:mkw_base_registration>)
 target_precompile_headers(WiiCompiled PRIVATE
     "${MKW_RUNTIME_SOURCE_DIR}/include/mkw_pch.h")
 if(TARGET mkw_base_sensitive)
@@ -312,9 +296,10 @@ if(TARGET mkw_base_sensitive)
 endif()
 
 if(MKW_HAVE_RETRO_REWIND)
-    add_executable(RetroRewind "${MKW_RETRO_REWIND_PRODUCT_SOURCE}" ${MKW_RETRO_REGISTRATION_SOURCES})
+    add_executable(RetroRewind "${MKW_RETRO_REWIND_PRODUCT_SOURCE}")
     mkw_configure_product(RetroRewind)
     target_precompile_headers(RetroRewind REUSE_FROM WiiCompiled)
+    target_sources(RetroRewind PRIVATE $<TARGET_OBJECTS:mkw_retro_registration>)
     if(TARGET mkw_retro_sensitive)
         target_sources(RetroRewind PRIVATE $<TARGET_OBJECTS:mkw_retro_sensitive>)
     endif()
@@ -328,23 +313,12 @@ else()
     message(STATUS "RetroRewind target disabled (run translate-mod and emit-build-shards)")
 endif()
 
-# Windows and Linux x86_64 share the x86-64-v3 floor that the CPU baseline
-# object above checks. AArch64 builds are compiled locally for the host that
-# will run them, so both Linux and Apple Silicon use the compiler's native CPU
-# tuning rather than leaving target-specific performance on the table.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
-    set(MKW_BASELINE_ARCH_FLAG -march=x86-64-v3)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
-    set(MKW_BASELINE_ARCH_FLAG -mcpu=native)
-else()
-    set(MKW_BASELINE_ARCH_FLAG "")
-endif()
-
+# mkw_runtime_common gets the same flags from mkw_add_runtime_library.
 set(MKW_ALL_BUILD_TARGETS
-    mkw_runtime_common mkw_base_shared mkw_base_sensitive mkw_retro_sensitive
-    mkw_retro_rewind_functions WiiCompiled RetroRewind)
+    mkw_game_data mkw_base_shared mkw_base_registration mkw_base_sensitive mkw_retro_sensitive
+    mkw_retro_rewind_functions mkw_retro_registration WiiCompiled RetroRewind)
 foreach(target IN LISTS MKW_ALL_BUILD_TARGETS)
-    if(TARGET ${target} AND MKW_BASELINE_ARCH_FLAG)
-        target_compile_options(${target} PRIVATE ${MKW_BASELINE_ARCH_FLAG})
+    if(TARGET ${target})
+        mkw_apply_baseline_arch(${target})
     endif()
 endforeach()

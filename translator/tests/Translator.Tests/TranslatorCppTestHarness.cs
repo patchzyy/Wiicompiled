@@ -15,6 +15,7 @@ internal static class TranslatorCppTestHarness
         Path.Combine("runtime", "src", "fpu_helpers.cpp"),
         Path.Combine("runtime", "src", "memory.cpp"),
         Path.Combine("runtime", "src", "ppc_helpers.cpp"),
+        Path.Combine("runtime", "src", "ppc_quantized.cpp"),
     };
 
     public static string BuildCompileArguments(
@@ -31,6 +32,7 @@ internal static class TranslatorCppTestHarness
         args.Append("-std=c++17 ");
         args.Append("-D_CRT_SECURE_NO_WARNINGS ");
         args.Append("-march=x86-64-v3 ");
+        args.Append("-fno-fast-math -ffp-contract=off ");
         if (!RuntimeHeadersDefineRestrictMacro(repoRoot))
         {
             // Fallback for the window between an emitter change using MKW_RESTRICT and the runtime

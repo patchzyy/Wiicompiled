@@ -1,4 +1,5 @@
 #include "hle_stubs.h"
+#include "input_bindings.h"
 #include "memory.h"
 #include "wii_remote_input.h"
 
@@ -203,6 +204,24 @@ void WriteUnifiedStatus(uint32_t addr, const WiiRemoteInput::KpadSample* sample)
     }
 }
 
+// Neutral sticks and no buttons while an overlay owns input; the remote stays connected.
+bool ReadSample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
+    if (!WiiRemoteInput::ReadKpadSample(chan, sample)) {
+        return false;
+    }
+    if (InputBindings::InputBlocked()) {
+        sample.hold = 0;
+        sample.clHold = 0;
+        sample.stick[0] = sample.stick[1] = 0.0f;
+        sample.clLStick[0] = sample.clLStick[1] = 0.0f;
+        sample.clRStick[0] = sample.clRStick[1] = 0.0f;
+        sample.clLStickRaw[0] = sample.clLStickRaw[1] = 0;
+        sample.clRStickRaw[0] = sample.clRStickRaw[1] = 0;
+        sample.clTriggerL = sample.clTriggerR = 0;
+    }
+    return true;
+}
+
 } // namespace
 
 // KPADRead: fills KPADStatus[0] for `chan` from the Bluetooth remote, returns the entry count.
@@ -212,7 +231,7 @@ extern "C" int32_t KPAD__Read_HLE(uint32_t chan, uint32_t statusPtr, uint32_t co
         return 0;
     }
     WiiRemoteInput::KpadSample sample;
-    const bool have = WiiRemoteInput::ReadKpadSample(chan, sample);
+    const bool have = ReadSample(chan, sample);
     try {
         return WriteStatus(chan, statusPtr, have ? &sample : nullptr);
     } catch (const Memory::AccessViolation&) {
@@ -234,7 +253,7 @@ extern "C" int32_t KPAD__GetUnifiedWpadStatus_HLE(uint32_t chan, uint32_t status
         return 0;
     }
     WiiRemoteInput::KpadSample sample;
-    const bool have = WiiRemoteInput::ReadKpadSample(chan, sample);
+    const bool have = ReadSample(chan, sample);
     try {
         const uint32_t entries = std::min(count, kMaxEntries);
         for (uint32_t i = 0; i < entries; ++i) {

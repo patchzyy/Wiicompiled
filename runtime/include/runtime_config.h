@@ -33,6 +33,7 @@
 
 struct RuntimeUserConfig {
     std::optional<bool> widescreen;
+    std::optional<bool> forceAspect169;
     std::optional<int32_t> windowPosX;
     std::optional<int32_t> windowPosY;
     std::optional<uint32_t> windowWidth;
@@ -41,6 +42,7 @@ struct RuntimeUserConfig {
     std::optional<std::string> graphicsApi;
     std::optional<std::string> displayMode;
     std::optional<uint32_t> frameInterpolationFps;
+    std::optional<bool> metalFxSpatialUpscaling;
     std::optional<bool> skipUnreadyPipelines;
     std::optional<bool> disableCopyFilter;
     std::optional<bool> textureReplacements;
@@ -67,10 +69,11 @@ struct RuntimeUserConfig {
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
     // SDL's Wii driver falls back to a nominal zero point when its read of the
     // remote's calibration block times out (common over Bluetooth), so this is
-    // measured in the overlay with the remote at rest.
-    std::optional<double> wiiAccelOffsetX;
-    std::optional<double> wiiAccelOffsetY;
-    std::optional<double> wiiAccelOffsetZ;
+    // measured in the overlay with the remote at rest. Stored per remote under
+    // [controller.wii_accel_offsets]; the old shared
+    // wii_accel_offset_* keys are only detected, to report that they are ignored.
+    std::map<std::string, std::array<double, 3>> wiiAccelOffsets;
+    bool hasLegacyWiiAccelOffset = false;
     // Debugging aid: append every KPAD sample of the Bluetooth remote (raw and
     // corrected accelerometer, buttons) to wii_accel_trace.csv next to Config.toml.
     std::optional<bool> wiiAccelTrace;
@@ -134,28 +137,6 @@ inline std::string Trim(std::string_view text) {
         --end;
     }
     return std::string(text.substr(begin, end - begin));
-}
-
-inline std::string RemoveComment(std::string_view line) {
-    bool inSingle = false;
-    bool inDouble = false;
-    bool escaped = false;
-    for (size_t i = 0; i < line.size(); ++i) {
-        const char ch = line[i];
-        if (inDouble && ch == '\\' && !escaped) {
-            escaped = true;
-            continue;
-        }
-        if (ch == '\'' && !inDouble) {
-            inSingle = !inSingle;
-        } else if (ch == '"' && !inSingle && !escaped) {
-            inDouble = !inDouble;
-        } else if (ch == '#' && !inSingle && !inDouble) {
-            return std::string(line.substr(0, i));
-        }
-        escaped = false;
-    }
-    return std::string(line);
 }
 
 inline bool IsSupportedResolutionMultiplier(float value) {
@@ -298,6 +279,7 @@ inline void EnsureConfigFile() {
               "# Set paths.dvd_root to an extracted Mario Kart Wii DATA directory.\n\n"
               "[video]\n"
               "widescreen = true\n"
+              "force_16_9 = false\n"
               "resolution_multiplier = 1.0\n"
               "frame_interpolation_fps = 0\n"
               "display_mode = \"windowed\"\n"
@@ -400,6 +382,28 @@ inline void AppendOverlayRoots(RuntimeUserConfig& config, const std::string& roo
 }
 
 // Reads every supported setting out of a parsed Config.toml document.
+// [x, y, z] of finite numbers (integers allowed), else nullopt.
+inline std::optional<std::array<double, 3>> ParseAccelOffset(const toml::value& value) {
+    if (!value.is_array() || value.as_array().size() != 3) {
+        return std::nullopt;
+    }
+    std::array<double, 3> offset{};
+    for (size_t i = 0; i < 3; ++i) {
+        const toml::value& element = value.as_array()[i];
+        if (element.is_floating()) {
+            offset[i] = element.as_floating();
+        } else if (element.is_integer()) {
+            offset[i] = static_cast<double>(element.as_integer());
+        } else {
+            return std::nullopt;
+        }
+        if (!std::isfinite(offset[i])) {
+            return std::nullopt;
+        }
+    }
+    return offset;
+}
+
 inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     RuntimeUserConfig config;
 
@@ -423,9 +427,17 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
                 config.controllerExpressions[key] = value.as_string();
             }
         }
+        if (section->contains("wii_accel_offsets") && section->at("wii_accel_offsets").is_table()) {
+            for (const auto& [key, value] : section->at("wii_accel_offsets").as_table()) {
+                if (const auto offset = ParseAccelOffset(value)) {
+                    config.wiiAccelOffsets[key] = *offset;
+                }
+            }
+        }
     }
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
+    config.forceAspect169 = FindConfigValue<bool>(document, "video", "force_16_9");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
     config.windowPosY = FindConfigInt(document, "video", "window_y");
     if (auto value = FindConfigUint(document, "video", "window_width"); value && *value != 0) {
@@ -456,6 +468,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
             config.frameInterpolationFps = migrated;
         }
     }
+    config.metalFxSpatialUpscaling =
+        FindConfigValue<bool>(document, "video", "metalfx_spatial_upscaling");
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
@@ -481,9 +495,9 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
     config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
-    config.wiiAccelOffsetX = FindConfigValue<double>(document, "controller", "wii_accel_offset_x");
-    config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
-    config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
+    for (const char* key : {"wii_accel_offset_x", "wii_accel_offset_y", "wii_accel_offset_z"}) {
+        config.hasLegacyWiiAccelOffset |= FindConfigValue<double>(document, "controller", key).value_or(0.0) != 0.0;
+    }
     config.wiiAccelTrace = FindConfigValue<bool>(document, "controller", "wii_accel_trace");
     config.networkEnabled = FindConfigValue<bool>(document, "network", "enabled");
     config.discordPresenceEnabled = FindConfigValue<bool>(document, "discord", "enabled");
@@ -540,68 +554,50 @@ inline const std::optional<std::string>& ControllerButton(size_t index) {
     return index < Get().controllerButtons.size() ? Get().controllerButtons[index] : empty;
 }
 
-// Update one TOML value without discarding comments, unrelated settings, or
-// user-specific paths. This is used by the in-game F10 settings bar.
+// Sets section.key (section may be a dotted table path) to a TOML literal, keeping the rest of the
+// document's keys, order and comments. Returns nullopt when the document or value does not parse.
+inline std::optional<std::string> UpdateSettingText(const std::string& text, std::string_view section,
+                                                    std::string_view key, std::string_view value) {
+    try {
+        auto root = toml::parse_str<toml::ordered_type_config>(text);
+        auto literal = toml::parse_str<toml::ordered_type_config>("v = " + std::string(value));
+        auto* table = &root;
+        std::istringstream path{std::string(section)};
+        for (std::string part; std::getline(path, part, '.');) {
+            auto& parent = table->as_table();
+            if (!parent.contains(part)) {
+                parent[part] = toml::ordered_value(toml::ordered_table{});
+            }
+            table = &parent.at(part);
+            if (!table->is_table()) {
+                return std::nullopt;
+            }
+        }
+        if (table->as_table_fmt().fmt == toml::table_format::implicit) {
+            table->as_table_fmt().fmt = toml::table_format::multiline;
+        }
+        auto& slot = table->as_table()[std::string(key)];
+        auto& updated = literal.as_table().at("v");
+        updated.comments() = slot.comments();
+        slot = std::move(updated);
+        return toml::format(root);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+// Update one TOML value without discarding unrelated settings or user-specific paths. This is
+// used by the in-game F10 settings bar. An unparseable file is left untouched.
 inline bool WriteSetting(std::string_view section, std::string_view key, std::string_view value) {
     const auto path = ResolveConfigPath();
-    std::ifstream input(path);
-    std::vector<std::string> lines;
-    std::string line;
-    while (std::getline(input, line)) {
-        if (!line.empty() && line.back() == '\r') {
-            line.pop_back();
-        }
-        lines.push_back(std::move(line));
+    std::ostringstream existing;
+    if (std::ifstream input(path, std::ios::binary); input) {
+        existing << input.rdbuf();
     }
-
-    const std::string normalizedSection = Trim(section);
-    const std::string normalizedKey = Trim(key);
-    size_t sectionStart = lines.size();
-    size_t sectionEnd = lines.size();
-    for (size_t i = 0; i < lines.size(); ++i) {
-        const std::string trimmed = Trim(RemoveComment(lines[i]));
-        if (trimmed.size() >= 2 && trimmed.front() == '[' && trimmed.back() == ']') {
-            const std::string found = Trim(std::string_view(trimmed).substr(1, trimmed.size() - 2));
-            if (sectionStart != lines.size()) {
-                sectionEnd = i;
-                break;
-            }
-            if (found == normalizedSection) {
-                sectionStart = i;
-            }
-        }
-    }
-
-    const std::string replacement = normalizedKey + " = " + std::string(value);
-    if (sectionStart == lines.size()) {
-        if (!lines.empty() && !lines.back().empty()) {
-            lines.emplace_back();
-        }
-        lines.emplace_back("[" + normalizedSection + "]");
-        lines.push_back(replacement);
-    } else {
-        bool replaced = false;
-        for (size_t i = sectionStart + 1; i < sectionEnd; ++i) {
-            const std::string uncommented = Trim(RemoveComment(lines[i]));
-            const size_t equals = uncommented.find('=');
-            if (equals != std::string::npos && Trim(std::string_view(uncommented).substr(0, equals)) == normalizedKey) {
-                lines[i] = replacement;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            // Append after the section's last real line rather than after the blank line that
-            // separates it from the next header: this file is edited by hand and by the host
-            // installer as well, and a key parked below the separator reads as if it belonged to
-            // the next section. The host writer (Launcher/WiiCompiled.Setup/RuntimeConfiguration.cs)
-            // applies exactly this rule.
-            size_t insertAt = sectionEnd;
-            while (insertAt > sectionStart + 1 && Trim(lines[insertAt - 1]).empty()) {
-                --insertAt;
-            }
-            lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertAt), replacement);
-        }
+    const auto updated = UpdateSettingText(existing.str(), section, key, value);
+    if (!updated) {
+        std::cerr << "[runtime-config] Not updating invalid " << PathToUtf8(path) << std::endl;
+        return false;
     }
 
     std::error_code ec;
@@ -613,9 +609,7 @@ inline bool WriteSetting(std::string_view section, std::string_view key, std::st
         std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << std::endl;
         return false;
     }
-    for (const auto& outputLine : lines) {
-        output << outputLine << '\n';
-    }
+    output << *updated;
     return static_cast<bool>(output);
 }
 
@@ -655,6 +649,11 @@ inline bool SetFrameInterpolationFps(uint32_t value) {
     }
     Mutable().frameInterpolationFps = value;
     return WriteSetting("video", "frame_interpolation_fps", std::to_string(value));
+}
+
+inline bool SetMetalFxSpatialUpscaling(bool value) {
+    Mutable().metalFxSpatialUpscaling = value;
+    return WriteSetting("video", "metalfx_spatial_upscaling", value ? "true" : "false");
 }
 
 inline bool SetDisplayMode(std::string value) {
@@ -782,6 +781,15 @@ inline bool WidescreenEnabled(bool fallback = false) {
     return Get().widescreen.value_or(fallback);
 }
 
+inline bool ForceAspect169Enabled(bool fallback = false) {
+    return Get().forceAspect169.value_or(fallback);
+}
+
+inline bool SetForceAspect169(bool value) {
+    Mutable().forceAspect169 = value;
+    return WriteSetting("video", "force_16_9", value ? "true" : "false");
+}
+
 inline bool WindowPosition(int32_t& x, int32_t& y) {
     if (!Get().windowPosX || !Get().windowPosY) {
         return false;
@@ -801,6 +809,10 @@ inline uint32_t WindowHeight(uint32_t fallback) {
 
 inline float ResolutionMultiplier(float fallback = 1.0f) {
     return std::max(0.0f, Get().resolutionMultiplier.value_or(fallback));
+}
+
+inline bool MetalFxSpatialUpscaling(bool fallback = false) {
+    return Get().metalFxSpatialUpscaling.value_or(fallback);
 }
 
 inline float AudioVolume(float fallback = 1.0f) {
@@ -860,12 +872,13 @@ inline bool SetWiiContinuousScanEnabled(bool value) {
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
 }
 
-// Wii Remote accelerometer zero-point correction (g, SDL sensor frame); all zero
-// when the remote has not been calibrated.
-inline std::array<double, 3> WiiAccelOffset() {
-    const RuntimeUserConfig& config = Get();
-    return {config.wiiAccelOffsetX.value_or(0.0), config.wiiAccelOffsetY.value_or(0.0),
-            config.wiiAccelOffsetZ.value_or(0.0)};
+// Stored correction of the remote identified by `remoteKey`, if it has one.
+inline std::optional<std::array<double, 3>> WiiAccelOffsetFor(const std::string& remoteKey) {
+    const auto it = Get().wiiAccelOffsets.find(remoteKey);
+    if (it == Get().wiiAccelOffsets.end()) {
+        return std::nullopt;
+    }
+    return it->second;
 }
 
 // Whether to write the per-frame accelerometer trace (off unless asked for).
@@ -873,26 +886,14 @@ inline bool WiiAccelTraceEnabled(bool fallback = false) {
     return Get().wiiAccelTrace.value_or(fallback);
 }
 
-// True while a non-zero correction is stored ("Clear calibration" writes zeros).
-inline bool HasWiiAccelOffset() {
-    const std::array<double, 3> offset = WiiAccelOffset();
-    return offset[0] != 0.0 || offset[1] != 0.0 || offset[2] != 0.0;
-}
-
-// Persists the accelerometer correction measured by the overlay's calibration.
-inline bool SetWiiAccelOffset(const std::array<double, 3>& offset) {
-    Mutable().wiiAccelOffsetX = offset[0];
-    Mutable().wiiAccelOffsetY = offset[1];
-    Mutable().wiiAccelOffsetZ = offset[2];
-    bool ok = true;
-    const char* keys[3] = {"wii_accel_offset_x", "wii_accel_offset_y", "wii_accel_offset_z"};
-    for (size_t i = 0; i < 3; ++i) {
-        // Always a float literal, so a whole-number offset does not come back as a TOML integer.
-        std::ostringstream formatted;
-        formatted << std::fixed << std::setprecision(4) << offset[i];
-        ok = WriteSetting("controller", keys[i], formatted.str()) && ok;
-    }
-    return ok;
+// Persists the accelerometer correction of one remote. `remoteKey` must be a bare TOML key.
+inline bool SetWiiAccelOffsetFor(const std::string& remoteKey, const std::array<double, 3>& offset) {
+    Mutable().wiiAccelOffsets[remoteKey] = offset;
+    // Always float literals, so a whole-number offset does not come back as a TOML integer.
+    std::ostringstream formatted;
+    formatted << std::fixed << std::setprecision(4) << '[' << offset[0] << ", " << offset[1] << ", " << offset[2]
+              << ']';
+    return WriteSetting("controller.wii_accel_offsets", remoteKey, formatted.str());
 }
 
 // Target frame rate for frame interpolation, or 0 to disable it.

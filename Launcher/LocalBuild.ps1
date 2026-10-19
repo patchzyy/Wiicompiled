@@ -103,7 +103,7 @@ function Write-MkwBuildStep([string]$StepId, [string]$Message) {
 function Reset-LocalDirectory([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetFullPath($Workspace).TrimEnd('\') + '\'
-    $installRoot = [IO.Path]::GetFullPath((Split-Path -Parent $Workspace)).TrimEnd('\') + '\'
+    $installRoot = [IO.Path]::GetFullPath((Split-Path -Parent $realWorkspace)).TrimEnd('\') + '\'
     # The caller-supplied output destinations are legitimate reset targets by
     # definition, wherever the caller placed them: a fresh install's operation
     # scratch lives beside the installation directory rather than inside it.
@@ -150,8 +150,16 @@ if ($Profile -eq 'both' -and [string]::IsNullOrWhiteSpace($BaseOutputDirectory))
 if ($Profile -ne 'both' -and -not [string]::IsNullOrWhiteSpace($BaseOutputDirectory)) {
     throw '-BaseOutputDirectory is valid only with -Profile both.'
 }
+$realWorkspace = $Workspace.TrimEnd('\')
+$Workspace = Get-MkwBuildSafePath $realWorkspace 'workspace' 'runtime\CMakeLists.txt'
+# A selected package inside the install may also name the same Code.pul through the real path.
+# Give it the workspace spelling before comparing it with the staged copy.
+if (-not [string]::IsNullOrWhiteSpace($RetroRewindPackageDirectory) -and
+    $RetroRewindPackageDirectory.StartsWith($realWorkspace + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $RetroRewindPackageDirectory = $Workspace + $RetroRewindPackageDirectory.Substring($realWorkspace.Length)
+}
 $translator = Join-Path $Toolkit 'Translator\Translator.Cli.exe'
-$toolchain = Get-MkwShellSafeToolchainRoot $Toolkit
+$toolchain = Get-MkwBuildSafePath $Toolkit 'toolchain' 'CMake\bin\cmake.exe'
 $cmake = Join-Path $toolchain 'CMake\bin\cmake.exe'
 $ninja = Join-Path $toolchain 'Ninja\ninja.exe'
 $toolchainBin = Join-Path $toolchain 'llvm-mingw\bin'
@@ -415,13 +423,14 @@ try {
             $exe = Join-Path $build "$Target.exe"
             Assert-File $exe 'Locally compiled game executable'
             Copy-Item -LiteralPath $exe -Destination (Join-Path $Destination "$Target.exe")
-            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
+            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','libzlib1.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
                 $file = Join-Path $build $name
                 if (Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $Destination }
             }
             $redist = Join-Path $Toolkit 'Redist'
             if (Test-Path -LiteralPath $redist -PathType Container) {
-                Copy-Item -Path (Join-Path $redist '*.dll') -Destination $Destination -Force
+                Get-ChildItem -LiteralPath $redist -Filter '*.dll' -File |
+                    Copy-Item -Destination $Destination -Force
             }
             foreach ($name in @('config','wii_bootstrap')) {
                 $directory = Join-Path $build $name

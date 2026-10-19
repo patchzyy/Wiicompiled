@@ -242,7 +242,6 @@ void WritePollResults(uint32_t outAddress,
                       const std::vector<NetworkPollContract::CopiedDescriptor>& descriptors);
 
 // network_socket.cpp
-int32_t DeleteWiiSocket(uint32_t fd);
 void CleanupAllWiiSockets();
 sockaddr_in ReadWiiSockAddr(uint32_t addr);
 int32_t HandleIpTopIoctl(uint32_t cmd, uint32_t inBuf, uint32_t inLen, uint32_t outBuf,

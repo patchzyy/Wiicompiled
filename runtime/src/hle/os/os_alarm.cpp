@@ -11,7 +11,7 @@
 #include "ppc_runtime.h"
 #include "runtime_log.h"
 #include "hle/net/network.h"
-#include "generated/RuntimeConfig.h"
+#include "guest_small_data.h"
 #include "os_internal.h"
 
 extern "C" void func_801AADE0(CpuContext* ctx);
@@ -41,7 +41,7 @@ struct AlarmProcessScope {
 // the other call sites have never logged.
 void EnsureSda1Base(CpuContext* cpu, bool logOnce = false)
 {
-    if (cpu->gpr[13] == RuntimeConfig::SDA1_BASE) {
+    if (cpu->gpr[13] == GuestSmallData::kSda1Base) {
         return;
     }
 
@@ -51,7 +51,7 @@ void EnsureSda1Base(CpuContext* cpu, bool logOnce = false)
             RT_LOG(RT_TAG_OS) << "OS_HLE_ProcessAlarms: fixing r13 to SDA1 base" << std::endl;
         });
     }
-    cpu->gpr[13] = RuntimeConfig::SDA1_BASE;
+    cpu->gpr[13] = GuestSmallData::kSda1Base;
 }
 
 void IncrementSchedulerDisableCount()

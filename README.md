@@ -11,6 +11,7 @@
   <a href="#building-from-source"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
   <a href="#retro-rewind"><img alt="Retro Rewind supported" src="https://img.shields.io/badge/Retro%20Rewind-supported-FF375F"></a>
   <a href="https://github.com/TeamWheelWizard/WheelWizard/releases"><img alt="Install with Wheel Wizard" src="https://img.shields.io/badge/install%20with-Wheel%20Wizard-8B5CF6"></a>
+  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/patchzyy/Wiicompiled/total?color=00B8D9&amp;logo=github"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2EA44F?logo=gnu&amp;logoColor=white"></a>
 </p>
 
@@ -52,12 +53,16 @@ Play at several times the console's resolution.
 **Music ducking.** 
 Start playing something else, Spotify, a YouTube video, and
 the game automatically mutes its own music until the other audio stops. Optional, if you'd
-rather it didn't. All audio that shows in your display media controls on your windows pc fall under this.
+rather it didn't. Windows uses system media controls and Linux uses MPRIS players.
+On macOS 14.2 or later, this detects other apps with active audio output and excludes
+the game's own audio. Apps that keep an output stream running silently can keep
+game music muted even when nothing is audible.
 
 **An in-game settings bar.** 
 Press **F10** while the game window has focus:
 - Internal resolution
 - FPS counter
+- MetalFX spatial upscaling on supported macOS GPUs
 - Controller assignment for all four ports
 - Full per-controller button mapping, including the bumpers
 - Dolphin-syntax input expressions and GCPadNew.ini import
@@ -96,8 +101,8 @@ Known limitations of the Wii Remote path:
 - GPU: GTX 1650 / RX 6400 / Arc A310 or higher
 - CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
-- macOS 14 (Sonoma) or later on Apple Silicon
-- On macOS, Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
+- macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
+- On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
 - A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
@@ -118,6 +123,21 @@ image under Settings, turn on **WiiCompiled (beta)**, and hit install from the H
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
+### macOS
+
+Download `WiiCompiled-Setup.pkg` from this repository's Releases page and open it. The universal
+package selects the appropriate bundled tools for the host architecture, supporting both Apple Silicon (`arm64`)
+and Intel (`x86_64`) Macs. It installs **WiiCompiled Setup** in Applications; open that app, choose
+your clean PAL `RMCP01` disc image, and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
+or its parent folder.
+
+Setup verifies and extracts the image locally, then translates and compiles the native app on your
+Mac. On a first run it may ask macOS to install Xcode Command Line Tools; complete Apple's installer,
+then open Setup again. When the build completes, Setup asks for administrator approval once to install
+`WiiCompiled.app` (and, if selected, `RetroRewind.app`) in `/Applications`.
+
+Setup opens Terminal while it works, so the extraction and build progress—and any error that needs
+reporting—remain visible.
 
 > [!CAUTION]
 > Only take builds from this repository's

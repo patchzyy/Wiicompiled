@@ -467,7 +467,8 @@ int32_t HandleIpTopIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const s
         const int ret = sendto(s->native, reinterpret_cast<const char*>(sendData), static_cast<int>(sendSize),
                                static_cast<int>(flags), destPtr, destLen);
         const int hostError = ret < 0 ? NativeLastError() : 0;
-        int32_t result = SocketResult(ret);
+        // Diagnostics may change the native error; use the send result captured above.
+        int32_t result = ret >= 0 ? SocketResult(ret) : SocketErrorResult(hostError);
         if (patchedWrite && ret == static_cast<int>(sendSize)) {
             result = static_cast<int32_t>(in[0].size);
         }

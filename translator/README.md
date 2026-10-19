@@ -18,7 +18,7 @@ entry point, decodes every reachable function, and emits C++ (plus JSON metadata
 what was emitted).
 
 2.  **`generate-data-init --project <manifest>`** - writes the embedded `.data`/`.rodata`/`.sdata`
-section initializer and `RuntimeConfig.h`. 
+section initializer and `RuntimeConfig.h`.
 
 3.  **`emit-build-shards --project <manifest>`** - emits the CMake build graph (`shards.cmake`)
 covering both generated sources and `runtime/src`.
@@ -36,7 +36,7 @@ See `projects/examples/generic-dol.yml` for a minimal manifest driven by `RECOMP
 | Tool | Notes |
 | --- | --- |
 | .NET 8 SDK | Builds and runs the translator. |
-| CMake ≥ 3.16 and Ninja | Configures and drives the native build. |
+| CMake ≥ 3.25 and Ninja | Configures and drives the native build. |
 | Clang / LLVM | The shipped build uses LLVM-MinGW targeting `x86-64-v3`. MSVC is not the tested path. |
 
 Build the CLI once and invoke the assembly directly:
@@ -66,6 +66,7 @@ Relative paths resolve from `workspace_root`, which itself resolves from the man
 -  `generate-data-init --project path`
 -  `emit-base-manifest --project path`
 -  `emit-build-shards --project path`
+-  `emit-native-index --project path --out path [--native-source-dir path]` - writes the serialized runtime native index
 -  `translate-mod --project path [--profile name] ...` - static Kamek/Pulsar module translation
 
 Any command prints its own option list with `--help`.

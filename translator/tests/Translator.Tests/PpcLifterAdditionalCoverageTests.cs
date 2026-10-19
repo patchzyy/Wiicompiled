@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Translator.Core.Disassembly;
 using Translator.Core.Ir;
@@ -21,14 +22,99 @@ public class PpcLifterAdditionalCoverageTests
         var ir = Assert.Single(new PpcLifter().Lift(new[] { branch })).Ir;
 
         Assert.Equal("bltl", branch.Mnemonic);
-        var lr = Assert.IsType<IrAssign>(ir[0]);
-        Assert.Equal("lr", lr.Destination);
-        Assert.Equal(unchecked((int)0x80004398u), lr.Value.Constant);
+        Assert.Equal(2, ir.Count);
+
+        var lrAssign = Assert.IsType<IrAssign>(ir[0]);
+        Assert.Equal("lr", lrAssign.Destination);
+        Assert.Equal(unchecked((int)0x80004398u), lrAssign.Value.Constant);
+        Assert.Equal(unchecked((int)branch.EndAddress), lrAssign.Value.Constant);
 
         var decision = Assert.IsType<IrBranch>(ir[1]);
-        Assert.Equal("blt", decision.Condition);
-        Assert.Equal("0x800043BC", decision.TrueLabel);
+        Assert.Equal("raw", decision.Condition);
+        Assert.Equal("link_branch_80004398_800043BC", decision.TrueLabel);
         Assert.Equal("0x80004398", decision.FalseLabel);
+
+        Assert.Equal($"link_branch_{branch.EndAddress:X8}_{branch.BranchTargets.First():X8}", decision.TrueLabel);
+        Assert.Equal($"0x{branch.EndAddress:X8}", decision.FalseLabel);
+    }
+
+    [Fact]
+    public void ConditionalCallTargetIsNotDecodedAsLocalCode()
+    {
+        const uint entry = 0x80000000;
+        const uint callee = entry + 0x10;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x41820011), // beql callee
+            (entry + 0x04, 0x38600001), // li r3, 1
+            (entry + 0x08, 0x4E800020), // blr
+            (callee + 0x00, 0x38600002), // li r3, 2
+            (callee + 0x04, 0x4E800020)); // blr
+
+        using var disassembler = new PpcDisassembler();
+        var instructions = disassembler.DisassembleFunction(
+            image, entry, maxInstructions: 32, maxBytes: 0x80, knownFunctionEntryPoints: new HashSet<uint> { entry, callee });
+
+        Assert.Equal(new[] { entry, entry + 4, entry + 8 }, instructions.Select(ins => ins.Address));
+    }
+
+    [Fact]
+    public void ConditionalCallToLocalTargetKeepsLocalEdge()
+    {
+        const uint entry = 0x80000000;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x4182000D), // beql local
+            (entry + 0x04, 0x38600001), // li r3, 1
+            (entry + 0x08, 0x4E800020), // blr
+            (entry + 0x0C, 0x38600002), // local: li r3, 2
+            (entry + 0x10, 0x4E800020)); // blr
+
+        using var disassembler = new PpcDisassembler();
+        var instructions = disassembler.DisassembleFunction(
+            image, entry, maxInstructions: 32, maxBytes: 0x80, knownFunctionEntryPoints: new HashSet<uint> { entry });
+
+        Assert.Contains(instructions, ins => ins.Address == entry + 0x0C);
+    }
+
+    [Theory]
+    [InlineData(0x41820009u, "beql", "0x80001008")]
+    [InlineData(0x41810009u, "bgtl", "0x80001008")]
+    [InlineData(0x40820009u, "bnel", "0x80001008")]
+    [InlineData(0x42000009u, "bdnzl", "0x80001008")]
+    [InlineData(0x42400009u, "bdzl", "0x80001008")]
+    public void LinkedConditionalRelativeBranchFormsSetLrOnBothPaths(uint word, string mnemonic, string target)
+    {
+        var branch = PpcDecoder.Decode(0x80001000, word);
+        var ir = Assert.Single(new PpcLifter().Lift(new[] { branch })).Ir;
+
+        Assert.Equal(mnemonic, branch.Mnemonic);
+
+        var lrAssign = Assert.Single(ir.OfType<IrAssign>());
+        Assert.Equal("lr", lrAssign.Destination);
+        Assert.Equal(unchecked((int)0x80001004u), lrAssign.Value.Constant);
+        Assert.IsType<IrAssign>(ir[^2]);
+
+        var decision = Assert.IsType<IrBranch>(ir[^1]);
+        Assert.Equal("raw", decision.Condition);
+        Assert.Equal($"link_branch_80001004_{target[2..]}", decision.TrueLabel);
+        Assert.Equal("0x80001004", decision.FalseLabel);
+        Assert.Equal(mnemonic.StartsWith("bd", StringComparison.Ordinal), ir.OfType<IrBinary>().Any(b => b.Destination == "ctr"));
+    }
+
+    [Theory]
+    [InlineData(0x4D820021u)]
+    [InlineData(0x4D820421u)]
+    [InlineData(0x4D030021u)]
+    public void LinkedConditionalRegisterBranchesRouteNotTakenPathThroughLrUpdate(uint word)
+    {
+        var branch = PpcDecoder.Decode(0x80001000, word);
+        var ir = Assert.Single(new PpcLifter().Lift(new[] { branch })).Ir;
+
+        var decision = Assert.IsType<IrBranch>(ir[^1]);
+        Assert.Equal("link_branch_80001004_80001004", decision.FalseLabel);
+        Assert.StartsWith(branch.Mnemonic.Contains("ctr", StringComparison.Ordinal) ? "call_ctr_" : "call_lr_", decision.TrueLabel, StringComparison.Ordinal);
+        Assert.DoesNotContain(ir, ins => ins is IrAssign { Destination: "lr" });
     }
 
     [Fact]
@@ -359,6 +445,7 @@ public class PpcLifterAdditionalCoverageTests
         var bclrl = Instruction((12u << 21) | (8u << 16), "bclrl", new PpcConditionRegisterOperand("cr2", 8));
         var bclrlBranch = Assert.IsType<IrBranch>(Assert.Single(Assert.Single(lifter.Lift(new[] { bclrl })).Ir));
         Assert.Contains("call_lr_80000000_80000004", bclrlBranch.TrueLabel, StringComparison.Ordinal);
+        Assert.Equal("link_branch_80000004_80000004", bclrlBranch.FalseLabel);
         Assert.Equal("raw", bclrlBranch.Condition);
         Assert.Contains("GetCRBit(ctx, 2, 0)", bclrlBranch.ConditionRegister, StringComparison.Ordinal);
     }

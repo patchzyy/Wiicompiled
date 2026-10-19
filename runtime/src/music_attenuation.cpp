@@ -4,9 +4,9 @@
 
 #include <array>
 #include <atomic>
-#include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <thread>
@@ -16,6 +16,8 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Media.Control.h>
+#elif defined(__APPLE__)
+#include "external_audio_macos.h"
 #elif defined(__linux__)
 #include <dlfcn.h>
 
@@ -52,6 +54,20 @@ std::array<float, kSoundPlayerCount> g_requestedSoundPlayerVolumes{};
 std::array<float, kSoundPlayerCount> g_lastAppliedSoundPlayerVolumes{};
 std::array<bool, kSoundPlayerCount> g_haveSoundPlayerVolumes{};
 
+uint32_t FloatBits(float value) noexcept {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float BitsFloat(uint32_t bits) noexcept {
+    static_assert(sizeof(float) == sizeof(uint32_t));
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 float ClampSoundPlayerVolume(float volume) noexcept {
     // Match nw4r::snd::SoundPlayer::SetVolume at 0x800A35E0 exactly,
     // including its NaN behavior (unordered compares select the upper bound).
@@ -63,7 +79,7 @@ float ClampSoundPlayerVolume(float volume) noexcept {
 
 bool WriteGuestFloat(uint32_t address, float value) noexcept {
     try {
-        Memory::Write32(address, std::bit_cast<uint32_t>(value));
+        Memory::Write32(address, FloatBits(value));
         return true;
     } catch (const Memory::AccessViolation&) {
         return false;
@@ -75,7 +91,7 @@ bool ReadGuestFloat(uint32_t address, float& value) noexcept {
     if (!Memory::TryRead32(address, bits)) {
         return false;
     }
-    value = std::bit_cast<float>(bits);
+    value = BitsFloat(bits);
     return true;
 }
 
@@ -448,6 +464,19 @@ void MonitorLinuxMprisSessions() noexcept {
 }
 #endif
 
+#if defined(__APPLE__)
+void MonitorMacOSAudio() noexcept {
+    using namespace std::chrono_literals;
+    for (;;) {
+        const auto status = QueryMacOSExternalAudio();
+        g_externalMediaPlaying.store(status.playing, std::memory_order_release);
+        g_mediaControlAvailable.store(status.available, std::memory_order_release);
+        g_mediaControlInitializationComplete.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(250ms);
+    }
+}
+#endif
+
 void StartMonitor() noexcept {
 #if defined(_WIN32)
     // The process owns this monitor for its remaining lifetime. Keeping it
@@ -456,6 +485,8 @@ void StartMonitor() noexcept {
 #elif defined(__linux__)
     // Detached so there is no shutdown ordering to manage against static audio state.
     std::thread(MonitorLinuxMprisSessions).detach();
+#elif defined(__APPLE__)
+    std::thread(MonitorMacOSAudio).detach();
 #else
     g_mediaControlAvailable.store(false, std::memory_order_release);
     g_mediaControlInitializationComplete.store(true, std::memory_order_release);
@@ -558,7 +589,7 @@ void SetSoundPlayerVolume(uint32_t soundPlayer, float requestedVolume) {
     }
     // Preserve the original function's access semantics. An invalid player is
     // a guest bug and must not be converted into a silent successful call.
-    Memory::Write32(soundPlayer + kSoundPlayerVolumeOffset, std::bit_cast<uint32_t>(applied));
+    Memory::Write32(soundPlayer + kSoundPlayerVolumeOffset, FloatBits(applied));
 }
 
 } // namespace MusicAttenuation

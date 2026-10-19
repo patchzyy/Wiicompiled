@@ -2,6 +2,7 @@
 #include "memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include "aurora_events.h"
 #include "hle/gx/gx_dynamic_aspect.h"
 
@@ -14,6 +15,10 @@ extern "C" int g_gxFrameCount;
 namespace {
 
 bool g_widescreenConfigured = false;
+bool g_widescreenSetting = false;
+bool g_forceAspect169 = false;
+std::atomic_bool g_requestedForceAspect169{false};
+bool g_policyDirty = false;
 uint32_t g_lastEggWidth43 = 0;
 uint32_t g_lastEggWidth169 = 0;
 
@@ -167,21 +172,54 @@ void AssertMkwOffscreenScreenBypass() {
 }
 
 void UpdateMkwDynamicAspectSurface(uint32_t surfaceWidth, uint32_t surfaceHeight) {
-    if (!g_widescreenConfigured || surfaceWidth == 0 || surfaceHeight == 0) {
+    const bool requestedForceAspect169 = g_requestedForceAspect169.load(std::memory_order_acquire);
+    if (g_forceAspect169 != requestedForceAspect169) {
+        g_forceAspect169 = requestedForceAspect169;
+        g_widescreenConfigured = g_widescreenSetting || g_forceAspect169;
+        g_dynamicAspectRatioEnabled = g_widescreenConfigured;
+        g_policyDirty = true;
+    }
+    if (surfaceWidth == 0 || surfaceHeight == 0) {
         return;
     }
-    AuroraSetViewportPolicy(AURORA_VIEWPORT_STRETCH);
-    ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
+    if (!g_widescreenConfigured) {
+        if (g_policyDirty) {
+            AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
+            VILockAspectRatio(4, 3);
+            ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
+            g_policyDirty = false;
+        }
+        return;
+    }
+    if (g_policyDirty) {
+        VIUnlockAspectRatio();
+        g_policyDirty = false;
+    }
+    AuroraSetViewportPolicy(g_forceAspect169 ? AURORA_VIEWPORT_16_9 : AURORA_VIEWPORT_STRETCH);
+    ApplyEggScreenRecords(g_forceAspect169 ? 16u : surfaceWidth,
+                          g_forceAspect169 ? 9u : surfaceHeight);
 }
 
-void ConfigureMkwDynamicAspect(bool widescreen, uint32_t surfaceWidth, uint32_t surfaceHeight) {
-    g_widescreenConfigured = widescreen;
-    g_dynamicAspectRatioEnabled = widescreen;
+void SetMkwForceAspect169(bool enabled) {
+    g_requestedForceAspect169.store(enabled, std::memory_order_release);
+}
+
+bool MkwForceAspect169Requested() {
+    return g_requestedForceAspect169.load(std::memory_order_acquire);
+}
+
+void ConfigureMkwDynamicAspect(bool widescreen, bool forceAspect169, uint32_t surfaceWidth, uint32_t surfaceHeight) {
+    g_widescreenSetting = widescreen;
+    g_widescreenConfigured = widescreen || forceAspect169;
+    g_forceAspect169 = forceAspect169;
+    g_requestedForceAspect169.store(forceAspect169, std::memory_order_relaxed);
+    g_dynamicAspectRatioEnabled = g_widescreenConfigured;
     g_lastEggWidth43 = 0;
     g_lastEggWidth169 = 0;
-    if (widescreen) {
+    if (g_widescreenConfigured) {
         VIUnlockAspectRatio();
-        ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
+        ApplyEggScreenRecords(forceAspect169 ? 16u : surfaceWidth,
+                              forceAspect169 ? 9u : surfaceHeight);
         return;
     }
 

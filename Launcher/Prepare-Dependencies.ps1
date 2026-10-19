@@ -21,16 +21,21 @@ $auroraExtern = Join-Path $repoRoot 'aurora-main\extern\CMakeLists.txt'
 $auroraDawn = Join-Path $repoRoot 'aurora-main\cmake\AuroraDawnProvider.cmake'
 $auroraLibUsb = Join-Path $repoRoot 'aurora-main\cmake\AuroraLibUSB.cmake'
 $auroraSdl = Join-Path $repoRoot 'aurora-main\cmake\AuroraSDL3Provider.cmake'
+$auroraVersions = Join-Path $repoRoot 'aurora-main\cmake\AuroraDependencyVersions.cmake'
+$auroraImgui = Join-Path $repoRoot 'aurora-main\cmake\AuroraDearImguiProvider.cmake'
+if (-not (Test-Path -LiteralPath $auroraCMake -PathType Leaf)) {
+    throw 'Aurora sources are missing. Run git submodule update --init --recursive from the repository root first.'
+}
 
 # Name = directory under the destination; FetchContent maps it back through
 # FETCHCONTENT_SOURCE_DIR_<UPPERCASE NAME> (NativeBuildFlags.ps1), so the names are the declared
 # FetchContent names, not the upstream project names.
 $packages = @(
     [pscustomobject]@{
-        Name = 'SDL'; File = 'SDL3-3.4.4.tar.gz'
-        Uris = @('https://github.com/libsdl-org/SDL/releases/download/release-3.4.4/SDL3-3.4.4.tar.gz')
-        Pins = @(@{ File = $auroraCMake; Text = 'set(AURORA_SDL3_VERSION "3.4.4"' },
-                 @{ File = $auroraSdl; Text = 'releases/download/release-${AURORA_SDL3_VERSION}/SDL3-${AURORA_SDL3_VERSION}.tar.gz' })
+        Name = 'SDL'; File = 'SDL3-3.4.10.tar.gz'
+        Uris = @('https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-3.4.10.tar.gz')
+        Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_SDL3_REF "refs/tags/release-3.4.10"' },
+                 @{ File = $auroraSdl; Text = 'URL "https://github.com/libsdl-org/SDL/archive/${AURORA_SDL3_REF}.tar.gz"' })
     },
     [pscustomobject]@{
         Name = 'abseil-cpp'; File = 'abseil-cpp-20240722.0.tar.gz'
@@ -38,15 +43,15 @@ $packages = @(
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz' })
     },
     [pscustomobject]@{
-        Name = 'dawn_prebuilt'; File = 'dawn-v20260603.191052-windows-amd64.tar.gz'
-        Uris = @('https://github.com/theofficialgman/dawn-build/releases/download/v20260603.191052/dawn-windows-amd64.tar.gz')
-        Pins = @(@{ File = $auroraCMake; Text = 'set(AURORA_DAWN_VERSION "v20260603.191052"' },
-                 @{ File = $auroraDawn; Text = 'SHA256=13be9cff8b9b179c42dcd16aeabb6effcc8f0dfdcc14463eda2a5caeda225142' })
+        Name = 'dawn_prebuilt'; File = 'dawn-v20260807.225922-windows-amd64.tar.gz'
+        Uris = @('https://github.com/encounter/dawn/releases/download/v20260807.225922/dawn-windows-amd64.tar.gz')
+        Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_DAWN_VERSION "v20260807.225922"' },
+                 @{ File = $auroraDawn; Text = 'SHA256=42a7a295c87b2e8a36312e2f84a5823aac63325e8e1d271bc7ced6f83bfb075f' })
     },
     [pscustomobject]@{
-        Name = 'fmt'; File = 'fmt-11.1.4.tar.gz'
-        Uris = @('https://github.com/fmtlib/fmt/archive/refs/tags/11.1.4.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/fmtlib/fmt/archive/refs/tags/11.1.4.tar.gz' })
+        Name = 'fmt'; File = 'fmt-12.1.0.tar.gz'
+        Uris = @('https://github.com/fmtlib/fmt/archive/refs/tags/12.1.0.tar.gz')
+        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/fmtlib/fmt/archive/refs/tags/12.1.0.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'freetype'; File = 'freetype-2.14.3.tar.gz'
@@ -58,12 +63,12 @@ $packages = @(
     [pscustomobject]@{
         Name = 'imgui'; File = 'imgui-1.91.9b-docking.tar.gz'
         Uris = @('https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz' })
+        Pins = @(@{ File = $auroraImgui; Text = 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'libusb'; File = 'libusb-1.0.30.tar.bz2'
         Uris = @('https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2')
-        Pins = @(@{ File = $auroraCMake; Text = 'set(AURORA_LIBUSB_VERSION "1.0.30"' },
+        Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_LIBUSB_VERSION "1.0.30"' },
                  @{ File = $auroraLibUsb; Text = 'releases/download/v${AURORA_LIBUSB_VERSION}/libusb-${AURORA_LIBUSB_VERSION}.tar.bz2' })
     },
     [pscustomobject]@{
@@ -77,19 +82,19 @@ $packages = @(
         Pins = @(@{ File = $auroraExtern; Text = 'https://sqlite.org/2026/sqlite-amalgamation-3510300.zip' })
     },
     [pscustomobject]@{
-        Name = 'tracy'; File = 'tracy-a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz'
-        Uris = @('https://github.com/wolfpld/tracy/archive/a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/wolfpld/tracy/archive/a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz' })
+        Name = 'tracy'; File = 'tracy-0.14.1.zip'
+        Uris = @('https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.zip')
+        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.zip' })
     },
     [pscustomobject]@{
-        Name = 'xxhash'; File = 'xxHash-0.8.3.tar.gz'
-        Uris = @('https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz' })
+        Name = 'xxhash'; File = 'xxHash-0.8.4.tar.gz'
+        Uris = @('https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz')
+        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz' })
     },
     [pscustomobject]@{
-        Name = 'zlib'; File = 'zlib-1.3.2.tar.gz'
-        Uris = @('https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz')
-        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz' })
+        Name = 'zlib'; File = 'zlib-ng-2.3.3.tar.gz'
+        Uris = @('https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz')
+        Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'zstd'; File = 'zstd-1.5.7.tar.gz'
@@ -168,8 +173,12 @@ function Expand-Package([string]$Archive, [string]$Target) {
 foreach ($package in $packages) {
     Assert-Pinned $package
     $target = Join-Path $Destination $package.Name
-    if (Test-Path -LiteralPath $target -PathType Container) { continue }
+    # Records which archive a tree came from, so a pin change replaces a stale tree.
+    $stamp = $target + '.source'
+    $current = (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $package.File)
+    if ($current -and (Test-Path -LiteralPath $target -PathType Container)) { continue }
     Expand-Package (Get-Archive $package) $target
+    [IO.File]::WriteAllText($stamp, $package.File)
     Write-Host "Prepared $($package.Name)"
 }
 

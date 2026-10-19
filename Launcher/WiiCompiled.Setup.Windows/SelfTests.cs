@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Security.Cryptography;
+using Tomlyn;
 using WiiCompiled.Setup.Common;
 
 namespace WiiCompiled.Setup.Windows;
@@ -51,6 +52,7 @@ internal static class SelfTests
             RuntimeConfiguration.SetRetroRewindRoot, RuntimeConfiguration.RemoveRetroRewindRootIfOwned),
             failures);
         Test("Runtime configuration key matching", TestRuntimeConfigurationKeyMatching, failures);
+        Test("Runtime configuration quoted keys", TestRuntimeConfigurationQuotedKeys, failures);
         Test("Install location validation", TestInstallLocationValidation, failures);
         Test("Command line contract", TestCommandLineContract, failures);
         Test("Portable root discovery", TestPortableRootDiscovery, failures);
@@ -222,6 +224,70 @@ internal static class SelfTests
             File.WriteAllText(config, "[paths]\r\ndvd_root = \"a\\\"#b\"\r\n");
             if (RuntimeConfiguration.GetPath(config, "dvd_root") != "a\"#b")
                 throw new Exception("A '#' inside an escaped quoted value was treated as a comment.");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Quoted and bare spellings of a key or table are the same TOML key, so rewriting replaces the
+    /// entry in place, keeps everything else byte-identical, and never touches an unparseable file.
+    /// </summary>
+    private static void TestRuntimeConfigurationQuotedKeys()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkwc-tomlquoted-" + Guid.NewGuid().ToString("N"));
+        var config = Path.Combine(root, RuntimeConfiguration.ConfigFileName);
+        var owned = Path.Combine(root, "Owned Location");
+        var fullOwned = Path.GetFullPath(owned);
+        try
+        {
+            Directory.CreateDirectory(owned);
+            foreach (var header in new[] { "[\"paths\"]", "[ 'paths' ]", "[paths]" })
+            foreach (var key in new[] { "\"dvd_root\"", "'dvd_root'", "\"dvd\\u005Froot\"", "dvd_root" })
+            {
+                File.WriteAllText(config,
+                    $"# top\r\n[video]\r\nwidescreen = true # keep\r\n\r\n{header}\r\n  {key}=\"D:\\\\Old\" # note\r\nother = 1\r\n");
+                RuntimeConfiguration.SetDvdRoot(config, owned);
+                var text = File.ReadAllText(config);
+                var expected = $"# top\r\n[video]\r\nwidescreen = true # keep\r\n\r\n{header}\r\n  {key}=" +
+                               $"\"{fullOwned.Replace("\\", "\\\\")}\" # note\r\nother = 1\r\n";
+                if (text != expected)
+                    throw new Exception($"{header} {key} was not replaced in place:\r\n{text}");
+                if (RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                    throw new Exception($"The replaced {key} could not be read back.");
+            }
+
+            File.WriteAllText(config, "[paths]\r\nother = 1\r\n\r\n# next\r\n[video]\r\nx = 2");
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            var appended = File.ReadAllText(config);
+            if (!appended.StartsWith("[paths]\r\nother = 1\r\ndvd_root = ", StringComparison.Ordinal) ||
+                !appended.EndsWith("\r\n\r\n# next\r\n[video]\r\nx = 2", StringComparison.Ordinal))
+                throw new Exception("A missing key was not appended to its section:\r\n" + appended);
+
+            File.WriteAllText(config, "dvd_root = \"D:\\\\Root\"\r\n[video]\r\nx = 2\r\n");
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            var created = File.ReadAllText(config);
+            if (!created.StartsWith("dvd_root = \"D:\\\\Root\"\r\n[video]\r\nx = 2\r\n\r\n[paths]\r\n", StringComparison.Ordinal) ||
+                RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                throw new Exception("A missing section was not created without touching a same-named root key:\r\n" + created);
+
+            File.Delete(config);
+            RuntimeConfiguration.SetDvdRoot(config, owned);
+            if (RuntimeConfiguration.GetResolvedPath(config, "dvd_root") != fullOwned)
+                throw new Exception("A missing config file was not created.");
+
+            const string broken = "[paths]\r\ndvd_root = 1\r\ndvd_root = 2\r\n";
+            File.WriteAllText(config, broken);
+            try
+            {
+                RuntimeConfiguration.SetDvdRoot(config, owned);
+                throw new Exception("An unparseable config was rewritten.");
+            }
+            catch (TomlException) { }
+            if (File.ReadAllText(config) != broken)
+                throw new Exception("An unparseable config was modified.");
         }
         finally
         {
@@ -1073,10 +1139,10 @@ internal static class SelfTests
             if (topologyChangedRuntimeAssets == changedRuntimeAssets)
                 throw new Exception("An empty copied runtime-asset directory was omitted from its identity.");
 
-            // Cache-reuse subsets: translator or runtime/src changes (the translator regex-scans it
-            // for native overrides and effect contracts) invalidate translation but not toolchain,
-            // since CMake/Ninja rebuild exactly the affected objects; a compiler change invalidates
-            // only toolchain; a native_prebuilt provenance rewrite invalidates neither.
+            // Cache-reuse subsets: translator or native registration changes invalidate translation
+            // but not toolchain, since CMake/Ninja rebuild exactly the affected objects; a compiler
+            // change invalidates only toolchain; a native_prebuilt provenance rewrite invalidates
+            // neither. Without a current native index, runtime/src itself decides translation.
             var components = ToolkitFingerprint.ComputeComponents(root);
             if (components.Compile != afterPatch)
                 throw new Exception("ComputeComponents disagrees with the compile identity.");
@@ -1087,15 +1153,36 @@ internal static class SelfTests
                 throw new Exception("A new translator did not change the translation identity.");
             if (afterNewTranslator.NativeToolchain != components.NativeToolchain)
                 throw new Exception("A new translator needlessly changed the native toolchain identity.");
-            File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "src", "main.cpp"),
-                "int main3();");
+            var runtimeMain = Path.Combine(root, "BuildWorkspace", "runtime", "src", "main.cpp");
+            File.WriteAllText(runtimeMain, "int main3();");
+            var afterUnindexedRuntime = ToolkitFingerprint.ComputeComponents(root);
+            if (afterUnindexedRuntime.Translation == afterNewTranslator.Translation)
+                throw new Exception("A runtime source change without a native index did not change the translation identity.");
+
+            File.WriteAllText(runtimeMain, "int main();");
+            if (WriteFakeNativeIndex(root, "\"a\"") !=
+                "50b9779591f4b205751361c8899accd362f96ea5dfd32febed1bedca534c523a")
+                throw new Exception("The native index source digest no longer matches the translator's.");
+            var indexed = ToolkitFingerprint.ComputeComponents(root);
+            File.WriteAllText(runtimeMain, "int main3();");
+            WriteFakeNativeIndex(root, "\"a\"");
             var afterNewRuntime = ToolkitFingerprint.ComputeComponents(root);
-            if (afterNewRuntime.Translation == afterNewTranslator.Translation)
-                throw new Exception("A runtime source change did not change the translation identity.");
-            if (afterNewRuntime.NativeToolchain != afterNewTranslator.NativeToolchain)
+            if (afterNewRuntime.Translation != indexed.Translation)
+                throw new Exception("A runtime source change with unchanged registrations changed the translation identity.");
+            if (afterNewRuntime.NativeToolchain != indexed.NativeToolchain)
                 throw new Exception("A runtime source change needlessly changed the native toolchain identity.");
-            if (afterNewRuntime.Compile == afterNewTranslator.Compile)
+            if (afterNewRuntime.Compile == indexed.Compile)
                 throw new Exception("A runtime source change did not change the compile identity.");
+            File.WriteAllText(runtimeMain, "int main4();");
+            if (ToolkitFingerprint.ComputeComponents(root).Translation == afterNewRuntime.Translation)
+                throw new Exception("A stale native index was trusted for the translation identity.");
+            File.WriteAllText(runtimeMain, "int main3();");
+            WriteFakeNativeIndex(root, "\"a\", \"b\"");
+            afterNewRuntime = ToolkitFingerprint.ComputeComponents(root);
+            if (afterNewRuntime.Translation == indexed.Translation)
+                throw new Exception("A native registration change did not change the translation identity.");
+            if (afterNewRuntime.NativeToolchain != indexed.NativeToolchain)
+                throw new Exception("A native registration change needlessly changed the native toolchain identity.");
             File.WriteAllText(Path.Combine(root, "Toolkit", "llvm-mingw", "bin", "clang-22.exe"),
                 "clang-v2");
             var afterNewCompiler = ToolkitFingerprint.ComputeComponents(root);
@@ -1146,6 +1233,26 @@ internal static class SelfTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    /// <summary>Writes a native index current for the fake runtime/src; returns its source digest.</summary>
+    private static string WriteFakeNativeIndex(string root, string registrations)
+    {
+        var source = Path.Combine(root, "BuildWorkspace", "runtime", "src");
+        var manifest = new System.Text.StringBuilder();
+        foreach (var (relative, path) in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories)
+                     .Where(path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
+                                    path.EndsWith(".h", StringComparison.OrdinalIgnoreCase) ||
+                                    path.EndsWith(".hpp", StringComparison.OrdinalIgnoreCase))
+                     .Select(path => (Path.GetRelativePath(source, path).Replace('\\', '/'), path))
+                     .OrderBy(item => item.Item1, StringComparer.Ordinal))
+            manifest.Append(InputValidation.Sha256File(path)).Append("  ").Append(relative).Append('\n');
+        var digest = Convert.ToHexString(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(manifest.ToString())))
+            .ToLowerInvariant();
+        File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "native-index.json"),
+            "{\n  \"format\": \"wiicompiled-runtime-native-index\",\n  \"sourceDigest\": \"" + digest +
+            "\",\n  \"registrations\": [" + registrations + "]\n}\n");
+        return digest;
     }
 
     private static void CreateFakeToolkit(string root)

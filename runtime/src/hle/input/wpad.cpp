@@ -5,6 +5,9 @@
 
 #include <cstdint>
 
+#include <dolphin/pad.h>
+
+extern "C" bool PAD_HLE_RumbleEnabled();
 void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
 
 namespace {
@@ -90,12 +93,20 @@ extern "C" int32_t WUDGetStatus_HLE()
 }
 PPC_NATIVE_OVERRIDE(801CDB84, WUDGetStatus_HLE, int32_t, (), ());
 
-// WPADGetDataFormat reads the per-channel format set by WPADSetDataFormat. Can't reuse the
-// translated SDK implementation: it dereferences Bluetooth control blocks that HLE'd WPADInit
-// never constructs.
+// WPADGetDataFormat: the format KPAD runs the attached extension in (WPAD_FMT_*_ACC_DPD).
+// WPADClampStick keys off it. Can't reuse the translated SDK implementation: it dereferences
+// Bluetooth control blocks that HLE'd WPADInit never constructs.
 extern "C" int32_t WPADGetDataFormat_HLE(uint32_t chan)
 {
-    return g_state.contract.GetDataFormat(chan);
+    const int32_t status = g_state.contract.GetDataFormat(chan);
+    if (status < 0) {
+        return status;
+    }
+    switch (WiiRemoteInput::EffectiveKind(chan)) {
+    case WiiRemoteInput::Kind::RemoteWithNunchuk: return 5;
+    case WiiRemoteInput::Kind::RemoteWithClassic: return 8;
+    default: return 2;
+    }
 }
 PPC_NATIVE_OVERRIDE(801C0B54, WPADGetDataFormat_HLE, int32_t, (uint32_t chan), (chan));
 
@@ -143,8 +154,8 @@ PPC_NATIVE_OVERRIDE(801C0990, WPADProbe_HLE, int32_t, (uint32_t chan, uint32_t t
 
 extern "C" void WPADControlMotor_HLE(uint32_t chan, uint32_t command)
 {
-    (void)chan;
-    (void)command;
+    const bool on = command != 0 && PAD_HLE_RumbleEnabled();
+    PADControlMotor(chan, on ? PAD_MOTOR_RUMBLE : PAD_MOTOR_STOP_HARD);
 }
 PPC_NATIVE_OVERRIDE(801C0EC4, WPADControlMotor_HLE, void, (uint32_t chan, uint32_t command), (chan, command));
 

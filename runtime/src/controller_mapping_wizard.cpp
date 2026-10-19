@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
+#include <SDL3/SDL_platform.h>
 
 #include <algorithm>
 #include <array>
@@ -146,7 +147,7 @@ std::string BuildMappingString() {
             mapping += std::string(kSteps[i].mappingKey) + ":" + *g_wizard.bindings[i] + ",";
         }
     }
-    mapping += "platform:Windows,";
+    mapping += std::string("platform:") + SDL_GetPlatform() + ",";
     return mapping;
 }
 

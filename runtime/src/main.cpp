@@ -44,9 +44,14 @@
 #include <signal.h>
 #if defined(__x86_64__)
 // Only the x86 POSIX fault path inspects ucontext_t to recover the page-fault
-// write bit. macOS deprecates ucontext and requires _XOPEN_SOURCE just to
-// include the header, while the arm64 handler does not use it at all.
+// write bit. macOS exposes the signal-handler context through sys/ucontext.h;
+// avoid ucontext.h itself because its deprecated user-context APIs require
+// _XOPEN_SOURCE. The arm64 handler does not inspect a host context at all.
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #endif
 #include <unistd.h>
 #endif
@@ -146,6 +151,8 @@ private:
 };
 #endif
 } // namespace
+
+extern const char* const kMkwSetupVersion;
 
 namespace {
 
@@ -373,10 +380,13 @@ void AttachParentConsoleForDiagnostics() {
 void AttachParentConsoleForDiagnostics() {}
 #endif
 
-// The setup writes build-fingerprint.json beside every product executable; its SetupVersion is
-// the only version identity the runtime has (products are compiled locally, so nothing is baked
-// into the binary). Surface it at the top of the transcript so every attached log self-identifies.
+// The macOS and Linux local builds bake the setup version in; the Windows setup instead writes it
+// to build-fingerprint.json beside the executable. Surfaced at the top of the transcript so every
+// attached log self-identifies.
 std::string ReadInstalledSetupVersion() {
+    if (const std::string_view builtIn = kMkwSetupVersion; !builtIn.empty()) {
+        return std::string(builtIn);
+    }
     const auto directory = RuntimeConfigFile::ExecutableDirectory();
     if (!directory) {
         return {};
@@ -620,7 +630,7 @@ std::string FormatHostStackTrace(unsigned framesToSkip) {
         symbol->MaxNameLen = MAX_SYM_NAME;
         if (symbolsReady && SymFromAddr(process, addr, &symbolDisp, symbol)) {
             symbolName = symbol->Name;
-        } else if (auto info = TranslatedFunctionRegistry::FindByHostAddress(static_cast<uintptr_t>(addr))) {
+        } else if (auto info = FindTranslatedFunctionByHostAddress(static_cast<uintptr_t>(addr))) {
             // DbgHelp could not name it; the translated-function registry can.
             translatedFuncName = info->name;
             ppcAddress = info->address;
@@ -1128,7 +1138,11 @@ void PosixMemoryFaultHandler(int sig, siginfo_t* info, void* ucontextVoid) {
     // error code x86 pushes on a page fault records whether it was a write.
     if (ucontextVoid != nullptr) {
         auto* uc = static_cast<ucontext_t*>(ucontextVoid);
+#if defined(__APPLE__)
+        isWrite = uc->uc_mcontext != nullptr && (uc->uc_mcontext->__es.__err & 0x2) != 0;
+#else
         isWrite = (uc->uc_mcontext.gregs[REG_ERR] & 0x2) != 0;
+#endif
     }
 #endif
 
@@ -1354,7 +1368,8 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.logCallback = &RuntimeAuroraLogCallback;
         auroraConfig.logLevel = LOG_DEBUG;
         const bool configWidescreen = RuntimeConfigFile::WidescreenEnabled(true);
-        auroraConfig.windowWidth = configWidescreen ? 854 : 640;
+        const bool forceAspect169 = RuntimeConfigFile::ForceAspect169Enabled();
+        auroraConfig.windowWidth = (configWidescreen || forceAspect169) ? 854 : 640;
         auroraConfig.windowHeight = 480;
         auroraConfig.windowWidth = RuntimeConfigFile::WindowWidth(auroraConfig.windowWidth);
         auroraConfig.windowHeight = RuntimeConfigFile::WindowHeight(auroraConfig.windowHeight);
@@ -1372,7 +1387,8 @@ int RuntimeMain(int argc, char** argv) {
         // No vsync knob: aurora always configures a non-blocking present mode.
         auroraConfig.desiredBackend = BACKEND_AUTO;
         const float resolutionMultiplier = RuntimeConfigFile::ResolutionMultiplier(1.0f);
-        ConfigureMkwDynamicAspect(configWidescreen, auroraConfig.windowWidth, auroraConfig.windowHeight);
+        ConfigureMkwDynamicAspect(configWidescreen, forceAspect169,
+                                  auroraConfig.windowWidth, auroraConfig.windowHeight);
         VISetFrameBufferScale(resolutionMultiplier);
         // One table for both directions. RuntimeConfigFile::IsSupportedGraphicsApi
         // whitelists exactly these config names, so an unrecognised value has
@@ -1439,14 +1455,15 @@ int RuntimeMain(int argc, char** argv) {
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
         RT_LOG(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
-                  << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)
+                  << " force_16_9=" << (forceAspect169 ? "true" : "false")
+                  << " SCGetAspectRatio=" << (configWidescreen || forceAspect169 ? 1 : 0)
                   << " resolutionMultiplier=" << resolutionMultiplier
                   << " window=" << auroraInfo.windowSize.width << "x" << auroraInfo.windowSize.height
                   << " native=" << auroraInfo.windowSize.native_fb_width << "x"
                   << auroraInfo.windowSize.native_fb_height
-                  << " viewportPolicy=" << (g_dynamicAspectRatioEnabled ? "stretch" : "fit")
+                  << " viewportPolicy=" << (forceAspect169 ? "16:9" : (configWidescreen ? "stretch" : "fit"))
                   << " presentAspect="
-                  << (g_dynamicAspectRatioEnabled ? "surface (dynamic EGG canvas)" : "4:3")
+                  << (forceAspect169 ? "16:9" : (configWidescreen ? "surface (dynamic EGG canvas)" : "4:3"))
                   << std::endl;
         g_auroraInitialized.store(true, std::memory_order_release);
 

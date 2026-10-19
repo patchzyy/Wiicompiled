@@ -127,10 +127,10 @@ mkdir -p "$appdir/usr/toolchain"
 cp -a "$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch"/. "$appdir/usr/toolchain/"
 
 # Precompiled aurora + third-party package (see Prepare-NativePrebuilt.sh) so a user's own
-# local-build.sh never has to compile aurora itself (~43% of local build CPU time). Re-harvesting
-# recompiles the whole aurora/Crypto++ closure with the toolchain above, so this is skipped unless
-# --print-fingerprint-only (a fast, build-free check) says the existing package no longer matches
-# the current compiler/flags/aurora/third_party sources.
+# local-build.sh never has to compile aurora itself (~43% of local build CPU time), nor on x86_64
+# the game-independent runtime. Re-harvesting recompiles that closure with the toolchain above, so
+# this is skipped unless --print-fingerprint-only (a fast, build-free check) says the existing
+# package no longer matches the current compiler, flags, source trees or mbed TLS pin.
 native_prebuilt_dir="$workspace/Launcher/artifacts/native-prebuilt-$appimagetool_arch"
 echo "Checking whether the precompiled aurora + third-party package ($appimagetool_arch) is current..."
 current_fingerprint=$(bash "$script_dir/Prepare-NativePrebuilt.sh" --arch "$appimagetool_arch" --print-fingerprint-only)
@@ -148,6 +148,9 @@ fields = {
     "flag_fingerprint": "FlagFingerprint",
     "aurora_fingerprint": "AuroraSourceFingerprint",
     "third_party_fingerprint": "ThirdPartySourceFingerprint",
+    "mbedtls_fingerprint": "MbedTlsFingerprint",
+    # Only printed on x86_64, so a package without the runtime archive is stale there.
+    "runtime_fingerprint": "RuntimeSourceFingerprint",
 }
 print(1 if all(provenance.get(v) == current.get(k) for k, v in fields.items()) else 0)
 PY
@@ -166,6 +169,8 @@ echo "Staging the bundled workspace snapshot..."
 for dir in runtime aurora-main projects; do
     cp -r "$workspace/$dir" "$appdir/workspace/$dir"
 done
+# Ship source bytes, never submodule checkout pointers or embedded Git databases.
+find "$appdir/workspace" -name .git -prune -exec rm -rf {} +
 # Mirrors Build-Installer.ps1's own staging exclusions exactly: aurora-main/extern/CMakeLists.txt
 # is the real FetchContent driver and must ship, but any already-fetched dependency *subdirectory*
 # a developer's local checkout accumulated under extern/ is stale/large build output, not a
@@ -173,7 +178,29 @@ done
 # is a plain developer build directory.
 find "$appdir/workspace/aurora-main/extern" -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
 rm -rf "$appdir/workspace/runtime/build"
-cp "$workspace/Launcher/local-build.sh" "$appdir/workspace/Launcher/local-build.sh"
+cp "$workspace/Launcher/local-build.sh" "$workspace/Launcher/build-cache.sh" "$appdir/workspace/Launcher/"
+
+# The translation identity (build-cache.sh) covers the runtime's native registrations through this
+# index, so it is extracted from exactly the bundled runtime sources.
+echo "Extracting the runtime native index..."
+"$appdir/usr/bin/translator-cli" emit-native-index \
+    --native-source-dir "$appdir/workspace/runtime/src" \
+    --out "$appdir/workspace/runtime/native-index.json"
+[[ -f "$appdir/workspace/runtime/native-index.json" ]] || { echo "build-appimage.sh: the native index was not written" >&2; exit 1; }
+
+# A bundled runtime that fingerprints differently from the shipped archive would make every
+# installation silently compile the runtime from source.
+if [[ "$appimagetool_arch" == x86_64 ]]; then
+    staged_runtime_fingerprint=$("$workspace/Launcher/artifacts/portable-tools/toolchain-$appimagetool_arch/bin/cmake" \
+        -DMKW_RUNTIME_DIR="$appdir/workspace/runtime" -P "$appdir/workspace/runtime/cmake/RuntimeFingerprint.cmake" |
+        sed -n 's/^runtime_fingerprint=//p')
+    packaged_runtime_fingerprint=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("RuntimeSourceFingerprint", ""))' \
+        "$appdir/native-prebuilt/provenance.json")
+    if [[ -z "$staged_runtime_fingerprint" || "$staged_runtime_fingerprint" != "$packaged_runtime_fingerprint" ]]; then
+        echo "build-appimage.sh: the bundled runtime ($staged_runtime_fingerprint) does not match the precompiled runtime archive ($packaged_runtime_fingerprint)" >&2
+        exit 1
+    fi
+fi
 
 # AppRun re-syncs runtime/aurora-main/projects/local-build.sh into the writable cache only when
 # this changes, so it must change whenever any of those bundled paths actually did - a bare commit
@@ -203,12 +230,9 @@ CACHE="${XDG_DATA_HOME:-$HOME/.local/share}/WiiCompiled/workspace"
 mkdir -p "$CACHE"
 if [ ! -f "$CACHE/.bundle-version" ] || \
    [ "$(cat "$HERE/workspace/.bundle-version")" != "$(cat "$CACHE/.bundle-version")" ]; then
-    mkdir -p "$CACHE/Launcher"
-    for dir in runtime aurora-main projects; do
-        rm -rf "$CACHE/$dir"
-        cp -r "$HERE/workspace/$dir" "$CACHE/$dir"
-    done
-    cp "$HERE/workspace/Launcher/local-build.sh" "$CACHE/Launcher/local-build.sh"
+    # Unchanged files keep their timestamps so the incremental build survives the update.
+    source "$HERE/workspace/Launcher/build-cache.sh"
+    mkw_sync_tree "$HERE/workspace" "$CACHE" runtime aurora-main projects Launcher >&2
     cp "$HERE/workspace/.bundle-version" "$CACHE/.bundle-version"
 fi
 # toolchain/ and native-prebuilt/ are NOT copied into the cache (they're large - ~500 MiB /

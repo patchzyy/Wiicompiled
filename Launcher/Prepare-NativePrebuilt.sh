@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the redistributable precompiled aurora + third-party package for native Linux: aurora
-# (~43% of local build CPU time per Prepare-NativePrebuilt.ps1) and vendored Crypto++ are identical
+# (~43% of local build CPU time per Prepare-NativePrebuilt.ps1), Crypto++ and mbed TLS are identical
 # for every user under the pinned toolchain prepare-portable-tools.sh bundles, so this configures
-# runtime/ against that toolchain, builds just that closure, and harvests the archives plus a
-# generated CMake description into an output package - the Linux counterpart to
+# runtime/ against that toolchain, builds just that closure (plus, on x86_64, the game-independent
+# runtime archive), and harvests the archives plus a generated CMake description into an output
+# package - the Linux counterpart to
 # Launcher/Prepare-NativePrebuilt.ps1, consumed by the same platform-agnostic
 # runtime/cmake/NativePrebuilt.cmake either script's package works with unmodified.
 #
@@ -22,11 +23,17 @@ workspace=$(cd "$script_dir/.." && pwd)
 
 arch=""
 output_dir=""
+toolchain_dir=""
+ninja_bin=""
+cmake_bin=""
+llvm_dir=""
+sysroot=""
 stage_dir="$workspace/build/native-prebuilt-stage"
 keep_stage=0
 reuse_stage=0
 parallel=0
 print_fingerprint_only=0
+disconnected=0
 
 usage() {
     cat <<'EOF'
@@ -39,8 +46,7 @@ Usage: Prepare-NativePrebuilt.sh --arch {x86_64|aarch64} [options]
   --reuse-stage           Reuse an existing staging build directory (maintainer iteration aid: a
                           re-harvest does not recompile aurora from scratch)
   --parallel N            Ninja build parallelism (default: nproc)
-  --print-fingerprint-only  Print the four provenance inputs (compiler_sha256, flag_fingerprint,
-                          aurora_fingerprint, third_party_fingerprint) as "key=value" lines and
+  --print-fingerprint-only  Print the provenance inputs as "key=value" lines and
                           exit, without configuring/building/harvesting anything - lets a caller
                           (build-appimage.sh) decide whether an existing package is still current
                           without paying for a full aurora rebuild just to find out.
@@ -56,6 +62,12 @@ while [[ $# -gt 0 ]]; do
         --reuse-stage) reuse_stage=1; shift ;;
         --parallel) parallel=$2; shift 2 ;;
         --print-fingerprint-only) print_fingerprint_only=1; shift ;;
+        --toolchain-dir) toolchain_dir=$2; shift 2 ;;
+        --ninja-bin) ninja_bin=$2; shift 2 ;;
+        --cmake-bin) cmake_bin=$2; shift 2 ;;
+        --llvm-dir) llvm_dir=$2; shift 2 ;;
+        --sysroot) sysroot=$2; shift 2 ;;
+        --disconnected) disconnected=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Prepare-NativePrebuilt.sh: unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -72,14 +84,22 @@ assert_dir() { [[ -d "$1" ]] || fail "$2 is missing: $1"; }
 sha256_of() { sha256sum "$1" | awk '{print $1}'; }
 normalize() { readlink -f "$1"; }
 
+# Environment check: Ensure the `SOURCE_DATE_EPOCH` value is not invalid
+# before trying to build anything (fail-fast)
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]] && ! python3 -c \
+    'import datetime, os; datetime.datetime.fromtimestamp(int(os.environ.get("SOURCE_DATE_EPOCH")), datetime.timezone.utc)'
+then
+    fail "SOURCE_DATE_EPOCH must be a valid UNIX timestamp"
+fi
+
 [[ -n "$output_dir" ]] || output_dir="$script_dir/artifacts/native-prebuilt-$arch"
 [[ "$stage_dir" = /* ]] || stage_dir="$workspace/$stage_dir"
 
-toolchain_dir="$script_dir/artifacts/portable-tools/toolchain-$arch"
-cc="$toolchain_dir/bin/clang"
-cxx="$toolchain_dir/bin/clang++"
-cmake_bin="$toolchain_dir/bin/cmake"
-ninja_bin="$toolchain_dir/bin/ninja"
+toolchain_dir="${toolchain_dir:-$script_dir/artifacts/portable-tools/toolchain-$arch}"
+cc="${llvm_dir:-$toolchain_dir}/bin/clang"
+cxx="${llvm_dir:-$toolchain_dir}/bin/clang++"
+cmake_bin="${cmake_bin:-$toolchain_dir/bin/cmake}"
+ninja_bin="${ninja_bin:-$toolchain_dir/bin/ninja}"
 runtime_source="$workspace/runtime"
 aurora_source="$workspace/aurora-main"
 
@@ -88,7 +108,7 @@ assert_file "$ninja_bin" "Portable Ninja"
 assert_file "$cc" "Portable C compiler"
 assert_file "$cxx" "Portable C++ compiler"
 assert_dir "$aurora_source" "aurora-main source tree"
-clang_binary=$(normalize "$toolchain_dir/bin/clang-22")
+clang_binary=$(normalize "${llvm_dir:-$toolchain_dir}/bin/clang-22")
 assert_file "$clang_binary" "Portable clang driver binary"
 
 (( parallel > 0 )) || parallel=$(nproc)
@@ -98,7 +118,7 @@ fingerprint_tree() {
     local root=$1; shift
     root=$(normalize "$root")
     [[ -d "$root" ]] || return 0
-    local find_args=("$root")
+    local find_args=("$root" -name .git -prune -o)
     local ex
     for ex in "$@"; do find_args+=(-path "$root/$ex" -prune -o); done
     find_args+=(-type f -print)
@@ -131,6 +151,8 @@ fixed_configure_flags=(
     -DCMAKE_DISABLE_FIND_PACKAGE_absl=ON
     -DCMAKE_DISABLE_FIND_PACKAGE_PNG=ON
     -DCMAKE_DISABLE_FIND_PACKAGE_Freetype=ON
+    -DUSE_STATIC_MBEDTLS_LIBRARY=ON
+    -DUSE_SHARED_MBEDTLS_LIBRARY=OFF
     # Freetype's own vendored CMakeLists.txt separately probes for system BZip2 (optional
     # bzip2-compressed-font support aurora-main never asked for) regardless of the Freetype
     # find_package disable above, since that only stops aurora's own outer find_package(Freetype)
@@ -141,6 +163,16 @@ fixed_configure_flags=(
     -DFT_DISABLE_BZIP2=ON
     -DCMAKE_POLICY_DEFAULT_CMP0168=NEW
 )
+if [[ "$disconnected" -eq 1 ]]; then
+    fixed_configure_flags+=(
+        -DFETCHCONTENT_FULLY_DISCONNECTED=ON
+    )
+fi
+if [[ -n "$sysroot" ]]; then
+    fixed_configure_flags+=(
+        -DCMAKE_SYSROOT="$sysroot"
+    )
+fi
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
 # extern/ is excluded because the payload ships that tree separately (aurora-main/extern is bundled
@@ -148,19 +180,35 @@ flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk
 aurora_fingerprint=$(fingerprint_tree "$aurora_source" extern build)
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
-# The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted
-# for the same reason as aurora above. No exclusions: unlike aurora's extern/, nothing under
-# runtime/third_party is shipped separately.
+# The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted.
 third_party_fingerprint=$(fingerprint_tree "$runtime_source/third_party")
 [[ -n "$third_party_fingerprint" ]] || fail "The vendored third-party tree could not be fingerprinted: $runtime_source/third_party"
+mbedtls_fingerprint=$(sha256_of "$runtime_source/cmake/MbedTLSPin.cmake")
 
-compiler_sha256=$(sha256_of "$clang_binary")
+compiler_sha256=$(sha256_of "$cc")
+cxx_sha256=$(sha256_of "$cxx")
+# Append the CXX SHA256 if it doesn't match the hash of CC
+if [[ "${cxx_sha256}" != "${compiler_sha256}" ]]; then
+    compiler_sha256="${compiler_sha256}:${cxx_sha256}"
+fi
+
+# The game-independent runtime ships precompiled on x86_64 only; aarch64 compiles it locally.
+runtime_fingerprint=""
+if [[ "$arch" == x86_64 ]]; then
+    runtime_fingerprint=$("$cmake_bin" -DMKW_RUNTIME_DIR="$runtime_source" \
+        -P "$runtime_source/cmake/RuntimeFingerprint.cmake" | sed -n 's/^runtime_fingerprint=\([0-9a-f]\{64\}\)$/\1/p')
+    [[ -n "$runtime_fingerprint" ]] || fail "RuntimeFingerprint.cmake printed no runtime fingerprint"
+fi
 
 if [[ "$print_fingerprint_only" -eq 1 ]]; then
     printf 'compiler_sha256=%s\n' "$compiler_sha256"
     printf 'flag_fingerprint=%s\n' "$flag_fingerprint"
     printf 'aurora_fingerprint=%s\n' "$aurora_fingerprint"
     printf 'third_party_fingerprint=%s\n' "$third_party_fingerprint"
+    printf 'mbedtls_fingerprint=%s\n' "$mbedtls_fingerprint"
+    if [[ -n "$runtime_fingerprint" ]]; then
+        printf 'runtime_fingerprint=%s\n' "$runtime_fingerprint"
+    fi
     exit 0
 fi
 
@@ -184,19 +232,29 @@ echo "Prepare-NativePrebuilt.sh: configuring the aurora/third-party staging buil
     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
     -DMKW_NATIVE_PREBUILT_EXPORT_DIR="$export_dir"
 
-# mkw_np_probe links exactly what mkw_runtime_common and the public products link, so building it
-# compiles the whole redistributable closure and nothing else - and a successful link proves the
-# harvested archives are complete.
-echo "Prepare-NativePrebuilt.sh: building the aurora/third-party closure..."
-"$cmake_bin" --build "$stage_dir" --target mkw_np_probe --parallel "$parallel"
-
-# ---------------------------------------------------------------------------
-# Read the description CMake wrote, plus the resolved command lines Ninja holds.
-# ---------------------------------------------------------------------------
-
 meta_path="$export_dir/meta.txt"
 assert_file "$meta_path" "Native prebuilt export metadata"
 get_meta() { awk -F= -v k="$1" '$0 ~ "^" k "=" { sub(/^[^=]*=/, ""); print; exit }' "$meta_path"; }
+
+# mkw_np_probe links exactly what mkw_runtime_common and the public products link, so building it
+# compiles the whole redistributable closure and nothing else - and a successful link proves the
+# harvested archives are complete. The runtime archive is outside that closure and built alongside.
+build_targets=(--target mkw_np_probe)
+meta_runtime_fingerprint=$(get_meta runtime_fingerprint)
+if [[ -n "$meta_runtime_fingerprint" ]]; then
+    if [[ -n "$runtime_fingerprint" && "$meta_runtime_fingerprint" != "$runtime_fingerprint" ]]; then
+        fail "The configure's runtime fingerprint ($meta_runtime_fingerprint) differs from RuntimeFingerprint.cmake's ($runtime_fingerprint)"
+    fi
+    build_targets+=(--target mkw_runtime)
+elif [[ -n "$runtime_fingerprint" ]]; then
+    fail "The staging configure exported no runtime_fingerprint; the $arch package must carry the runtime archive"
+fi
+echo "Prepare-NativePrebuilt.sh: building the aurora/third-party closure..."
+"$cmake_bin" --build "$stage_dir" "${build_targets[@]}" --parallel "$parallel"
+
+# ---------------------------------------------------------------------------
+# Read the resolved command lines Ninja holds.
+# ---------------------------------------------------------------------------
 
 build_ninja="$stage_dir/build.ninja"
 assert_file "$build_ninja" "Generated build.ninja"
@@ -361,6 +419,28 @@ while IFS='|' read -r name type file linkerfile; do
         linker_file_to_reference["$linkerfile"]="@PKG@/$relative_linker"
     fi
 done < "$targets_txt"
+runtime_archive_ref=""
+if [[ -n "$meta_runtime_fingerprint" ]]; then
+    runtime_linker=$(awk -F'|' '$1 == "mkw_runtime" && $2 == "STATIC_LIBRARY" { print $4; exit }' "$targets_txt")
+    [[ -n "$runtime_linker" && -f "$runtime_linker" ]] || fail "The runtime archive (mkw_runtime) was not built"
+    runtime_archive_ref=${linker_file_to_reference["$(normalize "$runtime_linker")"]:-}
+    [[ "$runtime_archive_ref" == "@PKG@/lib/"* ]] || fail "The runtime archive (mkw_runtime) was not harvested"
+fi
+mbedtls_refs=()
+mbedtls_txt="$export_dir/mbedtls.txt"
+assert_file "$mbedtls_txt" "Mbed TLS export targets list"
+while IFS='|' read -r name linkerfile; do
+    [[ -n "$name" ]] || continue
+    linkerfile=$(normalize "$linkerfile")
+    ref=${linker_file_to_reference["$linkerfile"]:-}
+    [[ -n "$ref" ]] || fail "Mbed TLS archive was not harvested: $name ($linkerfile)"
+    mbedtls_refs+=("$ref")
+done < "$mbedtls_txt"
+[[ ${#mbedtls_refs[@]} -ge 3 ]] || fail "Expected at least three Mbed TLS archives, got ${#mbedtls_refs[@]}"
+mbedtls_source_dir=$(get_meta mbedtls_source_dir)
+assert_dir "$mbedtls_source_dir/include/mbedtls" "Mbed TLS headers"
+mkdir -p "$output_dir/include/mbedtls"
+cp -a "$mbedtls_source_dir/include/." "$output_dir/include/mbedtls/"
 # Unlike Windows (SDL/zlib/libpng ship as DLLs by default), everything here was forced static above
 # and Dawn's own Linux package (verified directly) ships libwebgpu_dawn.a, also static - so zero
 # shared imports is the expected, normal outcome, not a failure.
@@ -426,6 +506,9 @@ for item in "${link_items[@]}"; do
     if [[ "$item" = /* ]]; then item_abs=$(normalize "$item"); else item_abs=$(normalize "$stage_dir/$item"); fi
     ref=${linker_file_to_reference["$item_abs"]:-}
     if [[ -n "$ref" ]]; then
+        for mbedtls_ref in "${mbedtls_refs[@]}"; do
+            [[ "$ref" == "$mbedtls_ref" ]] && continue 2
+        done
         package_link_items+=("$ref")
         continue
     fi
@@ -444,6 +527,11 @@ for item in "${link_items[@]}"; do
     esac
     fail "Link item is neither a system library nor a harvested archive: $item"
 done
+if [[ -n "$runtime_archive_ref" ]]; then
+    for item in "${package_link_items[@]}"; do
+        [[ "$item" != "$runtime_archive_ref" ]] || fail "The runtime archive leaked into the aurora link interface"
+    done
+fi
 
 # ---------------------------------------------------------------------------
 # Emit the consumer-facing CMake description.
@@ -505,6 +593,15 @@ generated_cmake="$output_dir/native_prebuilt.cmake"
     format_cmake_block MKW_NP_COMPILE_DEFINITIONS "${package_definitions[@]}"
     format_cmake_block MKW_NP_COMPILE_OPTIONS "${package_compile_options[@]}"
     format_cmake_block MKW_NP_LINK_LIBRARIES "${package_link_items[@]}"
+    format_cmake_block MKW_NP_MBEDTLS_LIBRARIES "${mbedtls_refs[@]}"
+    echo 'set(MKW_NP_MBEDTLS_INCLUDE_DIR "@PKG@/include/mbedtls")'
+    printf 'set(MKW_NP_MBEDTLS_FINGERPRINT "%s")\n' "$mbedtls_fingerprint"
+    if [[ -n "$runtime_archive_ref" ]]; then
+        # The precompiled game-independent runtime; RuntimeLibrary.cmake decides whether it applies.
+        printf 'set(MKW_NP_RUNTIME_ARCHIVE "%s")\n' "$runtime_archive_ref"
+        printf 'set(MKW_NP_RUNTIME_FINGERPRINT "%s")\n' "$meta_runtime_fingerprint"
+        printf 'set(MKW_NP_RUNTIME_CPU_PROFILE "%s")\n' "$(get_meta runtime_cpu_profile)"
+    fi
     format_cmake_block MKW_NP_AURORA_TARGETS "aurora::gx" "aurora::pad" "aurora::si" "aurora::vi" "aurora::mtx"
     echo ""
     printf 'set(MKW_NP_DAWN_CONFIG_DIR "%s")\n' "$dawn_config_token"
@@ -540,12 +637,13 @@ harvested_count=${#linker_file_to_reference[@]}
 
 python3 - "$output_dir" "$compiler_sha256" "$compiler_version" "$flag_fingerprint" \
     "$dawn_version" "$dawn_runtime_sha256" "$aurora_fingerprint" "$third_party_fingerprint" \
-    "$sdl3_target" "$harvested_count" <<'PY'
+    "$sdl3_target" "$harvested_count" "$mbedtls_fingerprint" \
+    "${runtime_archive_ref:+$meta_runtime_fingerprint}" "${runtime_archive_ref:+$(get_meta runtime_cpu_profile)}" <<'PY'
 import hashlib, json, os, sys, datetime
 
 (output_dir, compiler_sha256, compiler_version, flag_fingerprint, dawn_version,
  dawn_runtime_sha256, aurora_fingerprint, third_party_fingerprint, sdl3_target,
- harvested_count) = sys.argv[1:]
+ harvested_count, mbedtls_fingerprint, runtime_fingerprint, runtime_cpu_profile) = sys.argv[1:]
 
 contents = []
 for root, dirs, files in os.walk(output_dir):
@@ -560,9 +658,21 @@ for root, dirs, files in os.walk(output_dir):
         contents.append({"Path": rel, "Bytes": os.path.getsize(path), "Sha256": digest})
 contents.sort(key=lambda c: c["Path"])
 
+source_date_epoch = os.environ.get("SOURCE_DATE_EPOCH") or None
+utc = datetime.timezone.utc
+if source_date_epoch is not None:
+    built_utc = datetime.datetime.fromtimestamp(
+        int(source_date_epoch),
+        utc
+    )
+else:
+    built_utc = datetime.datetime.now(utc)
+
+built_utc = built_utc.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
 provenance = {
     "SchemaVersion": 1,
-    "BuiltUtc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+    "BuiltUtc": built_utc,
     "CompilerSha256": compiler_sha256,
     "CompilerVersion": compiler_version,
     "FlagFingerprint": flag_fingerprint,
@@ -570,10 +680,14 @@ provenance = {
     "DawnRuntimeSha256": dawn_runtime_sha256,
     "AuroraSourceFingerprint": aurora_fingerprint,
     "ThirdPartySourceFingerprint": third_party_fingerprint,
+    "MbedTlsFingerprint": mbedtls_fingerprint,
     "Sdl3Target": sdl3_target,
     "HarvestedLibraryCount": int(harvested_count),
     "Contents": contents,
 }
+if runtime_fingerprint:
+    provenance["RuntimeSourceFingerprint"] = runtime_fingerprint
+    provenance["RuntimeCpuProfile"] = runtime_cpu_profile
 with open(os.path.join(output_dir, "provenance.json"), "w", encoding="utf-8") as fh:
     json.dump(provenance, fh, indent=2)
     fh.write("\n")

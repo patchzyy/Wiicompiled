@@ -1,0 +1,4 @@
+[submodule "aurora-main"]
+	path = aurora-main
+	url = https://github.com/patchzyy/aurora-wiicompiled.git
+	branch = main

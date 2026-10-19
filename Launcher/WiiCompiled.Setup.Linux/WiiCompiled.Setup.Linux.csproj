@@ -6,7 +6,6 @@
     <Nullable>enable</Nullable>
     <AssemblyName>WiiCompiled.Setup.Linux</AssemblyName>
     <RootNamespace>WiiCompiled.Setup.Linux</RootNamespace>
-    <Version>0.2.32</Version>
     <Authors>patchzy</Authors>
     <Product>WiiCompiled</Product>
     <Description>Command-line installer and launcher for WiiCompiled on Linux</Description>
@@ -16,5 +15,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\WiiCompiled.Setup.Common\WiiCompiled.Setup.Common.csproj" />
+    <Using Include="WiiCompiled.Setup.Common" />
   </ItemGroup>
 </Project>

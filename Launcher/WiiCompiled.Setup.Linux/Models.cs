@@ -1,9 +1,13 @@
+using System.Reflection;
+
 namespace WiiCompiled.Setup.Linux;
 
 internal static class ProductInfo
 {
     public const string Name = "WiiCompiled";
-    public const string Version = "0.2.32";
+    public static readonly string Version =
+        typeof(ProductInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion;
 }
 
 /// <summary>One installed product's record inside install-state.json.</summary>

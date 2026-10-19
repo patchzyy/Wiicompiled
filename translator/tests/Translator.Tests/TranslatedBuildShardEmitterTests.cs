@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Translator.Core;
 using Translator.Core.Build;
 using Translator.Core.Mods;
 using Xunit;
@@ -357,6 +358,62 @@ public sealed class TranslatedBuildShardEmitterTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Fact]
+    public void LoadedNativeIndexEmitsTheSameGraphAsAScan()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"translator-native-index-shards-{Guid.NewGuid():N}");
+        var functions = Path.Combine(root, "functions");
+        var native = Path.Combine(root, "runtime", "src");
+        var output = Path.Combine(root, "out");
+        Directory.CreateDirectory(functions);
+        try
+        {
+            var sources = new Dictionary<uint, string>();
+            foreach (var address in new[] { 0x80001000u, 0x80003000u, 0x80004000u })
+            {
+                sources[address] = $$"""
+                    #include "abi_bridge.h"
+                    extern "C" void func_{{address:X8}}(CpuContext*) {}
+                    // RECOMP_REGISTRATION base 0x{{address:X8}} func_{{address:X8}} preserves=true fpr_mask=0x00000000
+                    """;
+                Write(Path.Combine(functions, $"func_{address:X8}.cpp"), sources[address]);
+            }
+            Write(Path.Combine(native, "hle", "override.cpp"),
+                "REGISTER_TRANSLATED_FUNCTION(0x80003000, RuntimeOverride_80003000);\n" +
+                "REGISTER_NATIVE_FUNCTION(0x80004000, NativeOverride_80004000);\n");
+            var metadataPath = Path.Combine(root, "base_output.json");
+            BaseTranslationOutputMetadataFile.WriteIfChangedAtomic(metadataPath,
+                BaseTranslationOutputMetadata.Create(
+                    sources.Select(item => Metadata($"func_{item.Key:X8}.cpp", item.Key, item.Value)).ToList(),
+                    TranslationQualityMetadata.Clean, "identity"));
+
+            var indexPath = Path.Combine(root, "runtime", RuntimeNativeIndexFile.DefaultFileName);
+            var scanned = RuntimeNativeIndexBuilder.Resolve(native, indexPath);
+            TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
+                metadataPath, functions, output, native, BaseShardCount: 2, ModShardCount: 1,
+                RegistrationShardCount: 1, NativeIndex: scanned));
+            var expected = Snapshot(output);
+            Assert.Contains(expected.Values, static text => text.Contains("RuntimeOverride_80003000"));
+
+            RuntimeNativeIndexFile.Write(indexPath, scanned, RuntimeNativeIndexFile.ComputeSourceDigest(native));
+            Directory.Delete(native, recursive: true);
+            Directory.Delete(output, recursive: true);
+            var loaded = RuntimeNativeIndexBuilder.Resolve(native, indexPath);
+            TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
+                metadataPath, functions, output, native, BaseShardCount: 2, ModShardCount: 1,
+                RegistrationShardCount: 1, NativeIndex: loaded));
+            Assert.Equal(expected, Snapshot(output));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+
+        static SortedDictionary<string, string> Snapshot(string directory) =>
+            new(Directory.GetFiles(directory, "*", SearchOption.AllDirectories)
+                .ToDictionary(path => Path.GetRelativePath(directory, path), File.ReadAllText), StringComparer.Ordinal);
     }
 
     private static BaseTranslationFunctionMetadata Metadata(string path, uint address, string content)

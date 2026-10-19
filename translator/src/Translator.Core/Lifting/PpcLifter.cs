@@ -690,10 +690,11 @@ public sealed partial class PpcLifter
                     var rawInstr = ReadRawInstruction(ins);
                     var bo = (int)((rawInstr >> 21) & 0x1F);
                     var bi = (int)((rawInstr >> 16) & 0x1F);
-                    var fallthrough = $"0x{ins.EndAddress:X8}";
-                    var targetLabel = mnemonic == "bcctr"
-                        ? $"indirect_ctr_{ins.Address:X8}"
-                        : $"call_ctr_{ins.Address:X8}_{ins.EndAddress:X8}";
+                    var linked = mnemonic == "bcctrl";
+                    var targetLabel = linked
+                        ? $"call_ctr_{ins.Address:X8}_{ins.EndAddress:X8}"
+                        : $"indirect_ctr_{ins.Address:X8}";
+                    var fallthrough = linked ? LinkedFallthroughLabel(ins) : $"0x{ins.EndAddress:X8}";
 
                     return new[] { new IrBranch("raw", targetLabel, fallthrough, BuildBoConditionExpression(bo, bi, allowCtr: false)) };
                 }
@@ -1943,21 +1944,15 @@ public sealed partial class PpcLifter
                 };
 
             case "bltl":
-                {
-                    var crField = "cr0";
-                    if (ops.Count > 0 && ops[0] is PpcConditionRegisterOperand crOp)
-                    {
-                        crField = NormalizeRegister(crOp.Name);
-                    }
-
-                    return new IrInstruction[]
-                    {
-                        new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)),
-                        new IrBranch("blt", TargetLabel(ins, validAddresses, preferFallthrough: false),
-                            $"0x{ins.EndAddress:X8}", crField)
-                    };
-                }
-
+            case "bgtl":
+            case "beql":
+            case "bsol":
+            case "bgel":
+            case "blel":
+            case "bnel":
+            case "bnsl":
+            case "bdnzl":
+            case "bdzl":
             case "bcl":
                 {
                     var rawInstr = ReadRawInstruction(ins);
@@ -1971,6 +1966,7 @@ public sealed partial class PpcLifter
                     {
                         instructions.Add(new IrBinary("ctr", IrValue.Register("ctr"), IrValue.Imm(-1), "add"));
                     }
+                    instructions.Add(new IrAssign("lr", IrValue.Imm((int)ins.EndAddress)));
                     instructions.Add(new IrBranch("raw", linkedTarget, fallthrough, BuildBoConditionExpression(bo, bi, allowCtr: true)));
                     return instructions;
                 }
@@ -1992,14 +1988,13 @@ public sealed partial class PpcLifter
                     var rawInstr = ReadRawInstruction(ins);
                     var bo = (int)((rawInstr >> 21) & 0x1F);
                     var bi = (int)((rawInstr >> 16) & 0x1F);
-                    var fallthrough = $"0x{ins.EndAddress:X8}";
                     var targetLabel = $"call_lr_{ins.Address:X8}_{ins.EndAddress:X8}";
                     var instructions = new List<IrInstruction>();
                     if ((bo & 0x04) == 0)
                     {
                         instructions.Add(new IrBinary("ctr", IrValue.Register("ctr"), IrValue.Imm(-1), "add"));
                     }
-                    instructions.Add(new IrBranch("raw", targetLabel, fallthrough, BuildBoConditionExpression(bo, bi, allowCtr: true)));
+                    instructions.Add(new IrBranch("raw", targetLabel, LinkedFallthroughLabel(ins), BuildBoConditionExpression(bo, bi, allowCtr: true)));
                     return instructions;
                 }
 
@@ -2018,10 +2013,9 @@ public sealed partial class PpcLifter
                         crField = NormalizeRegister(crOp.Name);
                     }
 
-                    var fallthrough = $"0x{ins.EndAddress:X8}";
                     var targetLabel = $"call_lr_{ins.Address:X8}_{ins.EndAddress:X8}";
                     var cond = mnemonic.Replace("lrl", string.Empty, StringComparison.OrdinalIgnoreCase);
-                    return new[] { new IrBranch(cond, targetLabel, fallthrough, crField) };
+                    return new[] { new IrBranch(cond, targetLabel, LinkedFallthroughLabel(ins), crField) };
                 }
 
             case "bne":
@@ -3046,6 +3040,10 @@ private static string TargetLabel(PpcInstruction ins, HashSet<uint> validAddress
     }
     return $"0x{target:X8}";
 }
+
+    // Not-taken path of a linked conditional branch: LR still receives the return address.
+    private static string LinkedFallthroughLabel(PpcInstruction ins) =>
+        $"link_branch_{ins.EndAddress:X8}_{ins.EndAddress:X8}";
 
     private static string BuildBoConditionExpression(int bo, int bi, bool allowCtr)
     {
