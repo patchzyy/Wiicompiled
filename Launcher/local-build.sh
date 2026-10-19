@@ -69,6 +69,7 @@ fuse_ld_override=""
 native_prebuilt_dir=""
 sysroot=""
 setup_version=""
+x86_cpu_profile=auto
 
 usage() {
     cat <<'EOF'
@@ -95,6 +96,8 @@ Usage: local-build.sh --output-dir DIR [options]
                                    standard headers/startup files
   --setup-version VERSION          Version recorded in the runtime log (default: <Version> in
                                    Launcher/Directory.Build.props when present)
+  --x86-cpu-profile {auto|v2|v3}   x86-64 instruction set to build for (default: auto, v3 when
+                                   this machine supports it)
 EOF
 }
 
@@ -120,6 +123,7 @@ while [[ $# -gt 0 ]]; do
         --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
         --sysroot) sysroot=$2; shift 2 ;;
         --setup-version) setup_version=$2; shift 2 ;;
+        --x86-cpu-profile) x86_cpu_profile=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
@@ -134,6 +138,10 @@ fi
 case "$profile" in
     base|retro-rewind|both) ;;
     *) fail "--profile must be base, retro-rewind, or both" ;;
+esac
+case "$x86_cpu_profile" in
+    auto|v2|v3) ;;
+    *) fail "--x86-cpu-profile must be auto, v2, or v3" ;;
 esac
 
 builds_retro=0
@@ -182,6 +190,22 @@ require_command "$cxx_bin" cxx
 
 if [[ -n "$native_prebuilt_dir" ]]; then
     assert_file "$native_prebuilt_dir/native_prebuilt.cmake" "Native prebuilt package"
+fi
+
+host_supports_x86_64_v3() {
+    local macros macro
+    macros=$("$cc_bin" -march=native -dM -E -x c /dev/null 2>/dev/null) || return 1
+    for macro in __AVX__ __AVX2__ __BMI__ __BMI2__ __F16C__ __FMA__ __LZCNT__ __MOVBE__; do
+        grep -q "^#define $macro " <<<"$macros" || return 1
+    done
+}
+
+if [[ "$x86_cpu_profile" == "auto" ]]; then
+    x86_cpu_profile=v3
+    if [[ "$(uname -m)" == "x86_64" ]] && ! host_supports_x86_64_v3; then
+        x86_cpu_profile=v2
+        echo "MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2"
+    fi
 fi
 
 project=$workspace/projects/mkwii/recomp.yml
@@ -434,7 +458,8 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
     -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin"
     -DCMAKE_MAKE_PROGRAM="$ninja_bin"
     -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
-    -DMKW_SETUP_VERSION="$setup_version")
+    -DMKW_SETUP_VERSION="$setup_version"
+    -DMKW_X86_CPU_PROFILE="$x86_cpu_profile")
 # CMAKE_C_COMPILER/CXX_COMPILER stay stable across AppImage runs on their own (they're exactly
 # what's passed via -D above, and AppRun points --cc/--cxx at a symlink it re-targets at the
 # current mount every launch - see build-appimage.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT
