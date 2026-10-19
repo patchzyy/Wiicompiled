@@ -169,6 +169,8 @@ echo "Staging the bundled workspace snapshot..."
 for dir in runtime aurora-main projects; do
     cp -r "$workspace/$dir" "$appdir/workspace/$dir"
 done
+# Ship source bytes, never submodule checkout pointers or embedded Git databases.
+find "$appdir/workspace" -name .git -prune -exec rm -rf {} +
 # Mirrors Build-Installer.ps1's own staging exclusions exactly: aurora-main/extern/CMakeLists.txt
 # is the real FetchContent driver and must ship, but any already-fetched dependency *subdirectory*
 # a developer's local checkout accumulated under extern/ is stale/large build output, not a

@@ -73,7 +73,16 @@ function Resolve-VcRuntimeDirectory([string]$RequestedPath) {
 function Copy-Directory([string]$Source, [string]$Destination) {
     Assert-Directory $Source "Source directory"
     [IO.Directory]::CreateDirectory($Destination) | Out-Null
-    Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
+    # Source payloads are materialized trees, independent of Git checkout metadata.
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if ($entry.Name -eq '.git') { continue }
+        $target = Join-Path $Destination $entry.Name
+        if ($entry.PSIsContainer) {
+            Copy-Directory $entry.FullName $target
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $target -Force
+        }
+    }
 }
 function Compress-Zip([string]$Source, [string]$Destination, [string[]]$Entries) {
     $tar = Join-Path $env:SystemRoot 'System32\tar.exe'

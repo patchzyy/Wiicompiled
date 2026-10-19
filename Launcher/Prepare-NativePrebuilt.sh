@@ -118,7 +118,7 @@ fingerprint_tree() {
     local root=$1; shift
     root=$(normalize "$root")
     [[ -d "$root" ]] || return 0
-    local find_args=("$root")
+    local find_args=("$root" -name .git -prune -o)
     local ex
     for ex in "$@"; do find_args+=(-path "$root/$ex" -prune -o); done
     find_args+=(-type f -print)

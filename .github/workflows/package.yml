@@ -44,6 +44,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -79,6 +80,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -102,6 +104,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -235,6 +238,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       # Wheel Wizard runs the downloaded setup with --version and refuses it when the reported
       # version differs from the release tag, so a tag that was pushed without bumping the pinned
