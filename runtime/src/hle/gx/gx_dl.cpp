@@ -1040,7 +1040,6 @@ static std::vector<uint8_t>& FlattenDisplayListScratch() {
 
 static bool s_appliedVtxDescValid = false;
 static std::array<GXAttrType, 26> s_appliedVtxDesc{};
-static std::array<GXAttrType, 26> s_appliedSourceVtxDesc{};
 static bool s_appliedVtxAttrFmtValid = false;
 static VtxAttrFmt s_appliedVtxAttrFmt[8][26]{};
 
@@ -1075,14 +1074,12 @@ static void SyncAppliedVtxStateFromHleReal() {
         s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration) {
         return;
     }
-    // Both mirrors are dense arrays of the same trivially copyable element types
-    // as their HLE counterparts, so publish them with three memcpys instead of
+    // The mirrors are dense arrays of the same trivially copyable element types
+    // as their HLE counterparts, so publish them with memcpys instead of
     // 234 individual element assignments.
     static_assert(sizeof(s_appliedVtxDesc) == sizeof(g_hleGxState.vtxDesc));
-    static_assert(sizeof(s_appliedSourceVtxDesc) == sizeof(g_hleGxState.vtxDesc));
     static_assert(sizeof(s_appliedVtxAttrFmt) == sizeof(g_hleGxState.vtxAttrFmt));
     std::memcpy(s_appliedVtxDesc.data(), g_hleGxState.vtxDesc, sizeof(g_hleGxState.vtxDesc));
-    std::memcpy(s_appliedSourceVtxDesc.data(), g_hleGxState.vtxDesc, sizeof(g_hleGxState.vtxDesc));
     s_appliedVtxDescValid = true;
 
     std::memcpy(s_appliedVtxAttrFmt, g_hleGxState.vtxAttrFmt, sizeof(g_hleGxState.vtxAttrFmt));
@@ -1136,10 +1133,6 @@ static void ApplyAuroraVtxDesc() {
         if (needsPublish) {
             GXSetVtxDesc(gxAttr, type);
             s_appliedVtxDesc[attr] = type;
-        }
-        if (!hadValidState || s_appliedSourceVtxDesc[attr] != type) {
-            GXSetSourceVtxDesc(gxAttr, type);
-            s_appliedSourceVtxDesc[attr] = type;
         }
     }
     s_appliedVtxDescValid = true;

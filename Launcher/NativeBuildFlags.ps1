@@ -153,8 +153,15 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
             -NoNewWindow -Wait -PassThru
         $exitCode = $process.ExitCode
     } else {
-        & $FilePath @Arguments
-        $exitCode = $LASTEXITCODE
+        # Tools report progress on stderr (CMake message()); only the exit code decides failure.
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $FilePath @Arguments
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
     }
     $global:LASTEXITCODE = $exitCode
     if ($exitCode -ne 0) { throw "$Description failed with exit code $exitCode." }

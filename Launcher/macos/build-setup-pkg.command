@@ -148,8 +148,12 @@ copy_clean "$script_dir/setup.command" "$resources/setup.command"; chmod +x "$re
 mkdir -p "$resources/workspace"
 for source in aurora-main projects runtime translator; do
     [[ -d "$workspace/$source" ]] || fail "required workspace directory is missing: $source"
+    [[ "$source" != aurora-main || -f "$workspace/$source/CMakeLists.txt" ]] ||
+        fail "aurora-main is empty; run git submodule update --init --recursive"
     copy_clean "$workspace/$source" "$resources/workspace/$source"
 done
+# Setup bundles contain materialized sources and must work without Git.
+find "$resources/workspace" -name .git -prune -exec rm -rf {} +
 # The translation identity (build-cache.sh) covers the runtime's native registrations through this
 # index, so it is extracted from exactly the packaged runtime sources.
 if [[ "$host_arch" == arm64 ]]; then host_translator=$translator_arm64; else host_translator=$translator_x86_64; fi

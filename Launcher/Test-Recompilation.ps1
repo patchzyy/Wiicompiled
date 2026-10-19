@@ -36,8 +36,17 @@ Write-Host "Synthetic recompilation workspace: $stage"
 
 # Copy current sources, including uncommitted edits, but no ignored build output.
 # An isolated workspace preserves the developer's real generated/ directory.
-$sourceFiles = & git -C $repoRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- runtime aurora-main
-if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate runtime and Aurora sources.' }
+$auroraRoot = Join-Path $repoRoot 'aurora-main'
+if (-not (Test-Path -LiteralPath (Join-Path $auroraRoot '.git'))) {
+    throw 'Aurora submodule is not initialized. Run git submodule update --init --recursive first.'
+}
+# The parent tracks Aurora as one gitlink; enumerate its repository separately.
+# Retain untracked source files so local development edits are still tested.
+$sourceFiles = @(& git -C $repoRoot -c core.quotepath=false ls-files --cached --others --exclude-standard -- runtime)
+if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate runtime sources.' }
+$auroraFiles = @(& git -C $auroraRoot -c core.quotepath=false ls-files --cached --others --exclude-standard)
+if ($LASTEXITCODE -ne 0) { throw 'Could not enumerate Aurora sources.' }
+$sourceFiles += @($auroraFiles | ForEach-Object { "aurora-main/$_" })
 foreach ($relative in $sourceFiles | Sort-Object -Unique) {
     $destination = Join-Path $stage $relative
     [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination)) | Out-Null

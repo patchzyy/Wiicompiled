@@ -174,7 +174,7 @@ function(mkw_configure_product target)
         # Workspace root, so translator output is spelled "generated/<x>.h"
         # instead of a ../ chain whose depth depends on the includer.
         "${MKW_RUNTIME_SOURCE_DIR}/.."
-        "${MKW_RUNTIME_SOURCE_DIR}/../aurora-main/include")
+        "${MKW_AURORA_DIR}/include")
     target_compile_definitions(${target} PRIVATE
         SDL_MAIN_HANDLED _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION TARGET_PC)
     target_compile_features(${target} PRIVATE cxx_std_20)

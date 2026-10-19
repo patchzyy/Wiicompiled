@@ -423,7 +423,7 @@ try {
             $exe = Join-Path $build "$Target.exe"
             Assert-File $exe 'Locally compiled game executable'
             Copy-Item -LiteralPath $exe -Destination (Join-Path $Destination "$Target.exe")
-            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
+            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','libzlib1.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
                 $file = Join-Path $build $name
                 if (Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $Destination }
             }
