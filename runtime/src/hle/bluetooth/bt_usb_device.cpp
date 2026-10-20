@@ -116,6 +116,7 @@ bool Hold(HeldRead& read, uint32_t buffer, uint32_t length, uint32_t callback, u
     }
     if (read.active) {
         RT_LOG(RT_TAG_HLE) << "Bluetooth: a second read on the same endpoint replaced the first" << std::endl;
+        NandQueueIosCallback(read.callback, kIpcEinval, read.callbackArg);
     }
     read = {true, buffer, length, callback, callbackArg};
     return true;
