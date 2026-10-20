@@ -10,6 +10,7 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "runtime_log.h"
+#include "hle/bluetooth_hle.h"
 #include "hle/net/network.h"
 #include "guest_small_data.h"
 #include "os_internal.h"
@@ -234,6 +235,10 @@ bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
     // callbacks before the callback drain below.
     bool completionNeedsReschedule = handledAny;
     if (Network_HLE_ProcessCompletions(cpu)) {
+        handledAny = true;
+        completionNeedsReschedule = true;
+    }
+    if (Bluetooth_HLE_ProcessCompletions(cpu)) {
         handledAny = true;
         completionNeedsReschedule = true;
     }

@@ -4,6 +4,7 @@
 
 #include "hle_stubs.h"
 #include "memory.h"
+#include "hle/bluetooth_hle.h"
 #include "hle/net/network.h"
 
 #include <cstdint>
@@ -120,6 +121,10 @@ extern "C" void IOS_OpenAsync_HLE(CpuContext* ctx) {
     const uint32_t callbackArg = ctx->gpr[6];
     const char* path = pathPtr ? (const char*)Memory::GetPointer(pathPtr) : "(null)";
     if (pathPtr) {
+        if (const int32_t btFd = Bluetooth_HLE_OpenDevice(path)) {
+            CompleteAsync(ctx, callback, btFd, callbackArg);
+            return;
+        }
         if (const int32_t netFd = Network_HLE_OpenDevice(path, mode)) {
             CompleteAsync(ctx, callback, netFd, callbackArg);
             return;
@@ -135,6 +140,11 @@ extern "C" void IOS_CloseAsync_HLE(CpuContext* ctx) {
     const uint32_t fd = ctx->gpr[3];
     const uint32_t callback = ctx->gpr[4];
     const uint32_t callbackArg = ctx->gpr[5];
+    if (Bluetooth_HLE_IsFd(fd)) {
+        const int32_t result = Bluetooth_HLE_Close(fd);
+        CompleteAsync(ctx, callback, result, callbackArg);
+        return;
+    }
     if (Network_HLE_IsFd(fd)) {
         const int32_t result = Network_HLE_Close(fd);
         CompleteAsync(ctx, callback, result, callbackArg);
@@ -179,6 +189,15 @@ extern "C" void IOS_IoctlvAsync_HLE(CpuContext* ctx)
     const uint32_t vectorPtr = ctx->gpr[7];
     const uint32_t callback = ctx->gpr[8];
     const uint32_t callbackArg = ctx->gpr[9];
+    if (Bluetooth_HLE_IsFd(fd)) {
+        int32_t result = 0;
+        if (Bluetooth_HLE_IoctlvAsync(fd, cmd, numIn, numOut, vectorPtr, callback, callbackArg, result)) {
+            CompleteAsync(ctx, callback, result, callbackArg);
+        } else {
+            SetIosReturn(ctx, 0);
+        }
+        return;
+    }
     if (TryDeferredNetworkAsync(
             ctx, fd, callback, callbackArg,
             [&] {

@@ -382,6 +382,9 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
         if (const int32_t netFd = Network_HLE_OpenDevice(path, mode)) {
             return netFd;
         }
+        if (const int32_t btFd = Bluetooth_HLE_OpenDevice(path)) {
+            return btFd;
+        }
         if (std::strcmp(path, "/dev/dolphin") == 0) {
             return DOLPHIN_DEV_FD;
         }
@@ -451,6 +454,9 @@ extern "C" int32_t NAND_IOS_Close_HLE(uint32_t fd) {
     }
     if (Network_HLE_IsFd(fd)) {
         return Network_HLE_Close(fd);
+    }
+    if (Bluetooth_HLE_IsFd(fd)) {
+        return Bluetooth_HLE_Close(fd);
     }
     
     auto* handle = GetHandle(fd);
@@ -565,6 +571,10 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
     if (GetShaHandle(static_cast<int32_t>(fd))) {
         LogNandWarning("IOS_Ioctl", "/dev/sha does not support scalar ioctl cmd=%u", cmd);
         return ISFS_EINVAL;
+    }
+    if (Bluetooth_HLE_IsFd(fd)) {
+        LogNandWarning("IOS_Ioctl", "/dev/usb/oh1 does not support scalar ioctl cmd=%u", cmd);
+        return -4;
     }
     if (fd == DOLPHIN_DEV_FD) {
         LogNandWarning("IOS_Ioctl", "/dev/dolphin does not support scalar ioctl cmd=%u", cmd);
@@ -1031,6 +1041,9 @@ extern "C" int32_t NAND_IOS_Ioctlv_HLE(
 
     if (Network_HLE_IsFd(fd)) {
         return Network_HLE_Ioctlv(fd, cmd, numIn, numOut, vectorPtr);
+    }
+    if (Bluetooth_HLE_IsFd(fd)) {
+        return Bluetooth_HLE_Ioctlv(fd, cmd, numIn, numOut, vectorPtr);
     }
 
     if (GetShaHandle(static_cast<int32_t>(fd))) {

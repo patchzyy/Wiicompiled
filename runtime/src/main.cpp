@@ -63,7 +63,7 @@
 #include "system_bridge.h"
 #include "ppc_runtime.h"
 #include "aurora_events.h"
-#include "wii_remote_input.h"
+#include "wiimote_host.h"
 #include "discord_presence.h"
 #include "fiber_manager.h"
 #include "hle_stubs.h"
@@ -1430,10 +1430,9 @@ int RuntimeMain(int argc, char** argv) {
         }
         const AuroraBackend requestedBackend = auroraConfig.desiredBackend;
 
-        // SDL only reads its Wii driver hint when the joystick subsystem starts, which
-        // aurora_initialize does; a Bluetooth Wii Remote paired before launch must be
-        // visible on that first scan.
-        WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
+        // SDL reads its device hints when the joystick subsystem starts, which
+        // aurora_initialize does.
+        Wiimote::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled());
 
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
@@ -1450,6 +1449,7 @@ int RuntimeMain(int argc, char** argv) {
                       << std::endl;
         }
         aurora_set_frame_worker_wait_callback(ServiceGuestTimingDuringAuroraFrameWait);
+        Wiimote::Initialize();
         GxGuestWrite::InstallAuroraHooks();
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
@@ -1493,6 +1493,7 @@ int RuntimeMain(int argc, char** argv) {
         // Shutdown fiber system
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
@@ -1511,6 +1512,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
@@ -1523,6 +1525,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();

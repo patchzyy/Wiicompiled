@@ -206,7 +206,7 @@ function(mkw_configure_product target)
 
     if(MKW_PLATFORM_WINDOWS)
         target_link_libraries(${target} PRIVATE
-            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp)
+            dbghelp user32 winmm ws2_32 iphlpapi secur32 crypt32 windowsapp bthprops)
 
         set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE TRUE)
     elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
