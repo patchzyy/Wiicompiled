@@ -93,6 +93,13 @@ public sealed partial class CxxLinearCodeGenerator
                     {
                         sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(8, isFloat: true)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");
                     }
+                    else if (TryGetKnownEffectiveAddress(load.Address, knownConstants, out var knownLoadAddress) &&
+                             FlatWriteNeedsPolicy(knownLoadAddress))
+                    {
+                        // The flat view maps the MMIO window no-access, so a hardware register read would fault
+                        // without knowing its width. The checked read reaches the runtime's register HLE.
+                        sb.AppendLine($"{pad}{dest} = {CheckedMmioLoadHelper(load.SizeBytes)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");
+                    }
                     else
                     {
                         sb.AppendLine($"{pad}{dest} = {GuestLoadHelper(load.SizeBytes, isFloat: false)}({RemapAddress(load.Address, types, localConstants, linkedAddressRemap)});");

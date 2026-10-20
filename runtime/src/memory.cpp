@@ -1,4 +1,5 @@
 #include "memory.h"
+#include "hle/hollywood_gpio.h"
 
 #include <algorithm>
 #include <array>
@@ -643,6 +644,9 @@ uint16_t MemoryInline::Read16Slow(uint32_t addr) {
 
 uint32_t MemoryInline::Read32Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (uint32_t value = 0; HollywoodGpio_Read32(addr, value)) {
+            return value;
+        }
         ThrowMmioReadBlocked(addr, sizeof(uint32_t));
     }
     ResolveDeferredReads(addr, sizeof(uint32_t));
@@ -708,6 +712,9 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
+        if (HollywoodGpio_Write32(addr, val)) {
+            return;
+        }
         throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
     }
     WriteScalar(addr, val);

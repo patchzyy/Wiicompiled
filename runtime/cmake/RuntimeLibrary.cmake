@@ -66,7 +66,7 @@ function(mkw_runtime_link_dependencies target scope)
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
     target_link_libraries(${target} ${scope} mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
     if(MKW_PLATFORM_WINDOWS)
-        target_link_libraries(${target} ${scope} shell32 windowsapp)
+        target_link_libraries(${target} ${scope} shell32 windowsapp bthprops)
     elseif(MKW_PLATFORM_LINUX OR MKW_PLATFORM_MACOS_X86_64)
         # ${CMAKE_DL_LIBS} for music_attenuation.cpp's dlopen of libdbus-1 (MPRIS
         # media monitoring). Empty on platforms where dl* is already in libc/libSystem.
