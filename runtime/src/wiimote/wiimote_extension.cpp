@@ -51,13 +51,14 @@ void ExtensionState::Reset() {
 
 void ExtensionState::ObserveOutput(const uint8_t* report, size_t size) {
     using namespace ExtensionDetail;
-    if (size < 6 || (report[1] & 0x04) == 0) return;
+    if (size < 6) return;
+    const bool registerSpace = (report[1] & 0x04) != 0;
     const uint32_t address = (report[2] << 16) | (report[3] << 8) | report[4];
     if (report[0] == kReportReadMemory) {
-        m_readAddress = address;
+        m_readAddress = registerSpace ? address : 0;
         return;
     }
-    if (report[0] != kReportWriteMemory || !InExtensionSpace(address)) return;
+    if (!registerSpace || report[0] != kReportWriteMemory || !InExtensionSpace(address)) return;
     const size_t length = std::min<size_t>(report[5], size - 6);
     bool keyChanged = false;
     for (size_t i = 0; i < length; ++i) {

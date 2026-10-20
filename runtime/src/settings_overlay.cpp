@@ -369,7 +369,7 @@ void DrawWiiRemoteSetup() {
         ImGui::SetTooltip("Takes effect the next time the game starts.");
     }
     ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::SliderInt("Pointer sensitivity", &g_wiiIrSensitivity, 1, 5)) {
+    if (ImGui::SliderInt("Pointer sensitivity", &g_wiiIrSensitivity, 1, 5, "%d", ImGuiSliderFlags_AlwaysClamp)) {
         RuntimeConfigFile::SetWiiIrSensitivity(g_wiiIrSensitivity);
     }
     if (ImGui::IsItemHovered()) {

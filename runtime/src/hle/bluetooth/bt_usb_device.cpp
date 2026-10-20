@@ -17,7 +17,7 @@ void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbac
 namespace BluetoothUsb {
 
 constexpr const char* kDevicePath = "/dev/usb/oh1/57e/305";
-constexpr int32_t kDeviceFd = 0x30001;
+constexpr int32_t kDeviceFd = 5;
 constexpr int32_t kIpcSuccess = 0;
 constexpr int32_t kIpcEinval = -4;
 

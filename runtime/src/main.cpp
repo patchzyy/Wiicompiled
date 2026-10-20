@@ -1493,6 +1493,7 @@ int RuntimeMain(int argc, char** argv) {
         // Shutdown fiber system
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
@@ -1511,6 +1512,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
@@ -1523,6 +1525,7 @@ int RuntimeMain(int argc, char** argv) {
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
