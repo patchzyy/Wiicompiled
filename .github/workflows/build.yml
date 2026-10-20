@@ -102,6 +102,7 @@ jobs:
             mkw_nand_settings_tests \
             mkw_sc_serial_tests \
             mkw_input_expr_tests \
+            mkw_bluetooth_controller_tests \
             mkw_macos_native_compile \
             mkw_macos_context_abi_tests \
             mkw_macos_host_context_tests \
