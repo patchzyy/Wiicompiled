@@ -221,7 +221,7 @@ int RunCheckBaseModAwareness(string[] argsTail)
 RuntimeNativeIndex ResolveRegionalNativeIndex(string nativeSourceDirectory, string? indexPath)
 {
     var index = RuntimeNativeIndexBuilder.Resolve(nativeSourceDirectory, indexPath, Console.Error);
-    var region = GuestRegions.FromGameId(project?.Identity.GameId);
+    var region = GuestRegions.FromGameId(RequireProject().Identity.GameId);
     var tablePath = GuestAddressTable.DefaultPath(nativeSourceDirectory);
     // A runtime without a table can only be built for PAL.
     if (region == GuestRegion.Pal && !File.Exists(tablePath))
@@ -231,6 +231,12 @@ RuntimeNativeIndex ResolveRegionalNativeIndex(string nativeSourceDirectory, stri
 
 int RunEmitBuildShards(string[] argsTail)
 {
+    // The project decides the guest region the shards are built for.
+    if (project is null)
+    {
+        Console.Error.WriteLine("emit-build-shards requires --project <path>.");
+        return 1;
+    }
     var baseMetadata = OptionValue(argsTail, "--base-metadata") ?? Path.Combine(root, "generated", "base_translation_output.json");
     var baseFunctions = OptionValue(argsTail, "--base-functions-dir") ?? Path.Combine(root, "generated", "functions");
     var output = OptionValue(argsTail, "--out") ?? Path.Combine(root, "generated", "build_shards");
@@ -258,7 +264,7 @@ int RunEmitBuildShards(string[] argsTail)
             string.IsNullOrWhiteSpace(resolvedProfile) ? null : Path.GetFullPath(resolvedProfile),
             string.IsNullOrWhiteSpace(retroCpp) ? null : Path.GetFullPath(retroCpp),
             NativeIndex: nativeIndex,
-            Region: GuestRegions.FromGameId(project?.Identity.GameId)));
+            Region: GuestRegions.FromGameId(project.Identity.GameId)));
         Console.WriteLine("[translator] emitted stable translated build graph");
         Console.WriteLine($"  base functions: {result.BaseFunctionCount:N0}");
         Console.WriteLine($"  shared base functions: {result.SharedBaseFunctionCount:N0}");
