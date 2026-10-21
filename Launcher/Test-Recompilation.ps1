@@ -5,7 +5,8 @@ param(
     [string]$PortableToolsDirectory = 'Launcher/artifacts/portable-tools',
     [string]$DependencySourceDirectory = 'Launcher/artifacts/dependencies',
     [string]$StageDirectory = 'build/recomp-test',
-    [ValidateRange(1, 64)] [int]$Parallel = 3
+    [ValidateRange(1, 64)] [int]$Parallel = 3,
+    [ValidateSet('v2', 'v3')] [string]$X86CpuProfile = 'v3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -136,7 +137,7 @@ try {
         -Ninja $ninja -CCompiler (Join-Path $compilerBin 'x86_64-w64-mingw32-clang.exe') `
         -CxxCompiler (Join-Path $compilerBin 'x86_64-w64-mingw32-clang++.exe') `
         -ResourceCompiler (Join-Path $compilerBin 'x86_64-w64-mingw32-windres.exe') `
-        -DependenciesDirectory $dependencies -AdditionalArguments @('-DMKW_BUILD_PRODUCTS=ON')
+        -DependenciesDirectory $dependencies -AdditionalArguments @('-DMKW_BUILD_PRODUCTS=ON', "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
     Invoke-Checked $cmake $configure 'Configuring the production Windows runtime' `
         -WaitForProcessTree $false
     Invoke-Checked $cmake @('--build', $nativeBuild, '--target', 'WiiCompiled', '--parallel', "$Parallel") `

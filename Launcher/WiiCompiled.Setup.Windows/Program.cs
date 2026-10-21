@@ -64,6 +64,8 @@ internal static class Program
 
             if (command.Mode is AppMode.SilentInstall or AppMode.RepairProducts)
             {
+                // CPUs without x86-64-v3 get an x86-64-v2 build.
+                HostCpuRequirement.EnsureSupported(X86CpuProfile.V2);
                 using var cancellationSignal = CancellationSignal.ObserveEnvironment();
                 return command.Mode == AppMode.SilentInstall
                     ? ConsoleCommands.Install(command, cancellationSignal.Token).GetAwaiter().GetResult()

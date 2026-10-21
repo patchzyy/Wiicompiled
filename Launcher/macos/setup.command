@@ -41,6 +41,28 @@ done
 
 host_arch=$(uname -m)
 case "$host_arch" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: $host_arch" ;; esac
+# Same x86-64-v2 check as runtime/src/host_cpu_baseline.cpp, before anything is built;
+# local-build-macos.command builds for v2 when the CPU lacks v3.
+if [[ "$host_arch" == x86_64 ]]; then
+    cpu_features=$(/usr/sbin/sysctl -n machdep.cpu.features machdep.cpu.extfeatures 2>/dev/null | tr '\n' ' ' || true)
+    if [[ -n "${cpu_features// /}" ]]; then
+        missing_features=""
+        for feature in SSE3=SSE3 SSSE3=SSSE3 CX16=CMPXCHG16B SSE4.1=SSE4.1 SSE4.2=SSE4.2 POPCNT=POPCNT \
+                LAHF=LAHF-SAHF; do
+            [[ " $cpu_features " == *" ${feature%%=*} "* ]] || missing_features+="${missing_features:+, }${feature#*=}"
+        done
+        if [[ -n "$missing_features" ]]; then
+            message="This build needs a processor that supports the x86-64-v2 instruction set.
+
+Missing on this machine: $missing_features
+
+x86-64-v2 covers Intel Core processors from Nehalem (2008) onward and AMD processors from Jaguar (2013) onward."
+            printf 'WiiCompiled Setup: %s\n' "$message" >&2
+            notice "$message"
+            exit 1
+        fi
+    fi
+fi
 host_tools="$resources/tools/$host_arch"
 nodtool="$host_tools/nodtool"
 translator="$host_tools/Translator.Cli"

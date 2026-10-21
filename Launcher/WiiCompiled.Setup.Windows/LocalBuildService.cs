@@ -60,7 +60,8 @@ internal sealed class LocalBuildService
                 BuildProfile.RetroRewind => "retro-rewind",
                 _ => "both"
             },
-            "-OutputDirectory", outputDirectory
+            "-OutputDirectory", outputDirectory,
+            "-X86CpuProfile", HostCpuRequirement.SelectBuildProfile() == X86CpuProfile.V2 ? "v2" : "v3"
         };
         if (baseOutputDirectory is not null)
         {

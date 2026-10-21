@@ -21,7 +21,8 @@ param(
     # Discards every cache first. Used when a product was reported broken/blocked, so a possibly
     # corrupted translation or build directory can never contribute to the repaired product.
     [switch]$ForceCleanBuild,
-    [int]$Parallel = 0
+    [int]$Parallel = 0,
+    [ValidateSet('v2', 'v3')] [string]$X86CpuProfile = 'v3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -397,11 +398,14 @@ try {
         $dependencies = Join-Path $Workspace 'Dependencies'
         $nativePrebuilt = Resolve-NativePrebuiltDirectory $dependencies $toolchainBin `
             (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
+        if ($X86CpuProfile -eq 'v2') {
+            Write-Host 'MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2'
+        }
         $configure = Get-MkwNativeConfigureArguments `
             -SourceDirectory (Join-Path $Workspace 'runtime') -BuildDirectory $build `
             -Ninja $ninja -CCompiler $cc -CxxCompiler $cxx -ResourceCompiler $windres `
             -DependenciesDirectory $dependencies -NativePrebuiltDirectory $nativePrebuilt `
-            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs")
+            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
         Invoke-Checked $cmake $configure 'Configuring the bundled native toolchain' -StepId 'configure-native'
         if (-not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint)) {
             [ordered]@{ SchemaVersion = 1; NativeToolchainFingerprint = $NativeToolchainFingerprint } |

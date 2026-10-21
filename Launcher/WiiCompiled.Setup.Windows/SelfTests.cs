@@ -36,6 +36,7 @@ internal static class SelfTests
         Test("Toolkit accompanies the workspace", TestToolkitRefreshDecision, failures);
         Test("Retro-WFC payload snapshot reconciliation", TestRetroWfcPayloadSnapshotReconciliation, failures);
         Test("Retro-WFC transient retry policy", TestRetroWfcTransientRetryPolicy, failures);
+        Test("Host CPU requirement", TestHostCpuRequirement, failures);
         Test("Shared runtime configuration", () => TestPathSettingRoundTrip("dvd_root",
             RuntimeConfiguration.SetDvdRoot, RuntimeConfiguration.RemoveDvdRootIfOwned), failures);
         Test("Canonical Retro Rewind configuration", () => TestPathSettingRoundTrip("retro_rewind_root",
@@ -992,6 +993,57 @@ internal static class SelfTests
             throw new Exception("A permanent I/O failure would be retried.");
         if (InstallTransaction.IsTransientLock(new InvalidDataException("bad")))
             throw new Exception("A non-I/O failure would be retried.");
+    }
+
+    private static void TestHostCpuRequirement()
+    {
+        // Leaf 1 ecx, leaf 7 ebx, leaf 0x80000001 ecx of a v2-only and a v3 processor.
+        const uint v2Leaf1 = (1u << 0) | (1u << 9) | (1u << 13) | (1u << 19) | (1u << 20) | (1u << 23);
+        const uint v3Leaf1 = v2Leaf1 | (1u << 12) | (1u << 22) | (1u << 27) | (1u << 28) | (1u << 29);
+        const uint v3Leaf7 = (1u << 3) | (1u << 5) | (1u << 8);
+        Func<uint, uint[]> Cpu(uint maxBasic, uint leaf1, uint leaf7, uint extended) => leaf => leaf switch
+        {
+            0 => [maxBasic, 0, 0, 0],
+            1 => [0, 0, leaf1, 0],
+            7 => [0, leaf7, 0, 0],
+            0x80000000u => [0x80000001u, 0, 0, 0],
+            0x80000001u => [0, 0, extended, 0],
+            _ => [0, 0, 0, 0]
+        };
+        var nehalem = Cpu(11, v2Leaf1, 0, 1u);
+        var haswell = Cpu(13, v3Leaf1, v3Leaf7, 1u | (1u << 5));
+
+        void Expect(IReadOnlyList<string> actual, string expected, string what)
+        {
+            if (string.Join(", ", actual) != expected)
+                throw new Exception($"{what}: expected [{expected}], got [{string.Join(", ", actual)}].");
+        }
+
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V2, nehalem, false), "",
+            "A v2 processor was rejected for the v2 build");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V3, nehalem, false),
+            "FMA, MOVBE, OSXSAVE, AVX, F16C, BMI1, AVX2, BMI2, LZCNT", "A v2 processor for the v3 build");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V3, haswell, true), "",
+            "A v3 processor was rejected");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V2, haswell, false), "",
+            "A v3 processor was rejected for the v2 build");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V3, haswell, false),
+            "operating system support for AVX register state (XCR0 YMM bits)", "Disabled AVX state");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V3, Cpu(6, v3Leaf1, v3Leaf7, 1u | (1u << 5)), true),
+            "BMI1, AVX2, BMI2", "Unavailable leaf 7");
+        Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V2, Cpu(11, v2Leaf1, 0, 0), false),
+            "LAHF-SAHF", "Missing LAHF/SAHF");
+
+        if (HostCpuRequirement.SelectBuildProfile(nehalem, false) != X86CpuProfile.V2)
+            throw new Exception("A v2 processor was not given the v2 build.");
+        if (HostCpuRequirement.SelectBuildProfile(haswell, true) != X86CpuProfile.V3)
+            throw new Exception("A v3 processor was not given the v3 build.");
+        if (HostCpuRequirement.SelectBuildProfile(haswell, false) != X86CpuProfile.V2)
+            throw new Exception("A v3 processor without AVX state was given the v3 build.");
+
+        var message = HostCpuRequirement.Describe(X86CpuProfile.V3, ["AVX2"]);
+        if (!message.Contains("x86-64-v3") || !message.Contains("Missing on this machine: AVX2"))
+            throw new Exception("The unsupported-processor message lost its detail.");
     }
 
     private static void TestRetroWfcTransientRetryPolicy()
