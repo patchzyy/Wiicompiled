@@ -34,6 +34,7 @@
 #include <vector>
 #include <type_traits>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <chrono>
 #include <cstddef>
@@ -300,6 +301,9 @@ void EndDisplayListRecording();
 void WriteDisplayListData(uint32_t val, uint32_t sizeBytes);
 void BeginNextAuroraFrameWithRetry(std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
 void EnsureAuroraFrameActive();
+void EnsureAuroraFrameForFifo();
+// Array base/stride as last set through GXSetArray on the game thread.
+bool ApiVtxArray(uint32_t attr, uint32_t& base, uint32_t& stride);
 
 GXColor DecodeGxColor(uint32_t colorWord);
 void WriteGuestFloat(uint32_t addr, float value, const char* label = nullptr);
@@ -342,6 +346,17 @@ bool ValidateTlutData(uint32_t objAddr, const TlutObjMeta& meta);
 TexObjMeta& GetTexObjMeta(uint32_t addr);
 TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr);
 bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta);
+
+// Guest GXTexObj bytes captured on the game thread; while a scope is active on a thread, texobj
+// decoding for that address reads the captured bytes instead of live guest memory.
+using TexObjBytes = std::array<uint8_t, 32>;
+TexObjBytes CaptureTexObjBytes(uint32_t addr);
+struct TexObjSnapshotScope {
+    TexObjSnapshotScope(uint32_t addr, const TexObjBytes& bytes) noexcept;
+    ~TexObjSnapshotScope();
+    TexObjSnapshotScope(const TexObjSnapshotScope&) = delete;
+    TexObjSnapshotScope& operator=(const TexObjSnapshotScope&) = delete;
+};
 TlutObjMeta& GetTlutObjMeta(uint32_t addr);
 GXTexObj* GetHostTexObj(uint32_t addr);
 GXTexObj* TryGetHostTexObj(uint32_t addr);

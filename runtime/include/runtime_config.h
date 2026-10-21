@@ -44,6 +44,7 @@ struct RuntimeUserConfig {
     std::optional<uint32_t> frameInterpolationFps;
     std::optional<bool> metalFxSpatialUpscaling;
     std::optional<bool> skipUnreadyPipelines;
+    std::optional<bool> gxWorker;
     std::optional<bool> disableCopyFilter;
     std::optional<bool> textureReplacements;
     std::optional<bool> textureDumps;
@@ -275,6 +276,8 @@ inline void EnsureConfigFile() {
               "display_mode = \"windowed\"\n"
               "graphics_api = \"auto\"\n"
               "skip_unready_pipelines = true\n"
+              "# Runs GX command processing on its own thread. Read once, at startup.\n"
+              "gx_worker = true\n"
               "disable_copy_filter = true\n"
               "show_fps = true\n"
               "# Dolphin-style custom textures. When enabled, the renderer indexes\n"
@@ -432,6 +435,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.metalFxSpatialUpscaling =
         FindConfigValue<bool>(document, "video", "metalfx_spatial_upscaling");
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
+    config.gxWorker = FindConfigValue<bool>(document, "video", "gx_worker");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
@@ -809,6 +813,10 @@ inline bool AudioMuted(bool fallback = false) {
 // Off-thread AX/DSP mix. Default on; false restores the fully synchronous mix.
 inline bool AudioMixWorkerEnabled(bool fallback = true) {
     return Get().audioMixWorker.value_or(fallback);
+}
+
+inline bool GxWorkerEnabled(bool fallback = true) {
+    return Get().gxWorker.value_or(fallback);
 }
 
 // Whether background music should duck automatically for other media playback.

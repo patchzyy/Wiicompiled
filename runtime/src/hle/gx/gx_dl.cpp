@@ -89,39 +89,42 @@ static inline uint32_t ReadModulatedLytColor(uint32_t colorAddr, int index, uint
            static_cast<uint32_t>(a);
 }
 
-static inline void AppendLytTexCoords(uint8_t* packet, uint32_t& pos, uint32_t texCoordAddr,
-                                      int texCoordCount, uint32_t cornerOffset) {
-    if (texCoordCount <= 0) {
-        return;
-    }
-    for (int i = 0; i < texCoordCount; ++i) {
-        const uint32_t coordAddr = texCoordAddr + static_cast<uint32_t>(i * 32) + cornerOffset;
-        BigEndian::AppendFloat32(packet, pos, Memory::ReadFloat32(coordAddr));
-        BigEndian::AppendFloat32(packet, pos, Memory::ReadFloat32(coordAddr + 4));
+// An nw4r::lyt quad as read on the game thread: texcoords are 8 sets of 4 corners x (s, t).
+struct LytQuad {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    int texCoordCount = 0;
+    std::array<float, 8 * 4 * 2> texCoords{};
+    bool hasColors = false;
+    std::array<uint32_t, 4> colors{};
+};
+
+static inline void AppendLytTexCoords(uint8_t* packet, uint32_t& pos, const LytQuad& quad,
+                                      uint32_t cornerOffset) {
+    for (int i = 0; i < quad.texCoordCount; ++i) {
+        const size_t at = static_cast<size_t>(i) * 8u + cornerOffset / 4u;
+        BigEndian::AppendFloat32(packet, pos, quad.texCoords[at]);
+        BigEndian::AppendFloat32(packet, pos, quad.texCoords[at + 1]);
     }
 }
 
-static inline void AppendLytQuadVertex(uint8_t* packet, uint32_t& pos, float x, float y,
-                                       uint32_t texCoordAddr, int texCoordCount,
-                                       uint32_t cornerOffset, const uint32_t* colors, int colorIndex) {
+static inline void AppendLytQuadVertex(uint8_t* packet, uint32_t& pos, float x, float y, const LytQuad& quad,
+                                       uint32_t cornerOffset, int colorIndex) {
     BigEndian::AppendFloat32(packet, pos, x);
     BigEndian::AppendFloat32(packet, pos, y);
-    if (colors) {
-        BigEndian::Append32(packet, pos, colors[colorIndex]);
+    if (quad.hasColors) {
+        BigEndian::Append32(packet, pos, quad.colors[colorIndex]);
     }
-    AppendLytTexCoords(packet, pos, texCoordAddr, texCoordCount, cornerOffset);
+    AppendLytTexCoords(packet, pos, quad, cornerOffset);
 }
 
 // The four corners of an nw4r::lyt quad, in the order GX_QUADS expects, with
 // each corner's texcoord byte offset and colour index. The winding order is
 // load-bearing and both emit paths below share this one copy of it.
-static inline void AppendLytQuadVertices(uint8_t* packet, uint32_t& pos, float x0, float y0,
-                                         float x1, float y1, uint32_t texCoordAddr,
-                                         int texCoordCount, const uint32_t* colors) {
-    AppendLytQuadVertex(packet, pos, x0, y0, texCoordAddr, texCoordCount, 0, colors, 0);
-    AppendLytQuadVertex(packet, pos, x1, y0, texCoordAddr, texCoordCount, 8, colors, 1);
-    AppendLytQuadVertex(packet, pos, x1, y1, texCoordAddr, texCoordCount, 24, colors, 3);
-    AppendLytQuadVertex(packet, pos, x0, y1, texCoordAddr, texCoordCount, 16, colors, 2);
+static inline void AppendLytQuadVertices(uint8_t* packet, uint32_t& pos, const LytQuad& quad) {
+    AppendLytQuadVertex(packet, pos, quad.x0, quad.y0, quad, 0, 0);
+    AppendLytQuadVertex(packet, pos, quad.x1, quad.y0, quad, 8, 1);
+    AppendLytQuadVertex(packet, pos, quad.x1, quad.y1, quad, 24, 3);
+    AppendLytQuadVertex(packet, pos, quad.x0, quad.y1, quad, 16, 2);
 }
 
 static bool CanSubmitLytDrawDirect(int texCoordCount, const uint32_t* colors) {
@@ -175,9 +178,8 @@ static bool CanSubmitLytDrawDirect(int texCoordCount, const uint32_t* colors) {
     return true;
 }
 
-static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texCoordCount,
-                                uint32_t texCoordAddr, const uint32_t* colors) {
-    if (!CanSubmitLytDrawDirect(texCoordCount, colors)) {
+static bool SubmitLytDrawDirect(const LytQuad& quad) {
+    if (!CanSubmitLytDrawDirect(quad.texCoordCount, quad.hasColors ? quad.colors.data() : nullptr)) {
         return false;
     }
 
@@ -193,7 +195,7 @@ static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texC
 
     std::array<uint8_t, 4u * (8u + 4u + 8u * 8u)> vertices{};
     uint32_t pos = 0;
-    AppendLytQuadVertices(vertices.data(), pos, x0, y0, x1, y1, texCoordAddr, texCoordCount, colors);
+    AppendLytQuadVertices(vertices.data(), pos, quad);
 
     if (!aurora::gx::fifo::submit_raw_draw(GX_QUADS, GX_VTXFMT0, vertices.data(), 4, pos)) {
         return false;
@@ -204,23 +206,8 @@ static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texC
     return true;
 }
 
-static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texCoordCount,
-                                   uint32_t texCoordAddr, const uint32_t* colors) {
-    const float x0 = Memory::ReadFloat32(posAddr);
-    const float y0 = Memory::ReadFloat32(posAddr + 4);
-    // The casts pin the arithmetic to PPC single precision regardless of the
-    // host's FLT_EVAL_METHOD.
-    const float x1 = static_cast<float>(x0 + Memory::ReadFloat32(sizeAddr));
-    const float y1 = static_cast<float>(y0 - Memory::ReadFloat32(sizeAddr + 4));
-
-    if (SubmitLytDrawDirect(x0, y0, x1, y1, texCoordCount, texCoordAddr, colors)) {
-        return;
-    }
-
-    // GX has exactly 8 texture coordinates, so nw4r::lyt cannot ask for more.
-    // The fixed packet buffer below is sized for that maximum; bail rather than
-    // overrun it if the guest ever hands us something else.
-    if (texCoordCount > 8) {
+static void EmitLytQuad(const LytQuad& quad) {
+    if (SubmitLytDrawDirect(quad)) {
         return;
     }
 
@@ -228,8 +215,37 @@ static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texC
     uint32_t pos = 0;
     packet[pos++] = GX_DRAW_QUADS_CMD | GX_VTXFMT0;
     BigEndian::Append16(packet.data(), pos, 4);
-    AppendLytQuadVertices(packet.data(), pos, x0, y0, x1, y1, texCoordAddr, texCoordCount, colors);
+    AppendLytQuadVertices(packet.data(), pos, quad);
     SubmitLytDrawPacket(packet.data(), pos);
+}
+
+static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texCoordCount,
+                                   uint32_t texCoordAddr, const uint32_t* colors) {
+    // GX has exactly 8 texture coordinates, so nw4r::lyt cannot ask for more; the packet buffer
+    // is sized for that maximum.
+    if (texCoordCount > 8) {
+        return;
+    }
+    LytQuad quad;
+    quad.x0 = Memory::ReadFloat32(posAddr);
+    quad.y0 = Memory::ReadFloat32(posAddr + 4);
+    // The casts pin the arithmetic to PPC single precision regardless of the
+    // host's FLT_EVAL_METHOD.
+    quad.x1 = static_cast<float>(quad.x0 + Memory::ReadFloat32(sizeAddr));
+    quad.y1 = static_cast<float>(quad.y0 - Memory::ReadFloat32(sizeAddr + 4));
+    quad.texCoordCount = std::max(texCoordCount, 0);
+    for (int i = 0; i < quad.texCoordCount; ++i) {
+        for (uint32_t f = 0; f < 8; ++f) {
+            quad.texCoords[static_cast<size_t>(i) * 8u + f] =
+                Memory::ReadFloat32(texCoordAddr + static_cast<uint32_t>(i * 32) + f * 4u);
+        }
+    }
+    if (colors != nullptr) {
+        quad.hasColors = true;
+        std::copy(colors, colors + 4, quad.colors.begin());
+    }
+    EnsureAuroraFrameActive();
+    GxWorker::Run([quad] { EmitLytQuad(quad); });
 }
 
 static uint32_t SubmitDLVertex(const uint8_t* ptr, GXVtxFmt vtxfmt, const GXAttrType* sourceVtxDesc) {
@@ -1284,6 +1300,12 @@ extern "C" void GxNotifyDisplayListMemoryWrite(uint32_t addr, uint32_t size) {
 
 extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes) {
     if (nbytes == 0 || listAddr == 0) return;
+    // List bytes and the arrays it indexes are GPU-side reads, so they are read when the worker runs.
+    if (GxWorker::ShouldDefer()) {
+        EnsureAuroraFrameActive();
+        GxWorker::Submit([=] { GX__CallDisplayList_80172f64(listAddr, nbytes); });
+        return;
+    }
     try {
         const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
         if (!list) return;

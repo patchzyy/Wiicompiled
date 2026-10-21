@@ -66,6 +66,7 @@
 #include "wiimote_host.h"
 #include "discord_presence.h"
 #include "fiber_manager.h"
+#include "gx_worker.h"
 #include "hle_stubs.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
@@ -88,6 +89,9 @@ namespace {
 std::string FormatHostStackTrace(unsigned framesToSkip = 0);
 
 void ServiceGuestTimingDuringAuroraFrameWait() {
+    if (GxWorker::OnWorker()) {
+        return;
+    }
     // Aurora can block inside FIFO drains before control returns to GX HLE, for as long as a
     // whole display period. Keep VI retraces, alarms and audio moving at wall-clock cadence here
     // while still suppressing guest rescheduling and recursive Aurora work.
@@ -1466,6 +1470,8 @@ int RuntimeMain(int argc, char** argv) {
                   << (forceAspect169 ? "16:9" : (configWidescreen ? "surface (dynamic EGG canvas)" : "4:3"))
                   << std::endl;
         g_auroraInitialized.store(true, std::memory_order_release);
+        GxWorker::SetWaitCallback(ServiceGuestTimingDuringAuroraFrameWait);
+        GxWorker::Start();
 
         auto entry = ResolveEntry();
         InitializePersistentCpuContext();
@@ -1494,6 +1500,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         Wiimote::Shutdown();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
@@ -1513,6 +1520,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         Wiimote::Shutdown();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
@@ -1526,6 +1534,7 @@ int RuntimeMain(int argc, char** argv) {
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
         Wiimote::Shutdown();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();

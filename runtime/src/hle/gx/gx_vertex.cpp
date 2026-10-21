@@ -13,6 +13,9 @@ uint32_t CanonicalVtxAttr(uint32_t attr) {
     return attr == GX_VA_NBT ? GX_VA_NRM : attr;
 }
 
+// Array bases as last set through GXSetArray on the game thread.
+std::array<std::array<uint32_t, 2>, 26> g_apiVtxArrays{};
+
 // There is deliberately no indexed-aurora path here. The immediate begin path
 // streams vertex data incrementally, and aurora's indexed-array upload must
 // precede the draw carrying the max-index bounds, which cannot be known without
@@ -27,11 +30,19 @@ void ApplyAuroraVtxStateForBegin(GXVtxFmt fmt) {
 }
 }
 
+bool ApiVtxArray(uint32_t attr, uint32_t& base, uint32_t& stride) {
+    if (attr >= 26) return false;
+    base = g_apiVtxArrays[attr][0];
+    stride = g_apiVtxArrays[attr][1];
+    return base != 0 && stride != 0;
+}
+
 // ============================================================================
 // Vertex Descriptor
 // ============================================================================
 
 extern "C" void GX__ClearVtxDesc_8016dc34() {
+    GX_DEFER_CALL0(GX__ClearVtxDesc_8016dc34);
     bool changed = false;
     for(int i=0; i<26; ++i){
         changed |= g_hleGxState.vtxDesc[i] != GX_NONE;
@@ -44,6 +55,7 @@ extern "C" void GX__ClearVtxDesc_8016dc34() {
 PPC_NATIVE_OVERRIDE_VOID(8016dc34, GX__ClearVtxDesc_8016dc34, (), ());
 
 extern "C" void GX__SetVtxDesc_8016d3a4(uint32_t a, uint32_t t) {
+    GX_DEFER_CALL(GX__SetVtxDesc_8016d3a4, a, t);
     const uint32_t attr = CanonicalVtxAttr(a);
     if(attr>=26||attr==GX_VA_NULL) return;
     const GXAttrType oldType = g_hleGxState.vtxDesc[attr];
@@ -59,16 +71,22 @@ PPC_NATIVE_OVERRIDE_VOID(8016d3a4, GX__SetVtxDesc_8016d3a4, (uint32_t a, uint32_
 
 extern "C" void GX__SetVtxDescv_8016d608(uint32_t la) {
     if(!la) return; uint32_t p=la;
+    std::vector<std::array<uint32_t, 2>> list;
     while(true){
         uint32_t a=Memory::Read32(p);
         if(a==0xFFu) break;
-        GX__SetVtxDesc_8016d3a4(a, Memory::Read32(p+4));
+        list.push_back({a, Memory::Read32(p+4)});
         p+=8;
     }
+    GxWorker::Run([list = std::move(list)] {
+        for (const auto& [a, t] : list) GX__SetVtxDesc_8016d3a4(a, t);
+    });
 }
 PPC_NATIVE_OVERRIDE_VOID(8016d608, GX__SetVtxDescv_8016d608, (uint32_t la), (la));
 
+// Display lists can change the vertex layout, so answer from the state the worker has applied.
 extern "C" void GX__GetVtxDesc_8016d9f0(uint32_t a, uint32_t tp) {
+    GX_SYNC_INLINE();
     GXAttrType type = GX_NONE;
     const uint32_t attr = CanonicalVtxAttr(a);
     if (attr < GX_VA_MAX_ATTR && attr != GX_VA_NULL) {
@@ -84,6 +102,7 @@ extern "C" void GX__GetVtxDescv_8016dba4(uint32_t la) {
     if (!la) {
         return;
     }
+    GX_SYNC_INLINE();
 
     uint32_t p = la;
     for (uint32_t a = GX_VA_PNMTXIDX; a <= GX_VA_TEX7; ++a) {
@@ -103,6 +122,7 @@ PPC_NATIVE_OVERRIDE_VOID(8016dba4, GX__GetVtxDescv_8016dba4, (uint32_t la), (la)
 // ============================================================================
 
 extern "C" void GX__SetVtxAttrFmt_8016dc68(uint32_t vf, uint32_t a, uint32_t c, uint32_t t, uint32_t fr) {
+    GX_DEFER_CALL(GX__SetVtxAttrFmt_8016dc68, vf, a, c, t, fr);
     const uint32_t attr = CanonicalVtxAttr(a);
     if(vf<8&&attr<26){
         const VtxAttrFmt oldFmt = g_hleGxState.vtxAttrFmt[vf][attr];
@@ -126,16 +146,21 @@ PPC_NATIVE_OVERRIDE_VOID(8016dc68, GX__SetVtxAttrFmt_8016dc68, (uint32_t vf, uin
 
 extern "C" void GX__SetVtxAttrFmtv_8016de08(uint32_t vf, uint32_t la) {
     if(!la) return; uint32_t p=la;
+    std::vector<std::array<uint32_t, 4>> list;
     while(true){
         uint32_t a=Memory::Read32(p);
         if(a==0xFFu) break;
-        GX__SetVtxAttrFmt_8016dc68(vf, a, Memory::Read32(p+4), Memory::Read32(p+8), Memory::Read32(p+12)&0xFFu);
+        list.push_back({a, Memory::Read32(p+4), Memory::Read32(p+8), Memory::Read32(p+12)&0xFFu});
         p+=16;
     }
+    GxWorker::Run([vf, list = std::move(list)] {
+        for (const auto& [a, c, t, fr] : list) GX__SetVtxAttrFmt_8016dc68(vf, a, c, t, fr);
+    });
 }
 PPC_NATIVE_OVERRIDE_VOID(8016de08, GX__SetVtxAttrFmtv_8016de08, (uint32_t vf, uint32_t la), (vf, la));
 
 extern "C" void GX__GetVtxAttrFmt_8016e04c(uint32_t vf, uint32_t a, uint32_t cp, uint32_t tp, uint32_t fp) {
+    GX_SYNC_INLINE();
     VtxAttrFmt fmt{};
     const uint32_t attr = CanonicalVtxAttr(a);
     if (vf < 8 && attr < GX_VA_MAX_ATTR && attr != GX_VA_NULL) {
@@ -157,6 +182,7 @@ extern "C" void GX__GetVtxAttrFmtv_8016e2b8(uint32_t vf, uint32_t la) {
     if (!la) {
         return;
     }
+    GX_SYNC_INLINE();
 
     uint32_t p = la;
     for (uint32_t a = GX_VA_POS; a <= GX_VA_TEX7; ++a) {
@@ -179,6 +205,11 @@ PPC_NATIVE_OVERRIDE_VOID(8016e2b8, GX__GetVtxAttrFmtv_8016e2b8, (uint32_t vf, ui
 // ============================================================================
 
 extern "C" void GX__SetArray_8016e32c(uint32_t a, uint32_t ba, uint32_t str) {
+    if (!GxWorker::OnWorker()) {
+        const uint32_t attr = CanonicalVtxAttr(a);
+        if (attr < 26) g_apiVtxArrays[attr] = {ba, str};
+    }
+    GX_DEFER_CALL(GX__SetArray_8016e32c, a, ba, str);
     const uint32_t attr = CanonicalVtxAttr(a);
     if(attr<26){ g_hleGxState.vtxArray[attr].base=ba; g_hleGxState.vtxArray[attr].stride=str; }
 }
@@ -194,11 +225,13 @@ PPC_NATIVE_OVERRIDE_VOID(8016e1c4, GX__SetArray_8016e1c4, (uint32_t a, uint32_t 
 // ============================================================================
 
 extern "C" void GX__SetNumTexGens_8016e5a4(uint32_t n) {
+    GX_DEFER_CALL(GX__SetNumTexGens_8016e5a4, n);
     GXSetNumTexGens((u8)n);
 }
 PPC_NATIVE_OVERRIDE_VOID(8016e5a4, GX__SetNumTexGens_8016e5a4, (uint32_t n), (n));
 
 extern "C" void GX__SetTexCoordGen2_8016e37c(uint32_t dc, uint32_t f, uint32_t sp, uint32_t m, uint32_t n, uint32_t pm) {
+    GX_DEFER_CALL(GX__SetTexCoordGen2_8016e37c, dc, f, sp, m, n, pm);
     if (sp >= static_cast<uint32_t>(GX_MAX_TEXGENSRC)) {
         uint32_t pc = 0;
         uint32_t lr = 0;
@@ -215,6 +248,7 @@ extern "C" void GX__SetTexCoordGen2_8016e37c(uint32_t dc, uint32_t f, uint32_t s
 PPC_NATIVE_OVERRIDE_VOID(8016e37c, GX__SetTexCoordGen2_8016e37c, (uint32_t dc, uint32_t f, uint32_t sp, uint32_t m, uint32_t n, uint32_t pm), (dc, f, sp, m, n, pm));
 
 extern "C" void GX__EnableTexOffsets_8016f37c(uint32_t coord, uint32_t lineEnable, uint32_t pointEnable) {
+    GX_DEFER_CALL(GX__EnableTexOffsets_8016f37c, coord, lineEnable, pointEnable);
     GXEnableTexOffsets(static_cast<GXTexCoordID>(coord),
                        lineEnable ? GX_TRUE : GX_FALSE,
                        pointEnable ? GX_TRUE : GX_FALSE);
@@ -222,11 +256,13 @@ extern "C" void GX__EnableTexOffsets_8016f37c(uint32_t coord, uint32_t lineEnabl
 PPC_NATIVE_OVERRIDE_VOID(8016f37c, GX__EnableTexOffsets_8016f37c, (uint32_t coord, uint32_t lineEnable, uint32_t pointEnable), (coord, lineEnable, pointEnable));
 
 extern "C" void GX__SetLineWidth_8016f314(uint32_t width, uint32_t texOffsets) {
+    GX_DEFER_CALL(GX__SetLineWidth_8016f314, width, texOffsets);
     GXSetLineWidth(static_cast<u8>(width), static_cast<GXTexOffset>(texOffsets));
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f314, GX__SetLineWidth_8016f314, (uint32_t width, uint32_t texOffsets), (width, texOffsets));
 
 extern "C" void GX__SetPointSize_8016f348(uint32_t pointSize, uint32_t texOffsets) {
+    GX_DEFER_CALL(GX__SetPointSize_8016f348, pointSize, texOffsets);
     GXSetPointSize(static_cast<u8>(pointSize), static_cast<GXTexOffset>(texOffsets));
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f348, GX__SetPointSize_8016f348, (uint32_t pointSize, uint32_t texOffsets), (pointSize, texOffsets));
@@ -274,6 +310,8 @@ void ServiceDeferredTimingDuringGxWork() {
 }
 }
 
+static void GxBeginImpl(uint32_t t, uint32_t vf, uint32_t nv);
+
 extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
     if(IsDisplayListActive()){
         WriteDisplayListData((u8)(t|vf), 1);
@@ -281,6 +319,11 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
         return;
     }
     ServiceDeferredTimingDuringGxWork();
+    GX_DEFER_CALL(GxBeginImpl, t, vf, nv);
+    GxBeginImpl(t, vf, nv);
+}
+
+static void GxBeginImpl(uint32_t t, uint32_t vf, uint32_t nv) {
     ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
     g_hleGxState.currentVtxFmt=(GXVtxFmt)vf; g_hleGxState.currentPrim=(GXPrimitive)t;
     g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=true; g_hleGxState.auroraBeginCalled=false;
@@ -289,13 +332,19 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f0f0, GX__Begin_8016f0f0, (uint32_t t, uint32_t vf, uint32_t nv), (t, vf, nv));
 
-extern "C" void GX__End_80044b30() { g_hleGxState.inBegin=false; GXEnd(); }
+extern "C" void GX__End_80044b30() {
+    GX_DEFER_CALL0(GX__End_80044b30); g_hleGxState.inBegin=false; GXEnd(); }
 PPC_NATIVE_OVERRIDE_VOID(80044b30, GX__End_80044b30, (), ());
 
 extern "C" void GX__End_80048c30() { GX__End_80044b30(); }
 PPC_NATIVE_OVERRIDE_VOID(80048c30, GX__End_80048c30, (), ());
 
 extern "C" void GX__DrawSphere_80172a30(uint32_t numMajor, uint32_t numMinor) {
+    if (GxWorker::ShouldDefer()) {
+        EnsureAuroraFrameActive();
+        GxWorker::Submit([=] { GX__DrawSphere_80172a30(numMajor, numMinor); });
+        return;
+    }
     constexpr uint32_t kAttrCount = 26;
     constexpr float kSphereRadius = 1.0f;
     constexpr float kPi = 3.14159265358979323846f;

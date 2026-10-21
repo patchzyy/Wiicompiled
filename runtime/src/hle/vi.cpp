@@ -577,7 +577,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         aurora_set_present_schedule(0, 0);
     }
 
-    aurora_end_frame();
+    EndAuroraFrame();
     if (paceThisFrame) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);
@@ -751,7 +751,10 @@ extern "C" void VIConfigure_HLE_801b9f6c(CpuContext* ctx)
             renderMode.xfbHeight != 0 ? renderMode.xfbHeight : renderMode.efbHeight;
     }
 
-    ::VIConfigure(&renderMode);
+    {
+        GX_SYNC_INLINE();
+        ::VIConfigure(&renderMode);
+    }
 
     ViSetR3(ctx, 0);
 }

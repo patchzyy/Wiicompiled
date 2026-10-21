@@ -110,17 +110,65 @@ bool g_tlutObjBoundsDirty = true;
 // word3 data address (<<5), word4 user data, word5 texFmt, word6 tlut, byte 0x1F flags. Exact
 // bit positions are decoded inline below.
 
+namespace {
+thread_local uint32_t t_texObjSnapshotAddr = 0;
+thread_local const uint8_t* t_texObjSnapshotBytes = nullptr;
+
+const uint8_t* TexObjSnapshotFor(uint32_t addr) noexcept {
+    return (t_texObjSnapshotBytes != nullptr && addr == t_texObjSnapshotAddr) ? t_texObjSnapshotBytes : nullptr;
+}
+
+uint32_t ReadTexObj32(uint32_t addr, uint32_t offset) {
+    if (const uint8_t* bytes = TexObjSnapshotFor(addr)) return BigEndian::Read32(bytes + offset);
+    return Memory::Read32(addr + offset);
+}
+
+uint8_t ReadTexObj8(uint32_t addr, uint32_t offset) {
+    if (const uint8_t* bytes = TexObjSnapshotFor(addr)) return bytes[offset];
+    return Memory::Read8(addr + offset);
+}
+
+uint64_t ReadTexObj64(uint32_t addr, uint32_t offset) {
+    if (const uint8_t* bytes = TexObjSnapshotFor(addr)) {
+        return (static_cast<uint64_t>(BigEndian::Read32(bytes + offset)) << 32) | BigEndian::Read32(bytes + offset + 4);
+    }
+    return Memory::Read64(addr + offset);
+}
+} // namespace
+
+TexObjBytes CaptureTexObjBytes(uint32_t addr) {
+    TexObjBytes bytes{};
+    for (uint32_t offset = 0; offset < bytes.size(); offset += 4) {
+        const uint32_t word = Memory::Read32(addr + offset);
+        bytes[offset + 0] = static_cast<uint8_t>(word >> 24);
+        bytes[offset + 1] = static_cast<uint8_t>(word >> 16);
+        bytes[offset + 2] = static_cast<uint8_t>(word >> 8);
+        bytes[offset + 3] = static_cast<uint8_t>(word);
+    }
+    return bytes;
+}
+
+TexObjSnapshotScope::TexObjSnapshotScope(uint32_t addr, const TexObjBytes& bytes) noexcept {
+    t_texObjSnapshotAddr = addr;
+    t_texObjSnapshotBytes = bytes.data();
+}
+
+TexObjSnapshotScope::~TexObjSnapshotScope() {
+    t_texObjSnapshotAddr = 0;
+    t_texObjSnapshotBytes = nullptr;
+}
+
 TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr) {
     TexObjMeta meta{};
     try {
-        uint32_t word0 = Memory::Read32(addr + 0x00);
-        uint32_t word1 = Memory::Read32(addr + 0x04);
-        uint32_t word2 = Memory::Read32(addr + 0x08);
-        uint32_t word3 = Memory::Read32(addr + 0x0C);
-        uint32_t word4 = Memory::Read32(addr + 0x10);
-        uint32_t word5 = Memory::Read32(addr + 0x14);
-        uint32_t word6 = Memory::Read32(addr + 0x18);
-        uint8_t flags = Memory::Read8(addr + 0x1F);
+        uint32_t word0 = ReadTexObj32(addr, 0x00);
+        uint32_t word1 = ReadTexObj32(addr, 0x04);
+        uint32_t word2 = ReadTexObj32(addr, 0x08);
+        uint32_t word3 = ReadTexObj32(addr, 0x0C);
+        uint32_t word4 = ReadTexObj32(addr, 0x10);
+        uint32_t word5 = ReadTexObj32(addr, 0x14);
+        uint32_t word6 = ReadTexObj32(addr, 0x18);
+        uint8_t flags = ReadTexObj8(addr, 0x1F);
         
         meta.wrapS = word0 & 0x3;
         meta.wrapT = (word0 >> 2) & 0x3;
@@ -449,10 +497,10 @@ TexObjMeta MergeGuestTexObjMeta(const TexObjMeta& cached, const TexObjMeta& gues
 // caller must treat the shadow as absent) when the address is unreadable.
 bool ReadTexObjShadow(uint32_t addr, uint64_t (&out)[4]) noexcept {
     try {
-        out[0] = Memory::Read64(addr + 0x00);
-        out[1] = Memory::Read64(addr + 0x08);
-        out[2] = Memory::Read64(addr + 0x10);
-        out[3] = Memory::Read64(addr + 0x18);
+        out[0] = ReadTexObj64(addr, 0x00);
+        out[1] = ReadTexObj64(addr, 0x08);
+        out[2] = ReadTexObj64(addr, 0x10);
+        out[3] = ReadTexObj64(addr, 0x18);
     } catch (...) {
         return false;
     }
@@ -642,8 +690,11 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size) {
     if (size == 0) {
         return;
     }
-    MarkTexObjsDirtyForRange(addr, size);
-    MarkTlutObjsDirtyForRange(addr, size);
+    // Ordered with recorded GX work: retiring EFB copy textures emits aurora commands.
+    GxWorker::Run([addr, size] {
+        MarkTexObjsDirtyForRange(addr, size);
+        MarkTlutObjsDirtyForRange(addr, size);
+    });
     GxNotifyDisplayListMemoryWrite(addr, size);
 }
 

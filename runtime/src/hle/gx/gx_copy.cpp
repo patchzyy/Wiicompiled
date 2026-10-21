@@ -71,11 +71,14 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
 // ============================================================================
 
 extern "C" void GX__SetDispCopySrc_8016f438(uint32_t l, uint32_t t, uint32_t w, uint32_t h) {
+    GX_DEFER_CALL(GX__SetDispCopySrc_8016f438, l, t, w, h);
     GXSetDispCopySrc((u16)l, (u16)t, (u16)w, (u16)h);
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f438, GX__SetDispCopySrc_8016f438, (uint32_t l, uint32_t t, uint32_t w, uint32_t h), (l, t, w, h));
 
-extern "C" void GX__SetDispCopyDst_8016f4b8(uint32_t w, uint32_t h) { GXSetDispCopyDst((u16)w, (u16)h); }
+extern "C" void GX__SetDispCopyDst_8016f4b8(uint32_t w, uint32_t h) {
+    GxWorker::Run([w, h] { GXSetDispCopyDst((u16)w, (u16)h); });
+}
 PPC_NATIVE_OVERRIDE_VOID(8016f4b8, GX__SetDispCopyDst_8016f4b8, (uint32_t w, uint32_t h), (w, h));
 
 // ============================================================================
@@ -83,14 +86,14 @@ PPC_NATIVE_OVERRIDE_VOID(8016f4b8, GX__SetDispCopyDst_8016f4b8, (uint32_t w, uin
 // ============================================================================
 
 extern "C" void GX__SetTexCopySrc_8016f478(uint32_t l, uint32_t t, uint32_t w, uint32_t h) {
-    GXSetTexCopySrc((u16)l, (u16)t, (u16)w, (u16)h);
+    GxWorker::Run([l, t, w, h] { GXSetTexCopySrc((u16)l, (u16)t, (u16)w, (u16)h); });
     g_texCopyState.srcLeft=(u16)l; g_texCopyState.srcTop=(u16)t;
     g_texCopyState.srcWidth=(u16)w; g_texCopyState.srcHeight=(u16)h;
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f478, GX__SetTexCopySrc_8016f478, (uint32_t l, uint32_t t, uint32_t w, uint32_t h), (l, t, w, h));
 
 extern "C" void GX__SetTexCopyDst_8016f4dc(uint32_t w, uint32_t h, uint32_t f, uint32_t m) {
-    GXSetTexCopyDst((u16)w, (u16)h, (GXTexFmt)f, (GXBool)m);
+    GxWorker::Run([w, h, f, m] { GXSetTexCopyDst((u16)w, (u16)h, (GXTexFmt)f, (GXBool)m); });
     g_texCopyState.dstWidth=(u16)w; g_texCopyState.dstHeight=(u16)h;
     g_texCopyState.dstFormat=f; g_texCopyState.dstMipmap=m;
 }
@@ -100,11 +103,19 @@ extern "C" void GX__SetCopyFilter_8016fa40(uint32_t aa, uint32_t spa, uint32_t v
     uint8_t sp[12][2]={}, vfb[7]={};
     if(spa) std::memcpy(sp, GuestToHostPtr(spa, 24), 24);
     if(vfa) std::memcpy(vfb, GuestToHostPtr(vfa, 7), 7);
-    GXSetCopyFilter((GXBool)aa, sp, (GXBool)vf, vfb);
+    std::array<uint8_t, 24> spCopy{};
+    std::array<uint8_t, 7> vfCopy{};
+    std::memcpy(spCopy.data(), sp, 24);
+    std::memcpy(vfCopy.data(), vfb, 7);
+    GxWorker::Run([aa, vf, spCopy, vfCopy]() mutable {
+        GXSetCopyFilter((GXBool)aa, reinterpret_cast<u8(*)[2]>(spCopy.data()), (GXBool)vf, vfCopy.data());
+    });
 }
 PPC_NATIVE_OVERRIDE_VOID(8016fa40, GX__SetCopyFilter_8016fa40, (uint32_t aa, uint32_t spa, uint32_t vf, uint32_t vfa), (aa, spa, vf, vfa));
 
-extern "C" void GX__SetDispCopyGamma_8016fc24(uint32_t g) { GXSetDispCopyGamma((GXGamma)g); }
+extern "C" void GX__SetDispCopyGamma_8016fc24(uint32_t g) {
+    GxWorker::Run([g] { GXSetDispCopyGamma((GXGamma)g); });
+}
 PPC_NATIVE_OVERRIDE_VOID(8016fc24, GX__SetDispCopyGamma_8016fc24, (uint32_t g), (g));
 
 // ============================================================================
@@ -113,18 +124,24 @@ PPC_NATIVE_OVERRIDE_VOID(8016fc24, GX__SetDispCopyGamma_8016fc24, (uint32_t g), 
 
 extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
-    // GX copies are FIFO-ordered on hardware. Drain submitted draws before
-    // resolving the EFB so high-level copies see the same contents.
-    GXDrawDone();
-    GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
-    // No second GXDrawDone here: the frame-worker wait below is for the DONE
-    // phase, which strictly subsumes the drain this call would perform.
+    if (GxWorker::ShouldDefer()) {
+        // The worker drains like the inline path; EndAuroraFrame joins it before the next frame.
+        GxWorker::Submit([da, c] {
+            GXDrawDone();
+            GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
+        });
+    } else {
+        // GX copies are FIFO-ordered on hardware. Drain submitted draws before
+        // resolving the EFB so high-level copies see the same contents.
+        GXDrawDone();
+        GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
+        // Present immediately so post-copy draws don't leak into this frame. Join at the DONE phase
+        // (not the cheaper SEALED phase GXDrawDone waits for) because ImGui's draw lists, owned by
+        // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
+        aurora_wait_for_frame_worker();
+    }
     ++g_gxFrameCount;
     VI_HLE_SetXfbReady(da);
-    // Present immediately so post-copy draws don't leak into this frame. Join at the DONE phase
-    // (not the cheaper SEALED phase GXDrawDone waits for) because ImGui's draw lists, owned by
-    // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
-    aurora_wait_for_frame_worker();
     settings_overlay::Draw();
     // Seal, pace to the VI retrace boundary (Aurora renders the sealed frame
     // during the wait), and pre-warm the next frame.
@@ -135,7 +152,9 @@ PPC_NATIVE_OVERRIDE_VOID(8016fc38, GX__CopyDisp_8016fc38, (uint32_t da, uint32_t
 
 
 extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
+    // Begin the frame before going inline so a deferred begin reaches the worker first.
     EnsureAuroraFrameActive();
+    GX_SYNC_INLINE();
     // Match GX FIFO ordering: texture copies observe all prior draws.
     GXDrawDone();
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
