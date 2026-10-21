@@ -95,13 +95,14 @@ internal static class Program
         if (installsRetro) retroDir = RetroRewindSource.ResolveRetroRewind6(retroDir!);
 
         var workspace = flags.GetValueOrDefault("workspace") ?? WorkspaceLocator.FindFrom(AppContext.BaseDirectory);
-        var manifest = ProjectManifest.Load(Path.Combine(workspace, "projects", "mkwii", "recomp.yml"));
+        var releases = ProjectManifest.LoadAll(workspace);
         var assetsDir = Path.Combine(workspace, "Assets");
 
         reporter.Progress(InstallStages.Validate, "Checking prerequisites", 1);
+        ProjectManifest release;
         if (flags.TryGetValue("game", out var isoPath) && !string.IsNullOrEmpty(isoPath))
         {
-            await DiscTool.ValidateAndExtractAsync(isoPath, manifest, assetsDir, workspace,
+            release = await DiscTool.ValidateAndExtractAsync(isoPath, releases, assetsDir, workspace,
                 flags.GetValueOrDefault("disc-tool-bin"), reporter, token);
         }
         else
@@ -114,6 +115,7 @@ internal static class Program
                     "No --game ISO was given and Assets/main.dol + Assets/StaticR.rel are not already present. " +
                     "Either pass --game <path-to-iso>, or extract them yourself first (see translator/README.md).");
             }
+            release = DiscTool.SelectExtracted(releases, assetsDir);
         }
 
         var state = JsonState.TryRead<InstallState>(StatePath) ?? new InstallState { Workspace = workspace };
@@ -133,10 +135,10 @@ internal static class Program
             try
             {
                 // A valid signature authenticates a payload, but does not prove it is the latest
-                // signed revision. Always ask the fixed endpoint for the current snapshot; the
-                // downloader verifies it before atomically replacing the cache.
+                // signed revision. Always ask the release's fixed endpoint for the current snapshot;
+                // the downloader verifies it before atomically replacing the cache.
                 await RetroWfcPayload.DownloadRetroWfcPayloadAsync(
-                    RetroWfcPayload.CurrentRetroWfcPayloadUri, cacheDir, token);
+                    RetroWfcPayload.PayloadUri(release.GameId), cacheDir, token);
             }
             catch (Exception downloadFailure) when (!token.IsCancellationRequested &&
                                                      downloadFailure is HttpRequestException or TimeoutException
@@ -147,7 +149,7 @@ internal static class Program
                 // that must remain a hard failure instead of hiding possible endpoint tampering.
                 try
                 {
-                    RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir);
+                    RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir, gameId: release.GameId);
                 }
                 catch (Exception cacheFailure) when (cacheFailure is IOException or
                                                      UnauthorizedAccessException or InvalidDataException)

@@ -54,10 +54,21 @@ internal sealed class PayloadArchive : IDisposable
         var entry = FindEntry(InstalledLayout.PayloadManifestFileName)
                     ?? throw new InvalidDataException("The payload manifest is missing.");
         using var stream = entry.Open();
+        return ParseManifest(stream);
+    }
+
+    internal static PayloadManifest ParseManifest(Stream stream)
+    {
         var manifest = JsonSerializer.Deserialize<PayloadManifest>(stream,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
             ?? throw new InvalidDataException("The payload manifest is invalid.");
-        if (manifest.SchemaVersion != 2)
+        ValidateManifest(manifest);
+        return manifest;
+    }
+
+    internal static void ValidateManifest(PayloadManifest manifest)
+    {
+        if (manifest.SchemaVersion != PayloadManifest.CurrentSchemaVersion)
             throw new InvalidDataException($"Unsupported payload schema {manifest.SchemaVersion}.");
         // The payload identities are the release-computed replacement for hashing the whole
         // toolkit on the user's machine; a payload without them was packaged incorrectly.
@@ -65,8 +76,30 @@ internal sealed class PayloadArchive : IDisposable
             string.IsNullOrWhiteSpace(manifest.ToolkitPackageFingerprint) ||
             string.IsNullOrWhiteSpace(manifest.RuntimeAssetsFingerprint))
             throw new InvalidDataException("The payload manifest is missing its content identities.");
-        InputValidation.ValidateRetroWfcPayloadUri(manifest.RetroWfcPayloadUri);
-        return manifest;
+        if (manifest.SupportedReleases is not { Count: > 0 })
+            throw new InvalidDataException("The payload manifest names no supported game release.");
+        foreach (var release in manifest.SupportedReleases)
+        {
+            if (!RetroWfcPayload.SupportedGameIds.Contains(release.GameId) ||
+                !IsSha256(release.DolSha256) || !IsSha256(release.RelSha256))
+                throw new InvalidDataException(
+                    $"The payload manifest describes an unsupported or incomplete release '{release.GameId}'.");
+        }
+        if (manifest.SupportedReleases.DistinctBy(release => release.GameId).Count() !=
+            manifest.SupportedReleases.Count)
+            throw new InvalidDataException("The payload manifest lists a game release twice.");
+    }
+
+    private static bool IsSha256(string value) =>
+        value.Length == 64 && value.All(char.IsAsciiHexDigit);
+
+    /// <summary>Extracts nodtool and the runtime DLLs it loads; returns the nodtool path.</summary>
+    public string ExtractDiscTool(string directory)
+    {
+        var tool = Path.Combine(directory, "nodtool.exe");
+        ExtractEntry(InstalledLayout.ToolkitEntryPrefix + "nodtool.exe", tool);
+        ExtractDirectory(InstalledLayout.ToolkitEntryPrefix + "Redist", directory);
+        return tool;
     }
 
     public void ExtractEntry(string entryName, string destination)

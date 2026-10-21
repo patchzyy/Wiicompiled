@@ -2,17 +2,15 @@
 
 #include "abi_bridge.h"
 #include "ppc_runtime.h"
+#include "guest_function_imports.h"
 
 namespace NetworkHle {
-
-extern "C" void func_801D8D30(CpuContext* ctx);
-extern "C" void func_801D9E94(CpuContext* ctx);
 
 static uint32_t GetNHttpSystemInfo(CpuContext* ctx, uint32_t& savedR3, uint32_t& savedR4, uint32_t& savedR5) {
     savedR3 = ctx->gpr[3];
     savedR4 = ctx->gpr[4];
     savedR5 = ctx->gpr[5];
-    func_801D9E94(ctx);
+    MKW_GUEST_FUNC(801D9E94)(ctx);
     const uint32_t systemInfo = ctx->gpr[3];
     ctx->gpr[3] = savedR3;
     ctx->gpr[4] = savedR4;
@@ -47,7 +45,7 @@ extern "C" void NHTTPStartup_Reentrant_HLE_801d8d30(CpuContext* ctx) {
     ctx->gpr[3] = savedR3;
     ctx->gpr[4] = savedR4;
     ctx->gpr[5] = savedR5;
-    func_801D8D30(ctx);
+    MKW_GUEST_FUNC(801D8D30)(ctx);
 
     const int32_t result = static_cast<int32_t>(ctx->gpr[3]);
     if (result < 0) {

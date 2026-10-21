@@ -208,7 +208,6 @@ if [[ "$x86_cpu_profile" == "auto" ]]; then
     fi
 fi
 
-project=$workspace/projects/mkwii/recomp.yml
 assets=$workspace/Assets
 generated=$workspace/generated
 functions=$generated/functions
@@ -221,9 +220,12 @@ translation_provenance=$generated/translation-provenance.json
 toolchain_provenance=$build/toolchain-provenance.json
 retro_root=${retro_rewind_package_dir:-$workspace/PulsarPacks/completed/RetroRewind/RetroRewind6}
 
-assert_file "$project" "Translation project"
 assert_file "$assets/main.dol" "Extracted main.dol (see translator/README.md - owning the game is required)"
 assert_file "$assets/StaticR.rel" "Extracted StaticR.rel (see translator/README.md - owning the game is required)"
+# The translation project is the one pinned to the extracted main.dol, which decides the region.
+project=$(mkw_resolve_project "$workspace" "$assets") || fail "the extracted game cannot be translated"
+region=$(mkw_project_pin "$project" region)
+[[ -n "$region" ]] || fail "Could not find the region of $project"
 
 # The AppImage bundles Clang, but Linux startup objects and the C/C++ link runtimes
 # still come from the host. Check them before the expensive translation so a missing
@@ -362,7 +364,7 @@ else
 
     log_step emit-base-manifest "Creating the local base translation manifest"
     translator emit-base-manifest --project "$project" --out "$base_manifest_dir" \
-        --functions-dir "$functions" --translation-output-metadata "$base_metadata" --region P
+        --functions-dir "$functions" --translation-output-metadata "$base_metadata" --region "$region"
 
     mkw_write_identity "$translation_provenance" TranslationFingerprint "$translation_fingerprint"
 fi
@@ -374,12 +376,13 @@ if (( builds_retro )); then
     translate_mod_args=(translate-mod --project "$project" --profile retro-rewind
         --base-manifest "$base_manifest" --base-translation-output-metadata "$base_metadata"
         --code-pul "$code_pul" --mod-root "$retro_root" --mod-name "Retro Rewind"
-        --region P --out "$retro_out" --prefer-cached-inputs --emit-cpp
+        --region "$region" --out "$retro_out" --prefer-cached-inputs --emit-cpp
         --threads "$translator_threads")
     if (( skip_retro_wfc_payload )); then
         translate_mod_args+=(--skip-retro-wfc)
     else
-        offline_payload=$retro_wfc_offline_dir/binary/payload.RMCPD00.bin
+        payload_file=$(mkw_retro_wfc_payload_file "$project") || fail "$project pins no Retro-WFC payload"
+        offline_payload=$retro_wfc_offline_dir/$payload_file
         assert_file "$offline_payload" "Offline Retro-WFC shared payload"
         translate_mod_args+=(--retro-wfc-payload "$offline_payload")
     fi

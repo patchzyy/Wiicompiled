@@ -45,7 +45,7 @@
 // Mario Kart Wii Title ID
 namespace {
 constexpr uint32_t kNandTitleIdHi = 0x00010004;
-constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
+inline uint32_t NandTitleIdLo() { return ::GuestRegion::CurrentFacts().gameCode; }
 } // anonymous namespace
 
 // ============================================================================

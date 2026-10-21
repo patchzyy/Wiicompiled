@@ -1,5 +1,6 @@
-# Shared incremental-build logic for the Unix setups (Linux AppImage and macOS), sourced by
-# local-build.sh, local-build-macos.command, the AppImage's AppRun and macos/setup.command.
+# Shared incremental-build and release-selection logic for the Unix setups (Linux AppImage and
+# macOS), sourced by local-build.sh, local-build-macos.command, macos/extract-disc.command, the
+# AppImage's AppRun and macos/setup.command.
 # Mirrors the Windows installer's translation/toolchain identities and timestamp preservation.
 # Must stay compatible with macOS's bash 3.2.
 
@@ -76,6 +77,7 @@ mkw_translation_identity() {
         printf 'rel %s\n' "$(mkw_digest_path "$workspace/Assets/StaticR.rel")"
         printf 'translator %s\n' "$(mkw_digest_path "$translator")"
         printf 'script %s\n' "$(mkw_digest_path "$script")"
+        printf 'regions %s\n' "$(mkw_digest_path "$workspace/runtime/include/guest_abi/guest_address_table.inc")"
         mkw_digest_tree "$workspace" projects
         mkw_native_index_identity "$workspace"
     } | mkw_sha256
@@ -97,6 +99,67 @@ mkw_toolchain_identity() {
         printf 'aurora %s\n' "$(mkw_digest_path "$workspace/aurora-main/CMakeLists.txt")"
         printf 'mbedtls %s\n' "$(mkw_digest_path "$workspace/runtime/cmake/MbedTLSPin.cmake")"
     } | mkw_sha256
+}
+
+# Prints one fact a projects/*/recomp.yml pins: game_id, region, dol, rel or retro_wfc_payload.
+# Literal line matching against the fixed shape, like NativeBuildFlags.ps1's Get-MkwProjectPins.
+# $1 = recomp.yml, $2 = fact.
+mkw_project_pin() {
+    awk -v want="$2" '
+        { sub(/\r$/, ""); sub(/#.*/, "") }
+        /^[A-Za-z0-9_]+:/ { section = $1; sub(/:.*/, "", section); input = ""; next }
+        section == "inputs" && /^  [A-Za-z0-9_]+:[[:space:]]*$/ { input = $1; sub(/:$/, "", input); next }
+        section == "project" && $1 == (want ":") { print $2; exit }
+        section == "inputs" && input == want && $1 == "sha256:" { print tolower($2); exit }
+        want == "retro_wfc_payload" && $1 == "retro_wfc_payload:" { print $2; exit }
+    ' "$1"
+}
+
+# Prints the recomp.yml of the supported release whose game id is $2. $1 = workspace.
+mkw_project_for_game() {
+    local project
+    for project in "$1"/projects/*/recomp.yml; do
+        if [[ -f "$project" && "$(mkw_project_pin "$project" game_id)" == "$2" ]]; then
+            printf '%s\n' "$project"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Prints the recomp.yml pinned to $2/main.dol after checking StaticR.rel and any extracted disc
+# header against it, like NativeBuildFlags.ps1's Resolve-MkwProjectForAssets.
+# $1 = workspace, $2 = assets directory.
+mkw_resolve_project() {
+    local project dol_sha game_id disc_id
+    dol_sha=$(mkw_sha256 "$2/main.dol")
+    for project in "$1"/projects/*/recomp.yml; do
+        [[ -f "$project" && "$(mkw_project_pin "$project" dol)" == "$dol_sha" ]] || continue
+        game_id=$(mkw_project_pin "$project" game_id)
+        if [[ "$(mkw_sha256 "$2/StaticR.rel")" != "$(mkw_project_pin "$project" rel)" ]]; then
+            printf 'StaticR.rel does not match the clean %s release of main.dol.\n' "$game_id" >&2
+            return 1
+        fi
+        if [[ -f "$2/DATA/sys/boot.bin" ]]; then
+            disc_id=$(head -c 6 "$2/DATA/sys/boot.bin")
+            if [[ "$disc_id" != "$game_id" ]]; then
+                printf 'The extracted game data is %s but main.dol is %s; extract the game again.\n' "$disc_id" "$game_id" >&2
+                return 1
+            fi
+        fi
+        printf '%s\n' "$project"
+        return 0
+    done
+    printf 'main.dol (sha256 %s) is not a supported clean Mario Kart Wii release.\n' "$dol_sha" >&2
+    return 1
+}
+
+# The offline file name the translator expects for a release's Retro-WFC payload. $1 = recomp.yml.
+mkw_retro_wfc_payload_file() {
+    local uri
+    uri=$(mkw_project_pin "$1" retro_wfc_payload)
+    [[ -n "$uri" ]] || return 1
+    printf 'binary/payload.%s.bin\n' "${uri##*g=}"
 }
 
 # $1 = JSON file, $2 = key. Prints the recorded string value, or nothing.

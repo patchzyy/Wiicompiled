@@ -23,12 +23,23 @@ $publish = Join-Path $workRoot 'publish'
 $payloadRoot = Join-Path $workRoot 'payload'
 $setupProject = Join-Path $PSScriptRoot 'WiiCompiled.Setup.Windows\WiiCompiled.Setup.Windows.csproj'
 $translatorProject = Join-Path $repoRoot 'translator\src\Translator.Cli\Translator.Cli.csproj'
-$projectFile = Join-Path $repoRoot 'projects\mkwii\recomp.yml'
 
-# Everything Mario-Kart-specific in the manifest below is read from the project file rather than
-# restated here, and Test-PinnedFacts.ps1 checks the copies that cannot read it (the C++ entry
-# address, the C# endpoint constant, the lists this script and the installed host both carry).
-$pins = Get-MkwProjectPins $projectFile
+# Every supported release is one projects/<name>/recomp.yml. Everything Mario-Kart-specific in the
+# manifest below is read from those files rather than restated here, and Test-PinnedFacts.ps1
+# checks the copies that cannot read them (the C++ entry address, the C# Retro-WFC table, the
+# lists this script and the installed host both carry).
+$releaseProjects = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'projects') -Directory |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'recomp.yml') -PathType Leaf } |
+    Sort-Object Name)
+if ($releaseProjects.Count -eq 0) { throw 'No translation project defines a supported release.' }
+$supportedReleases = @(foreach ($releaseProject in $releaseProjects) {
+    $pins = Get-MkwProjectPins (Join-Path $releaseProject.FullName 'recomp.yml')
+    [ordered]@{ GameId = $pins.GameId; DolSha256 = $pins.DolSha256; RelSha256 = $pins.RelSha256 }
+})
+foreach ($key in @('GameId', 'DolSha256')) {
+    $duplicates = @($supportedReleases | Group-Object { $_[$key] } | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) { throw "Two translation projects pin the same $($key): $($duplicates[0].Name)." }
+}
 # The audit reports by throwing, which aborts this run; nothing native has been invoked yet, so
 # there is no exit code to inspect.
 & (Join-Path $PSScriptRoot 'Test-PinnedFacts.ps1') -RepositoryRoot $repoRoot
@@ -243,7 +254,9 @@ if (Test-Path -LiteralPath $runtimeDeveloperBuild) {
 }
 $auroraExtern = Join-Path $workspace 'aurora-main\extern'
 Get-ChildItem -LiteralPath $auroraExtern -Directory -Force | Remove-Item -Recurse -Force
-Copy-Directory (Join-Path $repoRoot 'projects\mkwii') (Join-Path $workspace 'projects\mkwii')
+foreach ($releaseProject in $releaseProjects) {
+    Copy-Directory $releaseProject.FullName (Join-Path $workspace "projects\$($releaseProject.Name)")
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LocalBuild.ps1') -Destination (Join-Path $workspace 'LocalBuild.ps1')
 # LocalBuild.ps1 dot-sources the canonical configure flags from this sibling.
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1') -Destination (Join-Path $workspace 'NativeBuildFlags.ps1')
@@ -326,22 +339,20 @@ foreach ($required in @('ToolkitFingerprint','TranslationFingerprint','NativeToo
 $productVersion = ((& $setupHost --version) -join '').Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($productVersion)) { throw 'The setup host did not report its version.' }
 
+# Schema 3 replaced schema 2's single Expected* release fields with SupportedReleases.
 $manifest = [ordered]@{
-    SchemaVersion = 2
+    SchemaVersion = 3
     ProductVersion = $productVersion
-    ExpectedGameId = $pins.GameId
-    ExpectedDolSha256 = $pins.DolSha256
-    ExpectedRelSha256 = $pins.RelSha256
+    SupportedReleases = $supportedReleases
     ToolkitReleaseTag = if ($ToolkitReleaseTag) { $ToolkitReleaseTag } else { '' }
     BuildModel = 'local-translation-and-compilation'
-    RetroWfcPayloadUri = $pins.RetroWfcPayloadUri
     ToolkitFingerprint = $identities.ToolkitFingerprint
     ToolkitPackageFingerprint = $identities.ToolkitPackageFingerprint
     RuntimeAssetsFingerprint = $identities.RuntimeAssetsFingerprint
     TranslationFingerprint = $identities.TranslationFingerprint
     NativeToolchainFingerprint = $identities.NativeToolchainFingerprint
 }
-$manifest | ConvertTo-Json | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
+$manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
 
 Write-Host '[4/6] Enforcing the copyright and generated-code boundary...'
 # Both audits are PowerShell scripts that throw directly on failure (Test-PayloadBoundary.ps1

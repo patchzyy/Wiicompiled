@@ -16,15 +16,15 @@ internal static class ToolkitFingerprint
     // v6/native-toolchain v2 forces one clean rebuild past a Ninja stale-object bug.
     // translation v2 added runtime/src, which the translator regex-scans for native overrides;
     // v3 replaced it with the native index extracted from it, whenever that index is current.
-    private const string Version = "mkwc-toolkit-compile-v6";
-    private const string TranslationVersion = "mkwc-toolkit-translation-v3";
+    private const string Version = "mkwc-toolkit-compile-v7";
+    private const string TranslationVersion = "mkwc-toolkit-translation-v4";
     private const string NativeToolchainVersion = "mkwc-toolkit-native-toolchain-v2";
     private const string PackageVersion = "mkwc-toolkit-package-v1";
     private const string RuntimeAssetsVersion = "mkwc-product-runtime-assets-v3";
     private const string RuntimeAssetsDescription = "The product runtime assets";
 
     private static readonly string[] SourceExtensions =
-        [".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".s", ".asm",
+        [".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".inc", ".s", ".asm",
          ".cmake", ".txt", ".yml", ".yaml", ".toml", ".json", ".ps1", ".in", ".def", ".patch"];
 
     /// <summary>
@@ -40,7 +40,11 @@ internal static class ToolkitFingerprint
     ];
 
     private static readonly string[] TranslationFiles =
-        [InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1"];
+    [
+        InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1",
+        // Maps the PAL-keyed native index to the installed release's addresses.
+        InstalledLayout.WorkspaceEntryPrefix + "runtime/include/guest_abi/guest_address_table.inc"
+    ];
 
     private const string NativeSourcePrefix = InstalledLayout.WorkspaceEntryPrefix + "runtime/src/";
     private const string NativeIndexEntry = InstalledLayout.WorkspaceEntryPrefix + "runtime/native-index.json";

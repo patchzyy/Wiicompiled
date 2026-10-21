@@ -54,33 +54,29 @@ internal static class InputValidation
         }
         : "Unknown";
 
-    public static void EnsureCompatibleDisc(DiscHeader header, PayloadManifest manifest)
-    {
-        if (!header.GameId.Equals(manifest.ExpectedGameId, StringComparison.OrdinalIgnoreCase))
-        {
-            throw new InvalidDataException(
-                $"This build supports Mario Kart Wii PAL ({manifest.ExpectedGameId}). " +
-                $"The selected image is {header.GameId} ({header.InternalName}, {header.Region}).");
-        }
-    }
+    /// <summary>The supported release this disc is, or a clear rejection naming every supported one.</summary>
+    public static GameRelease EnsureCompatibleDisc(DiscHeader header, PayloadManifest manifest) =>
+        manifest.SupportedReleases.FirstOrDefault(release =>
+            release.GameId.Equals(header.GameId, StringComparison.OrdinalIgnoreCase))
+        ?? throw new InvalidDataException(
+            "This build supports Mario Kart Wii " +
+            string.Join(", ", manifest.SupportedReleases.Select(release =>
+                $"{RegionFromGameId(release.GameId)} ({release.GameId})")) +
+            $". The selected image is {header.GameId} ({header.InternalName}, {header.Region}).");
 
-    // Thin forwarding wrappers: the actual download/RSA-verification logic lives in
-    // WiiCompiled.Setup.Common.RetroWfcPayload (shared with WiiCompiled.Setup.Linux) so there's one
-    // copy of it, not two. Kept under these names so every existing call site here
-    // (ProductRepairService.cs, LocalBuildService.cs, Installation.cs, SelfTests.cs) is unchanged.
-    public const string CurrentRetroWfcPayloadUri = RetroWfcPayload.CurrentRetroWfcPayloadUri;
-
-    public static string ValidateStagedRetroWfcPayloadDirectory(string stagedDirectory,
+    // Forwarding wrappers over WiiCompiled.Setup.Common.RetroWfcPayload that require the game id,
+    // so no caller here can silently fall back to one region's payload.
+    public static string ValidateStagedRetroWfcPayloadDirectory(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null) =>
-        RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(stagedDirectory, signingKey);
+        RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(stagedDirectory, gameId, signingKey);
 
-    public static string ResolveRetroWfcPayloadFile(string stagedDirectory,
+    public static string ResolveRetroWfcPayloadFile(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null) =>
-        RetroWfcPayload.ResolveRetroWfcPayloadFile(stagedDirectory, signingKey);
+        RetroWfcPayload.ResolveRetroWfcPayloadFile(stagedDirectory, gameId, signingKey);
 
-    public static string ComputeRetroWfcPayloadSha256(string stagedDirectory,
+    public static string ComputeRetroWfcPayloadSha256(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null) =>
-        RetroWfcPayload.ComputeRetroWfcPayloadSha256(stagedDirectory, signingKey);
+        RetroWfcPayload.ComputeRetroWfcPayloadSha256(stagedDirectory, gameId, signingKey);
 
     public static void ValidateRetroWfcPayloadUri(string uriText) =>
         RetroWfcPayload.ValidateRetroWfcPayloadUri(uriText);

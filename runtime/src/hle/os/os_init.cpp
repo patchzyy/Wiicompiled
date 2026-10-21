@@ -17,19 +17,17 @@
 #include "recomp_mod_loader.h"
 #include "runtime_log.h"
 #include "system_bridge.h"
-
-extern "C" void func_801A961C(CpuContext* ctx);
-extern "C" void func_8055531C(CpuContext* ctx);
+#include "guest_function_imports.h"
 
 extern "C" void OSInitAlarm_RecompModLateInit_801a961c(CpuContext* ctx) {
-    func_801A961C(ctx);
+    MKW_GUEST_FUNC(801A961C)(ctx);
 }
 
 REGISTER_NATIVE_FUNCTION_AS(0x801A961C, OSInitAlarm_RecompModLateInit_801a961c, "OSInitAlarm_RecompModLateInit_801a961c");
 
 extern "C" void StaticRProlog_RecompModInit_8055531c(CpuContext* ctx) {
     RecompMod::RunMemoryInitializers();
-    func_8055531C(ctx);
+    MKW_GUEST_FUNC(8055531C)(ctx);
     RecompMod::RunPostRelInitializers();
 }
 
@@ -107,13 +105,14 @@ extern "C" void HLE_SISetSamplingRate_801b3acc(uint32_t msec)
 
 // Video Interface (VI) - TV output.
 
-// VIGetTvFormat (0x801bacd8): CRITICAL, must return 1 (VI_PAL) not 0, or PAL builds
-// misbehave/panic.
+// VIGetTvFormat (0x801bacd8): CRITICAL, must report the game's own TV format or it
+// misbehaves/panics.
 extern "C" uint32_t HLE_VIGetTvFormat_801bacd8()
 {
     // VI_NTSC = 0, VI_PAL = 1, VI_MPAL = 2
-    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning VI_PAL (1)" << std::endl;
-    return 1;
+    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning " << ::GuestRegion::CurrentFacts().viTvFormat
+                      << std::endl;
+    return ::GuestRegion::CurrentFacts().viTvFormat;
 }
 
 REGISTER_NATIVE_FUNCTION(0x801B2DE0, SIInit_801b2de0);
@@ -176,22 +175,18 @@ extern "C" uint32_t __OSInitSTM_HLE_801ab848(CpuContext* ctx)
 
     RT_LOG(RT_TAG_OS) << "__OSInitSTM_HLE_801ab848 called: initializing STM state" << std::endl;
 
-    // R13 (SDA2) holds the base for small data variables
-    const uint32_t r13 = cpu->gpr[13];
-    if (r13 == 0) {
-         RT_LOG(RT_TAG_OS) << "__OSInitSTM: Warning - R13 is 0, cannot write state." << std::endl;
-         return 0;
-    }
+    // STM_Initialized, /dev/stm/immediate and /dev/stm/eventhook.
+    const uint32_t kStmInitializedAddr = MKW_GADDR(80386934);
+    const uint32_t kStmImmediateHandleAddr = MKW_GADDR(80386938);
+    const uint32_t kStmEventHookHandleAddr = MKW_GADDR(8038693C);
 
-    // Offsets from disassembly: r13-0x62cc=STM_Initialized, r13-0x62c8=/dev/stm/immediate,
-    // r13-0x62c4=/dev/stm/eventhook.
     try {
         // Mark STM as initialized
-        ::Memory::Write32(r13 - 0x62ccu, 1);
+        ::Memory::Write32(kStmInitializedAddr, 1);
 
         // Fake non-zero handles so callers' zero-checks pass.
-        ::Memory::Write32(r13 - 0x62c8u, 0x00535401); // "ST\x01"
-        ::Memory::Write32(r13 - 0x62c4u, 0x00535402); // "ST\x02"
+        ::Memory::Write32(kStmImmediateHandleAddr, 0x00535401); // "ST\x01"
+        ::Memory::Write32(kStmEventHookHandleAddr, 0x00535402); // "ST\x02"
 
         // Default Power/Reset callback pointers are left unset; safe since we never fire
         // the STM hardware interrupt that would invoke them.

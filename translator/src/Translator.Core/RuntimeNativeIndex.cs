@@ -43,6 +43,22 @@ public sealed record RuntimeNativeIndex(
             .Select(static entry => entry.Address).ToHashSet();
         return new RuntimeNativeGuestEffectSet(contracts, precise, conservative);
     }
+
+    /// <summary>
+    /// The index is keyed by the PAL addresses the runtime sources name; this is the same index
+    /// keyed by <paramref name="region"/>'s addresses. Every address must be in the table, PAL too.
+    /// </summary>
+    public RuntimeNativeIndex ForRegion(GuestAddressTable table, GuestRegion region) => new(
+        Registrations.Select(entry => entry with { Address = table.Map(entry.Address, region) }).ToArray(),
+        VoidStubAbis.Select(entry => entry with { Address = table.Map(entry.Address, region) }).ToArray(),
+        Effects.Select(entry => entry with
+        {
+            Address = table.Map(entry.Address, region),
+            Contract = entry.Contract with
+            {
+                DirectCallTargets = entry.Contract.DirectCallTargets.Select(target => table.Map(target, region)).ToArray()
+            }
+        }).ToArray());
 }
 
 public static class RuntimeNativeIndexBuilder

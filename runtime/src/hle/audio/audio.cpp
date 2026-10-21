@@ -21,10 +21,10 @@ namespace {
 constexpr uint32_t kDefaultSampleRate = 32000u;
 constexpr uint32_t kAudioChannels = 2u;
 constexpr uint32_t kBytesPerSample = 2u;
-constexpr uint32_t kAIInitializedAddr = 0x80386448u;
-constexpr uint32_t kAICallbackBusyAddr = 0x8038644Cu;
-constexpr uint32_t kAICallbackStackSwitchAddr = 0x8038647Cu;
-constexpr uint32_t kAIDmaCallbackAddr = 0x80386480u;
+const uint32_t kAIInitializedAddr = MKW_GADDR(80386448);
+const uint32_t kAICallbackBusyAddr = MKW_GADDR(8038644C);
+const uint32_t kAICallbackStackSwitchAddr = MKW_GADDR(8038647C);
+const uint32_t kAIDmaCallbackAddr = MKW_GADDR(80386480);
 
 // Max completed 3 ms DMA blocks delivered per tick. Draining several at once catches up
 // backlog from a long frame without letting a large stall spiral into an unbounded loop.

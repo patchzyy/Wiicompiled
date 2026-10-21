@@ -74,7 +74,7 @@ PPC_NATIVE_OVERRIDE(801B1CAC, SCGetEuRgb60Mode_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductArea_HLE()
 {
-    return LookupProductRegion(0x8029CEB0u, 5, 13,
+    return LookupProductRegion(MKW_GADDR(8029CEB0), 5, 13,
                                RuntimeConsoleIdentity::Current().area);
 }
 
@@ -82,8 +82,8 @@ PPC_NATIVE_OVERRIDE(801B23A0, SCGetProductArea_HLE, uint32_t, (), ());
 
 extern "C" uint32_t SCGetProductCode_HLE()
 {
-    // Original PAL SC storage for the six-byte CODE value.
-    constexpr uint32_t kProductCodeAddress = 0x803869E0u;
+    // Original SC storage for the six-byte CODE value.
+    const uint32_t kProductCodeAddress = MKW_GADDR(803869E0);
     const std::string& productCode = RuntimeConsoleIdentity::Current().productCode;
     const size_t size = productCode.size() + 1;
     if (!Memory::Contains(kProductCodeAddress, size)) {
@@ -108,7 +108,7 @@ PPC_NATIVE_OVERRIDE(801B2460, SCGetProductSN_HLE, uint32_t, (uint32_t serialAddr
 
 extern "C" uint32_t SCGetProductGameRegion_HLE()
 {
-    return LookupProductRegion(0x8029CEF8u, 4, 4,
+    return LookupProductRegion(MKW_GADDR(8029CEF8), 4, 4,
                                RuntimeConsoleIdentity::Current().gameRegion);
 }
 

@@ -391,14 +391,12 @@ extern "C" uint32_t OSSetPowerCallback_801ab75c(CpuContext* ctx)
     if (!cpu) return 0;
 
     const uint32_t newCallback = cpu->gpr[3];
-    const uint32_t r13 = cpu->gpr[13];
 
-    // Assembly defines the default callback address as (0x801b0000 - 0x43f4)
-    constexpr uint32_t kDefaultCallbackAddr = 0x801b0000u - 0x43f4u; // 0x801abc0c
-
-    // Offsets from R13 (SDA2)
-    const uint32_t kCallbackPtrAddr = r13 - 0x62b8u;
-    const uint32_t kHandlerActiveAddr = r13 - 0x62c0u;
+    // The SDK's default power callback, the registered callback pointer and the
+    // "event handler registered" flag.
+    const uint32_t kDefaultCallbackAddr = MKW_GADDR(801ABC0C);
+    const uint32_t kCallbackPtrAddr = MKW_GADDR(80386948);
+    const uint32_t kHandlerActiveAddr = MKW_GADDR(80386940);
 
     RT_LOG(RT_TAG_OS) << "OSSetPowerCallback_801ab75c called: newCB=0x"
               << std::hex << newCallback << std::dec << std::endl;
@@ -489,12 +487,13 @@ extern "C" int32_t IPCCltInit_80193478(CpuContext* ctx)
     RT_LOG(RT_TAG_OS) << "IPCCltInit_80193478 called: calling IPCInit for buffer setup" << std::endl;
     
     // Sets 0x803867EC/F0/E8 (IPC buffer lo/hi + init flag) from __OSGetIPCBufferLo/Hi.
-    InvokeIndirectCpu(0x80192F7Cu, ctx);
+    InvokeIndirectCpu(MKW_GADDR(80192F7C), ctx);
 
     // Advance the buffer lo pointer by 0x1000 (iosHeap size), matching real IPCCltInit.
-    uint32_t bufferLo = Memory::Read32(ctx->gpr[13] + -25620); // 0x803867EC at r13-0x6414
+    const uint32_t kIpcBufferLoGlobal = MKW_GADDR(803867EC);
+    uint32_t bufferLo = Memory::Read32(kIpcBufferLoGlobal);
     uint32_t newBufLo = bufferLo + 0x1000; // Advance by 4KB for iosHeap
-    Memory::Write32(ctx->gpr[13] + -25620, newBufLo);
+    Memory::Write32(kIpcBufferLoGlobal, newBufLo);
     
     RT_LOG(RT_TAG_OS) << "IPCCltInit: IPC buffer lo advanced from 0x" << std::hex << bufferLo
               << " to 0x" << newBufLo << std::dec << std::endl;
