@@ -1,4 +1,4 @@
-# NTSC-J (RMCJ01) function map, ported from ../mkwii/MAP.txt (PAL RMCP01) by tools/region/port_map.py.
+# NTSC-J (RMCJ01) function map, ported from ../mkwii/MAP.txt (PAL RMCP01).
 # Every entry was validated against the RMCJ01 main.dol/StaticR.rel.
 # Verdicts: PROVEN=12202, REFERENCED=12693, PLAUSIBLE=4513, IDENTITY=15, INTERPOLATED=0, ADDED=6 (binary-proven entries no PAL entry covers); entries=29429
 800018a8 0x800018a8

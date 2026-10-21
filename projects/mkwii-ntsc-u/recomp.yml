@@ -4,8 +4,7 @@ workspace_root: ../..
 # Mario Kart Wii NTSC-U (RMCE01). The same translation surface as projects/mkwii/recomp.yml, with
 # the facts that differ per region: the small-data bases the DOL's __init_registers installs, the
 # StaticR.rel load address and the clean-input digests. The function map is the PAL map ported
-# through the community region table and validated against these binaries by
-# tools/region/port_map.py.
+# through the community region table and validated against these binaries.
 project:
   id: mkwii-rmce01
   display_name: Mario Kart Wii NTSC-U
