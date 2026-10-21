@@ -775,11 +775,25 @@ static bool WriteDisplayListBurst(const uint8_t* data, uint32_t sizeBytes) {
     return true;
 }
 
+static void FifoWriteBurstImpl(const uint8_t* data, uint32_t sizeBytes);
+
 extern "C" void GX_HLE_FIFO_WriteBurst(const uint8_t* data, uint32_t sizeBytes) {
     if (data == nullptr || sizeBytes == 0) {
         return;
     }
+    if (GxWorker::ShouldDefer()) {
+        EnsureAuroraFrameForFifo();
+        GxWorker::FifoBurst(data, sizeBytes);
+        return;
+    }
+    FifoWriteBurstImpl(data, sizeBytes);
+}
 
+void GxWorkerReplayFifoWrite(uint32_t value, uint32_t sizeBytes) { HleFifoWrite(value, sizeBytes); }
+
+void GxWorkerReplayFifoBurst(const uint8_t* data, uint32_t sizeBytes) { FifoWriteBurstImpl(data, sizeBytes); }
+
+static void FifoWriteBurstImpl(const uint8_t* data, uint32_t sizeBytes) {
     if (IsDisplayListActive() && WriteDisplayListBurst(data, sizeBytes)) {
         return;
     }

@@ -112,6 +112,14 @@ public:
         ConfigureFromTaskLocked(taskPtr);
     }
 
+    bool MixBusy() {
+        if (!m_mixThread.joinable()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_mixMutex);
+        return m_mixPending || m_mixBusy;
+    }
+
     void JoinMix() {
         if (m_mixThread.joinable()) {
             std::unique_lock<std::mutex> lock(m_mixMutex);
@@ -1558,6 +1566,10 @@ void InitAram() {
 
 void JoinMixWorker() {
     Instance().JoinMix();
+}
+
+bool MixWorkerBusy() {
+    return Instance().MixBusy();
 }
 
 void ShutdownMixWorker() {

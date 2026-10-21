@@ -1,4 +1,5 @@
 #include "settings_overlay.h"
+#include "gx_worker.h"
 #include "audio_backend.h"
 #include "aurora_events.h"
 #include "controller_button_names.h"
@@ -188,6 +189,7 @@ bool IsHighFrameRateMode() {
 }
 
 void SetResolutionScale(float scale) {
+    GX_SYNC_INLINE();
     g_resolutionScale = scale;
     VISetFrameBufferScale(scale);
     RuntimeConfigFile::SetResolutionMultiplier(scale);
@@ -1134,6 +1136,7 @@ void DrawGraphicsSettings() {
         ImGui::EndCombo();
     }
     if (frameInterpolationModeChanged) {
+        GX_SYNC_INLINE();
         const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
         aurora_set_frame_interpolation_fps(targetFps);
         RuntimeConfigFile::SetFrameInterpolationFps(targetFps);
@@ -1177,10 +1180,12 @@ void DrawGraphicsSettings() {
     }
 #endif
     if (ImGui::Checkbox("Disable copy filter", &g_disableCopyFilter)) {
+        GX_SYNC_INLINE();
         aurora_set_disable_copy_filter(g_disableCopyFilter);
         RuntimeConfigFile::SetDisableCopyFilter(g_disableCopyFilter);
     }
     if (ImGui::Checkbox("Skip draws while shaders compile", &g_skipUnreadyPipelines)) {
+        GX_SYNC_INLINE();
         aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
         RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
     }
@@ -1573,9 +1578,7 @@ void ReleaseControllers() noexcept {
 }
 
 void Draw() noexcept {
-    // Wait for the frame worker's DONE phase: it has replayed the previous frame's ImGui draw lists
-    // and started the next ImGui frame, so all overlay callers can now safely issue ImGui commands.
-    aurora_wait_for_frame_worker();
+    // ImGui is only touched on this thread; the render worker replays a frozen copy.
     ApplyConfiguredMappings();
     PersistDisplayModeIfChanged();
     UpdateCursorAutoHide();

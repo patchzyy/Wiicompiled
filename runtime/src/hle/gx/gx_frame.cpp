@@ -87,8 +87,54 @@ void BeginNextAuroraFrameWithRetry(std::chrono::milliseconds timeout) {
     ++s_beginExpiredLogCount;
 }
 
+void EnsureAuroraFrameForFifo() {
+    // The game thread can't see where draws start in recorded FIFO bytes, so any write may begin the
+    // frame. A failed begin is only retried once the next frame is presented.
+    static int s_attemptedFrame = -1;
+    if (g_auroraFrameActive.load(std::memory_order_acquire) || s_attemptedFrame == g_gxFrameCount) {
+        return;
+    }
+    s_attemptedFrame = g_gxFrameCount;
+    UpdateAuroraAndProcessEvents();
+    if (BeginAuroraFrame()) {
+        g_auroraFrameActive.store(true, std::memory_order_release);
+    }
+}
+
 void EnsureAuroraFrameActive() {
+    // The game thread begins frames before it records work for the GX worker.
+    if (GxWorker::OnWorker()) {
+        return;
+    }
     if (!g_auroraFrameActive.load(std::memory_order_acquire)) {
         BeginNextAuroraFrameWithRetry();
     }
+}
+
+namespace {
+// Whether the GX half of the current frame has begun, on either path. Inline frame calls only run
+// after a sync, so the ring orders every access.
+bool g_frameGxBegun = false;
+}
+
+void SetAuroraFrameGxBegun(bool begun) { g_frameGxBegun = begun; }
+
+void GxWorkerBeginFrame() {
+    // gfx::begin_frame can briefly fail to map a staging buffer; retry like the inline path does.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+    while (!(g_frameGxBegun = aurora_begin_frame_gx()) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    if (!g_frameGxBegun) {
+        RT_LOGF(RT_TAG_GX, "GX worker could not begin an aurora frame\n");
+    }
+}
+
+void GxWorkerEndFrame(AuroraImguiFrame* imgui) {
+    if (g_frameGxBegun) {
+        aurora_end_frame_gx(imgui);
+    } else {
+        aurora_release_imgui_frame(imgui);
+    }
+    g_frameGxBegun = false;
 }

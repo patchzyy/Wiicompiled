@@ -24,6 +24,7 @@ extern "C" GXFifoObj* GXInit(void* base, u32 size);
  */
 extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
 {
+    GX_SYNC_INLINE();
     constexpr uint32_t kFifoObjAddr = 0x80343740u;
     constexpr uint32_t kGXDataAddr = 0x803437C0u;
     constexpr uint32_t kGXDataSize = 0x600u;
@@ -91,16 +92,16 @@ PPC_NATIVE_OVERRIDE(8016b850, GX__Init_8016b850, uint32_t, (uint32_t fifoBase, u
 
 extern "C" void GX__InitFifoBase_8016c7c8(uint32_t fa, uint32_t ba, uint32_t s) { GXInitFifoBase((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj)), GuestToHostPtr(ba, s), s); }
 
-extern "C" void GX__SetCPUFifo_8016c94c(uint32_t fa) { GXSetCPUFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
+extern "C" void GX__SetCPUFifo_8016c94c(uint32_t fa) { GX_SYNC_INLINE(); GXSetCPUFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
 PPC_NATIVE_OVERRIDE_VOID(8016c94c, GX__SetCPUFifo_8016c94c, (uint32_t fa), (fa));
 
-extern "C" void GX__SetGPFifo_8016cb2c(uint32_t fa) { GXSetGPFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
+extern "C" void GX__SetGPFifo_8016cb2c(uint32_t fa) { GX_SYNC_INLINE(); GXSetGPFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
 PPC_NATIVE_OVERRIDE_VOID(8016cb2c, GX__SetGPFifo_8016cb2c, (uint32_t fa), (fa));
 
-extern "C" void __GX__SaveFifo_8016cdbc(uint32_t fa) { GXSaveCPUFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
+extern "C" void __GX__SaveFifo_8016cdbc(uint32_t fa) { GX_SYNC_INLINE(); GXSaveCPUFifo((GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj))); }
 PPC_NATIVE_OVERRIDE_VOID(8016cdbc, __GX__SaveFifo_8016cdbc, (uint32_t fa), (fa));
 
-extern "C" void GX__GetCPUFifo_8016cf10(uint32_t fa) { auto* d=(GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj)); auto* s=GXGetCPUFifo(); if(d&&s) std::memcpy(d,s,sizeof(GXFifoObj)); }
+extern "C" void GX__GetCPUFifo_8016cf10(uint32_t fa) { GX_SYNC_INLINE(); auto* d=(GXFifoObj*)GuestToHostPtr(fa, sizeof(GXFifoObj)); auto* s=GXGetCPUFifo(); if(d&&s) std::memcpy(d,s,sizeof(GXFifoObj)); }
 PPC_NATIVE_OVERRIDE_VOID(8016cf10, GX__GetCPUFifo_8016cf10, (uint32_t fa), (fa));
 
 extern "C" void __GX__FifoInit_8016d180()
@@ -137,6 +138,7 @@ extern "C" void __GX__FifoInit_8016d180()
 
 extern "C" void __GX__PEInit_8016ee14()
 {
+    GX_SYNC_INLINE();
     constexpr uint32_t kPeTokenInterruptId = 0x12u;
     constexpr uint32_t kPeFinishInterruptId = 0x13u;
     constexpr uint32_t kPeTokenInterruptMask = 0x1000u;
@@ -165,7 +167,16 @@ PPC_NATIVE_OVERRIDE_VOID(8016ee14, __GX__PEInit_8016ee14, (), ());
 // Display List Recording
 // ============================================================================
 
+namespace {
+// Display-list recording runs inline: the guest list buffer and its size are needed synchronously.
+bool g_dlInline = false;
+}
+
 extern "C" void GX__BeginDisplayList_80172e00(uint32_t la, uint32_t s) {
+    if (!g_dlInline) {
+        GxWorker::BeginInline();
+        g_dlInline = true;
+    }
     try {
         uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (!gd) return;
@@ -187,6 +198,13 @@ extern "C" void GX__BeginDisplayList_80172e00(uint32_t la, uint32_t s) {
     } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(80172e00, GX__BeginDisplayList_80172e00, (uint32_t la, uint32_t s), (la, s));
+
+static void EndDisplayListInline() {
+    if (g_dlInline) {
+        g_dlInline = false;
+        GxWorker::EndInline();
+    }
+}
 
 extern "C" uint32_t GX__EndDisplayList_80172eb4() {
     try {
@@ -214,12 +232,14 @@ extern "C" uint32_t GX__EndDisplayList_80172eb4() {
         // "inactive" whenever the GXData pointer was null, so recording must
         // stop here even on the gd == 0 path.
         EndDisplayListRecording();
+        EndDisplayListInline();
 
         return wrapped == 0 ? Memory::Read32(kDlCountAddr) : 0;
     } catch (...) {
         // Leaving the shadow active would silently swallow every subsequent
         // FIFO write into a dead list.
         EndDisplayListRecording();
+        EndDisplayListInline();
         return 0;
     }
 }
@@ -229,5 +249,8 @@ PPC_NATIVE_OVERRIDE(80172EB4, GX__EndDisplayList_80172eb4, uint32_t, (), ());
 // Flush
 // ============================================================================
 
-extern "C" void GX__Flush_8016e654() { GXFlush(); }
+extern "C" void GX__Flush_8016e654() {
+    GX_DEFER_CALL0(GX__Flush_8016e654);
+    GXFlush();
+}
 PPC_NATIVE_OVERRIDE_VOID(8016e654, GX__Flush_8016e654, (), ());
