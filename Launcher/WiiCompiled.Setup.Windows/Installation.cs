@@ -131,6 +131,8 @@ internal sealed class Installation
         Workspace + "LocalBuild.ps1",
         Workspace + "NativeBuildFlags.ps1",
         Workspace + @"projects\mkwii\recomp.yml",
+        Workspace + @"projects\mkwii-ntsc-u\recomp.yml",
+        Workspace + @"projects\mkwii-ntsc-j\recomp.yml",
         Workspace + @"runtime\CMakeLists.txt",
         Workspace + @"runtime\assets\dsp\dsp_coef.bin"
     ];

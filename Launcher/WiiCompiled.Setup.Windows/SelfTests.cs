@@ -1446,7 +1446,8 @@ internal static class SelfTests
         Directory.CreateDirectory(Path.Combine(root, "Toolkit", "CMake", "bin"));
         Directory.CreateDirectory(Path.Combine(root, "Toolkit", "Ninja"));
         Directory.CreateDirectory(Path.Combine(root, "Toolkit", "llvm-mingw", "bin"));
-        Directory.CreateDirectory(Path.Combine(root, "BuildWorkspace", "projects", "mkwii"));
+        foreach (var project in new[] { "mkwii", "mkwii-ntsc-u", "mkwii-ntsc-j" })
+            Directory.CreateDirectory(Path.Combine(root, "BuildWorkspace", "projects", project));
         Directory.CreateDirectory(Path.Combine(root, "BuildWorkspace", "runtime", "src"));
         Directory.CreateDirectory(Path.Combine(root, "BuildWorkspace", "runtime", "assets", "wii", "shared2",
             "wc24"));
@@ -1473,7 +1474,8 @@ internal static class SelfTests
         File.WriteAllText(Path.Combine(root, "Toolkit", "nodtool.exe"), "tool");
         File.WriteAllText(Path.Combine(root, "BuildWorkspace", "LocalBuild.ps1"), "# build");
         File.WriteAllText(Path.Combine(root, "BuildWorkspace", "NativeBuildFlags.ps1"), "# flags");
-        File.WriteAllText(Path.Combine(root, "BuildWorkspace", "projects", "mkwii", "recomp.yml"), "profiles: {}");
+        foreach (var project in new[] { "mkwii", "mkwii-ntsc-u", "mkwii-ntsc-j" })
+            File.WriteAllText(Path.Combine(root, "BuildWorkspace", "projects", project, "recomp.yml"), "profiles: {}");
         File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.20)");
         File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "src", "main.cpp"), "int main();");
         File.WriteAllText(Path.Combine(root, "BuildWorkspace", "runtime", "assets", "wii", "shared2", "wc24",

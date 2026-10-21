@@ -6,52 +6,54 @@ namespace Translator.Core.Mods.Mkwii;
 
 public static class RetroRewindRegionPatches
 {
-    private const uint PalVoiceHook = 0x808DBCD8;
-    private const uint UsVoiceHook = 0x808D7580;
+    private const uint PalRelStart = 0x805102E0;
 
-    // CustomCharacterVoice.cpp's HoldRosalinaLumaSound pointer retains its PAL address
-    // in the shipped US chunk. The clean US REL's relocated vtable identifies the slot;
-    // these surrounding entries distinguish it from other tables using HoldSoundLimited.
-    private static readonly (uint Address, uint Target)[] UsVoiceTable =
+    // Hooks the pack writes at PAL vtable slots that its NTSC-U port map leaves unported:
+    // PAL slot, NTSC-U slot, and the function that NTSC-U slot holds in the clean StaticR.rel.
+    private static readonly (uint Pal, uint Us, uint UsTarget)[] UnportedUsHooks =
     [
-        (0x808D7540, 0x806FC03C),
-        (0x808D7544, 0x806FBC94),
-        (0x808D7570, 0x806FBC3C),
-        (0x808D7574, 0x806FBC34),
-        (0x808D7578, 0x806FA3A8),
-        (0x808D757C, 0x806FAA04),
-        (UsVoiceHook, 0x806FAB44),
-        (0x808D7584, 0x806FAD58),
-        (0x808D7588, 0x806FA7B0),
-        (0x808D758C, 0x806FA83C),
-        (0x808D7590, 0x806FA8D0),
-        (0x808D75BC, 0x808611E8),
-        (0x808D75C0, 0x806FA824)
+        (0x808B4D48, 0x808B0698, 0x80563BE8), // Kart::Damage::ApplyBananaDamage
+        (0x808B4DFC, 0x808B074C, 0x80563CD8), // Kart::Damage::ApplyZapperDamage
+        (0x808B4E14, 0x808B0764, 0x80563CCC), // Kart::Damage::ApplyShockDamage
+        (0x808CB02C, 0x808C5D24, 0x8072E068), // AI::EnemyRouteController::Update
+        (0x808DBCD8, 0x808D7580, 0x806FAB44), // Audio::RaceActor::HoldSoundLimited
     ];
 
-    public static KamekChunk CorrectUsVoiceHook(KamekChunk chunk, string? gameId, ProgramImage image)
+    /// <summary>
+    /// Moves the NTSC-U chunk's unported PAL vtable hooks to their NTSC-U slots. A StaticR.rel
+    /// address the NTSC-U chunk shares with the PAL chunk is always unported, so an unknown one fails.
+    /// </summary>
+    public static KamekChunk CorrectUnportedUsHooks(KamekChunk usChunk, KamekChunk palChunk, string? gameId,
+        ProgramImage image)
     {
         if (!string.Equals(gameId, "RMCE01", StringComparison.OrdinalIgnoreCase))
-            return chunk;
+            return usChunk;
+        if (usChunk.Commands.Count != palChunk.Commands.Count)
+            throw new InvalidDataException("Retro Rewind's PAL and NTSC-U chunks have different command lists.");
 
-        var matching = chunk.Commands.Where(c => c.AddressIsAbsolute && c.Address == PalVoiceHook).ToArray();
-        if (matching.Length == 0)
-            return chunk;
-        if (matching.Length != 1 || matching[0].Id != KamekCommandId.Addr32 ||
-            matching[0].Arguments.Count != 1 || matching[0].Arguments[0] >= chunk.CodeSize ||
-            chunk.Commands.Any(c => c.AddressIsAbsolute && c.Address == UsVoiceHook))
-            throw new InvalidDataException("Unexpected Retro Rewind US voice hook commands; cannot correct the PAL address.");
-
-        foreach (var (address, target) in UsVoiceTable)
+        var commands = usChunk.Commands.ToArray();
+        var changed = false;
+        for (var i = 0; i < commands.Length; i++)
         {
-            if (!image.Contains(address, 4) ||
-                BinaryPrimitives.ReadUInt32BigEndian(image.Memory.AsSpan(image.GetOffset(address, 4), 4)) != target)
-                throw new InvalidDataException($"Retro Rewind US voice vtable check failed at 0x{address:X8}.");
+            var us = commands[i];
+            var pal = palChunk.Commands[i];
+            if (!us.AddressIsAbsolute || !pal.AddressIsAbsolute || us.Address != pal.Address || us.Address < PalRelStart)
+                continue;
+            var hook = UnportedUsHooks.FirstOrDefault(h => h.Pal == us.Address);
+            if (hook.Pal == 0)
+                throw new InvalidDataException($"Retro Rewind's NTSC-U chunk patches unported PAL address 0x{us.Address:X8}.");
+            if (us.Id != KamekCommandId.Addr32 || us.Arguments.Count != 1 || us.Arguments[0] >= usChunk.CodeSize)
+                throw new InvalidDataException($"Unexpected Retro Rewind command at PAL address 0x{us.Address:X8}.");
+            if (!image.Contains(hook.Us, 4) ||
+                BinaryPrimitives.ReadUInt32BigEndian(image.Memory.AsSpan(image.GetOffset(hook.Us, 4), 4)) != hook.UsTarget)
+                throw new InvalidDataException($"NTSC-U vtable slot check failed at 0x{hook.Us:X8}.");
+            commands[i] = us with { Address = hook.Us };
+            changed = true;
         }
-
-        return new KamekChunk(chunk.Index, chunk.FileOffset, chunk.BssSize, chunk.CodeSize,
-            chunk.CtorStart, chunk.CtorEnd, chunk.ChunkSize, chunk.CodeBlob,
-            chunk.Commands.Select(c => ReferenceEquals(c, matching[0]) ? c with { Address = UsVoiceHook } : c).ToArray());
+        return changed
+            ? new KamekChunk(usChunk.Index, usChunk.FileOffset, usChunk.BssSize, usChunk.CodeSize,
+                usChunk.CtorStart, usChunk.CtorEnd, usChunk.ChunkSize, usChunk.CodeBlob, commands)
+            : usChunk;
     }
 
     private const uint EsrbBranchSite = 0x80604094;

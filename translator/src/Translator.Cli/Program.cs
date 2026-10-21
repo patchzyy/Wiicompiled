@@ -1782,9 +1782,11 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
     var selected = pul.SelectRegion(region);
     if (string.Equals(profile?.Name, "retro-rewind", StringComparison.OrdinalIgnoreCase))
     {
-        var corrected = RetroRewindRegionPatches.CorrectUsVoiceHook(selected, project?.Identity.GameId, image.Value);
+        var corrected = pul.IsCombined && !string.Equals(region, "P", StringComparison.OrdinalIgnoreCase)
+            ? RetroRewindRegionPatches.CorrectUnportedUsHooks(selected, pul.SelectRegion("P"), project?.Identity.GameId, image.Value)
+            : selected;
         if (!ReferenceEquals(corrected, selected))
-            Console.WriteLine("[translator] Corrected Retro Rewind US voice vtable hook: 0x808DBCD8 -> 0x808D7580.");
+            Console.WriteLine("[translator] Moved Retro Rewind's unported PAL vtable hooks to their NTSC-U slots.");
         var esrb = RetroRewindRegionPatches.ApplyUsEsrbSkip(corrected, project?.Identity.GameId, image.Value);
         if (!ReferenceEquals(esrb, corrected))
             Console.WriteLine("[translator] Applied Retro Rewind's NTSC-U ESRB skip statically at 0x80604094.");
