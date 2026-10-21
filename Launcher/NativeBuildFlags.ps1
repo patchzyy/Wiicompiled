@@ -93,7 +93,7 @@ function Get-MkwBuildSafePath([string]$Path, [string]$Kind, [string]$MarkerFile)
 
 function Get-MkwProjectPins([string]$ProjectFile) {
     <#
-    The Mario Kart Wii facts pinned by projects/mkwii/recomp.yml (game identity, clean input
+    The Mario Kart Wii facts pinned by a projects/*/recomp.yml (game identity, clean input
     digests, translation entry point, Retro-WFC endpoint), read from one place instead of being
     restated; Test-PinnedFacts.ps1 checks the copies that can't read YAML (C++ header, C#
     constants) against these values. Parsing is literal, not a YAML dependency, since the file is
@@ -101,7 +101,7 @@ function Get-MkwProjectPins([string]$ProjectFile) {
     #>
     Assert-File $ProjectFile 'Translation project file'
     $pins = [ordered]@{
-        GameId = ''; DolSha256 = ''; RelSha256 = ''; EntryPoint = ''; RetroWfcPayloadUri = ''
+        GameId = ''; Region = ''; DolSha256 = ''; RelSha256 = ''; EntryPoint = ''; RetroWfcPayloadUri = ''
     }
     $section = ''
     $inputKey = ''
@@ -112,6 +112,8 @@ function Get-MkwProjectPins([string]$ProjectFile) {
         if ($section -eq 'inputs' -and $line -match '^\s{2}([A-Za-z0-9_]+):\s*$') { $inputKey = $Matches[1]; continue }
         if ($section -eq 'project' -and $line -match '^\s*game_id:\s*(\S+)\s*$') {
             $pins.GameId = $Matches[1]
+        } elseif ($section -eq 'project' -and $line -match '^\s*region:\s*(\S+)\s*$') {
+            $pins.Region = $Matches[1]
         } elseif ($section -eq 'inputs' -and $line -match '^\s*sha256:\s*([0-9a-fA-F]{64})\s*$') {
             if ($inputKey -eq 'dol') { $pins.DolSha256 = $Matches[1].ToLowerInvariant() }
             elseif ($inputKey -eq 'rel') { $pins.RelSha256 = $Matches[1].ToLowerInvariant() }
@@ -128,6 +130,30 @@ function Get-MkwProjectPins([string]$ProjectFile) {
         }
     }
     return $pins
+}
+
+function Resolve-MkwProjectForAssets([string]$Workspace, [string]$AssetsDirectory) {
+    <#
+    The translation project pinned to the main.dol in AssetsDirectory, after checking that
+    StaticR.rel and any extracted disc data belong to the same release.
+    #>
+    $dolSha = Get-MkwFileSha256 (Join-Path $AssetsDirectory 'main.dol')
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $Workspace 'projects') -Filter 'recomp.yml' -Recurse -File) {
+        $pins = Get-MkwProjectPins $file.FullName
+        if ($pins.DolSha256 -ne $dolSha) { continue }
+        if ((Get-MkwFileSha256 (Join-Path $AssetsDirectory 'StaticR.rel')) -ne $pins.RelSha256) {
+            throw "StaticR.rel does not match the clean $($pins.GameId) release of main.dol."
+        }
+        $bootBin = Join-Path $AssetsDirectory 'DATA\sys\boot.bin'
+        if (Test-Path -LiteralPath $bootBin -PathType Leaf) {
+            $discId = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($bootBin), 0, 6)
+            if ($discId -ne $pins.GameId) {
+                throw "The extracted game data is $discId but main.dol is $($pins.GameId); extract the game again."
+            }
+        }
+        return [pscustomobject]@{ Path = $file.FullName; Pins = $pins }
+    }
+    throw "main.dol (sha256 $dolSha) is not a supported clean Mario Kart Wii release."
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Description,

@@ -2,6 +2,7 @@
 
 #include "guest_abi/cpu_context.h"
 #include "guest_abi/exec_guard.h"
+#include "guest_abi/guest_region.h"
 #include "isa/ppc_isa_config.h"
 #include "isa/ppc_isa_cr.h"
 
@@ -24,7 +25,7 @@ uint32_t FilterScnRendererPathMaskOption(uint32_t pathMask) noexcept;
 // (used for the path mask filtering in ScnRenderer::createPath: depth of
 // field is always removed, bloom when the user disabled it)
 inline void ApplyRuntimeCallOptions(uint32_t target, CpuContext* ctx) {
-    if (target == 0x8023BD38u) {
+    if (::GuestRegion::Is<0x8023BD38u>(target)) {
         // ScnRenderer::createPath receives the post-processing path mask in r4.
         ctx->gpr[4] = FilterScnRendererPathMaskOption(ctx->gpr[4]);
     }
@@ -242,13 +243,11 @@ private:
     std::array<uint32_t, 18> saved_;
 };
 
-// Guest address of OSLoadContext, which models rfi-style context restoration
-// and intentionally replaces the full guest register file instead of returning
-// like a normal ABI call. It can never be guarded.
-inline constexpr uint32_t kOSLoadContextAddress = 0x801A1F58u;
-
+// OSLoadContext models rfi-style context restoration and intentionally replaces
+// the full guest register file instead of returning like a normal ABI call. It
+// can never be guarded.
 inline bool ShouldPreserveNonvolatileGprsForRawCpuCall(const TranslatedFunctionInfo* info) noexcept {
-    return info->kind == FunctionKind::Native && info->address != kOSLoadContextAddress;
+    return info->kind == FunctionKind::Native && info->address != MKW_GADDR(801A1F58);
 }
 
 inline uint32_t NonvolatileFprGuardMaskFor(const TranslatedFunctionInfo* info) noexcept {

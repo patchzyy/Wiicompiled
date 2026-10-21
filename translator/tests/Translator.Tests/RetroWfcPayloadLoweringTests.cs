@@ -8,6 +8,25 @@ namespace Translator.Tests;
 
 public class RetroWfcPayloadLoweringTests
 {
+    [Theory]
+    [InlineData("RMCP01", "P", "RMCPD00")]
+    [InlineData("RMCE01", "E", "RMCED00")]
+    [InlineData("RMCJ01", "J", "RMCJD00")]
+    public void PayloadMustMatchBaseDiscRegion(string gameId, string region, string payloadGame)
+    {
+        var payload = BuildSharedPayloadFixture();
+        payload.AsSpan(0x138, 12).Clear();
+        Encoding.ASCII.GetBytes(payloadGame).CopyTo(payload, 0x138);
+        var manifest = TestManifest() with { GameId = gameId, Region = region };
+        var result = RetroWfcPayload.Parse(payload, manifest, 0x81800000u, 0x2000u);
+        Assert.Equal(payloadGame, result.Summary.Game);
+        Assert.True(result.LoweringPlan.IsPlannable);
+
+        var wrongRegion = manifest with { GameId = gameId == "RMCP01" ? "RMCE01" : "RMCP01" };
+        Assert.Throws<InvalidDataException>(() =>
+            RetroWfcPayload.Parse(payload, wrongRegion, 0x81800000u, 0x2000u));
+    }
+
     [Fact]
     public void SharedPayloadDescriptorDrivesRelocationAndStaticLowering()
     {
@@ -35,28 +54,32 @@ public class RetroWfcPayloadLoweringTests
         Assert.Equal("moduleFunction", pointer.TargetKind);
     }
 
-    [Fact]
-    public void ProductionPayloadValidatesAndTranslatesEverySupportedPatch()
+    [Theory]
+    [InlineData("RMCP01", "P", "RMCPD00")]
+    [InlineData("RMCE01", "E", "RMCED00")]
+    [InlineData("RMCJ01", "J", "RMCJD00")]
+    public void ProductionPayloadValidatesAndTranslatesEverySupportedPatch(
+        string gameId, string region, string payloadGame)
     {
         var payloadRoot = Path.Combine(
             AppContext.BaseDirectory,
             "TestAssets",
             "RetroWfcPayload");
-        WiiCompiled.Setup.Common.RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(payloadRoot);
+        WiiCompiled.Setup.Common.RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameId: gameId);
         var payloadPath = Path.Combine(
             payloadRoot,
             "binary",
-            "payload.RMCPD00.bin");
+            $"payload.{payloadGame}.bin");
         var payload = File.ReadAllBytes(payloadPath);
 
         var result = RetroWfcPayload.Parse(
             payload,
-            ProductionPayloadManifest(),
+            ProductionPayloadManifest() with { GameId = gameId, Region = region },
             0x81800000u,
             0x00200000u,
-            "TestAssets/RetroWfcPayload/binary/payload.RMCPD00.bin");
+            $"TestAssets/RetroWfcPayload/binary/payload.{payloadGame}.bin");
 
-        Assert.Equal("RMCPD00", result.Summary.Game);
+        Assert.Equal(payloadGame, result.Summary.Game);
         Assert.Equal(payload.Length, result.Summary.PayloadImageSize);
         Assert.True(result.LoweringPlan.IsPlannable);
         Assert.Empty(result.LoweringPlan.Issues);

@@ -88,10 +88,20 @@ inline std::string GenerateSerial(std::time_t now) {
     return std::string(9 - digits.size(), '0') + digits;
 }
 
-// This recompilation targets the European disc. These are Dolphin's PAL boot
-// defaults; an existing setting.txt always takes precedence, in every region.
-inline std::optional<std::array<uint8_t, 256>> EncodeNew(const std::string& serial) {
-    const Settings identity{{"SERNO", serial}, {"CODE", "LEH"}, {"AREA", "EUR"}, {"GAME", "EU"}};
+// Console identity for a new setting.txt; Dolphin's boot defaults for the game's region.
+struct BootDefaults {
+    std::string area = "EUR";
+    std::string model = "RVL-001(EUR)";
+    std::string code = "LEH";
+    std::string video = "PAL";
+    std::string game = "EU";
+};
+
+// An existing setting.txt always takes precedence, in every region.
+inline std::optional<std::array<uint8_t, 256>> EncodeNew(
+    const std::string& serial,
+    const BootDefaults& defaults = BootDefaults{}) {
+    const Settings identity{{"SERNO", serial}, {"CODE", defaults.code}, {"AREA", defaults.area}, {"GAME", defaults.game}};
     if (!HasIdentity(identity)) {
         return std::nullopt;
     }
@@ -102,9 +112,15 @@ inline std::optional<std::array<uint8_t, 256>> EncodeNew(const std::string& seri
         bytes[position++] = static_cast<uint8_t>(value) ^ static_cast<uint8_t>(key);
         key = (key << 1) | (key >> 31);
     };
-    for (const std::string& line : {std::string("AREA=EUR\r\n"), std::string("MODEL=RVL-001(EUR)\r\n"),
-             std::string("DVD=0\r\n"), std::string("MPCH=0x7FFE\r\n"), std::string("CODE=LEH\r\n"),
-             "SERNO=" + serial + "\r\n", std::string("VIDEO=PAL\r\n"), std::string("GAME=EU\r\n")}) {
+    for (const std::string& line : {
+             "AREA=" + defaults.area + "\r\n",
+             "MODEL=" + defaults.model + "\r\n",
+             std::string("DVD=0\r\n"),
+             std::string("MPCH=0x7FFE\r\n"),
+             "CODE=" + defaults.code + "\r\n",
+             "SERNO=" + serial + "\r\n",
+             "VIDEO=" + defaults.video + "\r\n",
+             "GAME=" + defaults.game + "\r\n"}) {
         for (;;) {
             if (position + line.size() > bytes.size()) {
                 return std::nullopt;
@@ -146,6 +162,7 @@ inline std::optional<std::filesystem::path> CreateScratchDirectory(
 // Never replace an existing file, including an unreadable or damaged one.
 // Publish a complete file atomically so simultaneous launches use one identity.
 inline bool Ensure(const std::filesystem::path& root, std::string& error,
+                   const BootDefaults& defaults,
                    std::time_t now = std::time(nullptr)) {
     const auto path = FilePath(root);
     std::error_code ec;
@@ -163,7 +180,7 @@ inline bool Ensure(const std::filesystem::path& root, std::string& error,
         return false;
     }
 
-    const auto bytes = EncodeNew(GenerateSerial(now));
+    const auto bytes = EncodeNew(GenerateSerial(now), defaults);
     if (!bytes) {
         error = "Cannot initialize NAND settings: invalid system clock";
         return false;

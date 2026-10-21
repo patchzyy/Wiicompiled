@@ -1,7 +1,8 @@
 # Fails the release build when a fact duplicated across the repo stops agreeing with the copy
-# that owns it (recomp.yml). Scripts read pinned facts through Get-MkwProjectPins, but three
-# consumers can't read YAML (the C++ runtime header, the C# constants, shell scripts, and hand-written lists on
-# both sides of the C#/PowerShell boundary), so those are checked here instead.
+# that owns it (each projects/*/recomp.yml). Scripts read pinned facts through Get-MkwProjectPins
+# or build-cache.sh's mkw_project_pin, but some consumers can't read YAML (the C++ runtime header,
+# the C# Retro-WFC table, and hand-written lists on both sides of the C#/PowerShell boundary), so
+# those are checked here instead.
 [CmdletBinding()]
 param([string]$RepositoryRoot)
 
@@ -46,32 +47,36 @@ function Compare-Set([string[]]$Expected, [string[]]$Actual, [string]$ExpectedNa
     if ($extra.Count -gt 0) { Add-Failure "$ActualName has entries $ExpectedName does not: $($extra -join ', ')." }
 }
 
-$pins = Get-MkwProjectPins (Join-Path $repoRoot 'projects\mkwii\recomp.yml')
+# Every supported release is one projects/<name>/recomp.yml, the same set Build-Installer.ps1 ships.
+$releases = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'projects') -Directory | Sort-Object Name |
+    ForEach-Object { Join-Path $_.FullName 'recomp.yml' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+    ForEach-Object { $pins = Get-MkwProjectPins $_; $pins.Project = $_; [pscustomobject]$pins })
+if ($releases.Count -eq 0) { throw 'No projects/*/recomp.yml was found; update Test-PinnedFacts.ps1.' }
 
-# --- The Retro-WFC endpoint: recomp.yml owns it; the installer host pins the same string so a
-# --- redirected or rewritten endpoint cannot be fetched from. The literal lives in
-# --- WiiCompiled.Setup.Common (shared with WiiCompiled.Setup.Linux) - InputValidation.cs only
-# --- re-exports it as `= RetroWfcPayload.CurrentRetroWfcPayloadUri;`, no literal to capture there.
+# --- The Retro-WFC endpoints: each recomp.yml owns its release's; the host derives the same URL
+# --- from its game table so a redirected or rewritten endpoint cannot be fetched from.
 $retroWfcPayload = Read-SourceFile (Join-Path $common 'RetroWfcPayload.cs') 'RetroWfcPayload.cs'
-$hostUri = Get-CapturedValue $retroWfcPayload 'CurrentRetroWfcPayloadUri\s*=\s*"([^"]+)"' `
-    'The host Retro-WFC endpoint constant'
-if ($hostUri -cne $pins.RetroWfcPayloadUri) {
-    Add-Failure "InputValidation.CurrentRetroWfcPayloadUri is '$hostUri' but recomp.yml pins '$($pins.RetroWfcPayloadUri)'."
+$payloadGames = @{}
+foreach ($entry in [regex]::Matches((Get-CapturedValue $retroWfcPayload `
+        '(?s)PayloadGames\s*=\s*new\([^)]*\)\s*\{(.*?)\};' 'The host Retro-WFC game table'),
+        '\["([^"]+)"\]\s*=\s*"([^"]+)"')) {
+    $payloadGames[$entry.Groups[1].Value] = $entry.Groups[2].Value
 }
-$macosSetup = Read-SourceFile (Join-Path $launcher 'macos\setup.command') 'macOS setup.command'
-$macosUri = Get-CapturedValue $macosSetup "'([^']*/api/wfc/payload\?g=RMCPD00)'" `
-    'The macOS Retro-WFC endpoint'
-if ($macosUri -cne $pins.RetroWfcPayloadUri) {
-    Add-Failure "macOS setup.command downloads '$macosUri' but recomp.yml pins '$($pins.RetroWfcPayloadUri)'."
+$uriTemplate = Get-CapturedValue $retroWfcPayload 'PayloadUri\(string gameId\)\s*=>\s*\$"([^"]+)"' `
+    'The host Retro-WFC endpoint template'
+Compare-Set ([string[]]@($releases.GameId)) ([string[]]@($payloadGames.Keys)) `
+    'projects/*/recomp.yml' 'RetroWfcPayload.PayloadGames'
+foreach ($release in $releases) {
+    if (-not $payloadGames.ContainsKey($release.GameId)) { continue }
+    $hostUri = $uriTemplate.Replace('{PayloadGame(gameId)}', $payloadGames[$release.GameId])
+    if ($hostUri -cne $release.RetroWfcPayloadUri) {
+        Add-Failure "RetroWfcPayload.PayloadUri($($release.GameId)) is '$hostUri' but $($release.Project) pins '$($release.RetroWfcPayloadUri)'."
+    }
 }
-
-# --- The game identity: the manifest carries it, but the host also compiles a fallback for a
-# --- manifest that predates the field, and that fallback decides which disc is accepted.
-$models = Read-SourceFile (Join-Path $setup 'Models.cs') 'Models.cs'
-$hostGameId = Get-CapturedValue $models 'ExpectedGameId\s*\{\s*get;\s*set;\s*\}\s*=\s*"([^"]+)"' `
-    'The host expected game id'
-if ($hostGameId -cne $pins.GameId) {
-    Add-Failure "PayloadManifest.ExpectedGameId defaults to '$hostGameId' but recomp.yml pins '$($pins.GameId)'."
+foreach ($key in @('GameId', 'DolSha256')) {
+    foreach ($duplicate in @($releases | Group-Object $key | Where-Object Count -gt 1)) {
+        Add-Failure "Several projects pin the same $($key) $($duplicate.Name)."
+    }
 }
 
 # --- The translation entry point: the translator is told it by LocalBuild.ps1 (which reads
@@ -79,8 +84,10 @@ if ($hostGameId -cne $pins.GameId) {
 $systemBridge = Read-SourceFile (Join-Path $repoRoot 'runtime\include\system_bridge.h') 'system_bridge.h'
 $runtimeEntry = (Get-CapturedValue $systemBridge 'kDefaultEntryAddress\s*=\s*(0[xX][0-9a-fA-F]+)' `
     'The runtime default entry address').ToLowerInvariant()
-if ($runtimeEntry -ne $pins.EntryPoint) {
-    Add-Failure "system_bridge.h enters at $runtimeEntry but recomp.yml translates from $($pins.EntryPoint)."
+foreach ($release in $releases) {
+    if ($runtimeEntry -ne $release.EntryPoint) {
+        Add-Failure "system_bridge.h enters at $runtimeEntry but $($release.Project) translates from $($release.EntryPoint)."
+    }
 }
 
 # --- The pinned dependency set: Build-Installer.ps1 stages it, the installed host requires it.
@@ -137,6 +144,6 @@ Compare-Set $knownSteps $emittedSteps 'BuildStepIds' 'the steps LocalBuild.ps1 e
 if ($failures.Count -gt 0) {
     throw "Pinned facts disagree between their copies:`n  $($failures -join "`n  ")"
 }
-Write-Host ("Pinned-fact audit passed: game {0}, entry {1}, endpoint {2}; dependency, runtime-asset, " -f
-    $pins.GameId, $pins.EntryPoint, $pins.RetroWfcPayloadUri) -NoNewline
+Write-Host ("Pinned-fact audit passed: games {0}, entry {1}; Retro-WFC endpoint, dependency, runtime-asset, " -f
+    ($releases.GameId -join ', '), $runtimeEntry) -NoNewline
 Write-Host 'build-step, and build-script parameter contracts all agree.'

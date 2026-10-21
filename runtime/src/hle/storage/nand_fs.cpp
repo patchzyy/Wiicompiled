@@ -78,7 +78,7 @@ void CloseFd(int32_t fd) {
 // ============================================================================
 
 uint32_t CurrentMkwTitleIdLo() {
-    return RuntimeHle::CurrentGameCode(kNandTitleIdLo);
+    return RuntimeHle::CurrentGameCode(NandTitleIdLo());
 }
 
 std::string CurrentNandDataDir() {

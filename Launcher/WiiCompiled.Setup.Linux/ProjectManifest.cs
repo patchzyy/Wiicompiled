@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 namespace WiiCompiled.Setup.Linux;
 
 /// <summary>
-/// The handful of facts this tool needs out of projects/mkwii/recomp.yml. Parsed literally line by
+/// The handful of facts this tool needs out of a projects/*/recomp.yml. Parsed literally line by
 /// line - the same approach Launcher/NativeBuildFlags.ps1's Get-MkwProjectPins and
 /// Launcher/local-build.sh already use - rather than pulling in a YAML library, since the manifest
 /// is machine-written with a fixed shape.
@@ -67,4 +67,21 @@ internal sealed class ProjectManifest
 
         return new ProjectManifest { GameId = gameId, Region = region, DolSha256 = dolSha, RelSha256 = relSha };
     }
+
+    /// <summary>Every supported release: one per projects/*/recomp.yml, as local-build.sh selects them.</summary>
+    public static IReadOnlyList<ProjectManifest> LoadAll(string workspace)
+    {
+        var projects = Directory.EnumerateDirectories(Path.Combine(workspace, "projects"))
+            .Select(directory => Path.Combine(directory, "recomp.yml"))
+            .Where(File.Exists)
+            .Order(StringComparer.Ordinal)
+            .Select(Load)
+            .ToList();
+        if (projects.Count == 0)
+            throw new InvalidOperationException($"No projects/*/recomp.yml was found under {workspace}.");
+        return projects;
+    }
+
+    public static string Describe(IEnumerable<ProjectManifest> projects) =>
+        string.Join(", ", projects.Select(project => $"{project.GameId} (region {project.Region})"));
 }

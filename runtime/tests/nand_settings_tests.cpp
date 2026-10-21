@@ -91,7 +91,7 @@ int main() {
         Require(settings && RuntimeNandSettings::HasIdentity(*settings));
         Require(settings->at("SERNO") == "987654321" && settings->at("CODE") == "LU");
         Require(settings->at("AREA") == "USA" && settings->at("GAME") == "US");
-        Require(Ensure(root, error, 1800000123), "Existing imported NAND must work");
+        Require(Ensure(root, error, {}, 1800000123), "Existing imported NAND must work");
         std::array<uint8_t, 256> after{};
         {
             std::ifstream input(path, std::ios::binary);
@@ -112,11 +112,11 @@ int main() {
         std::filesystem::resize_file(path, 128);
         Require(!RuntimeNandSettings::Read(root));
         const auto damaged = ReadBytes(path);
-        Require(!Ensure(root, error, 1800000123), "Do not replace a truncated identity");
+        Require(!Ensure(root, error, {}, 1800000123), "Do not replace a truncated identity");
         Require(ReadBytes(path) == damaged, "Damaged file must remain untouched");
 
         const auto fresh = root / "fresh";
-        Require(Ensure(fresh, error, 1800000123), "Missing setting.txt must initialize");
+        Require(Ensure(fresh, error, {}, 1800000123), "Missing setting.txt must initialize");
         const auto generated = Read(fresh);
         Require(generated && HasIdentity(*generated), "Generated file must be readable");
         Require(generated->at("SERNO") == "800000123", "Persist Dolphin-generated serial");
@@ -127,13 +127,23 @@ int main() {
                 "Complete Dolphin boot settings");
         const auto firstBoot = ReadBytes(FilePath(fresh));
         Require(firstBoot.size() == 256 && firstBoot.back() == 0, "Dolphin buffer size and raw zero padding");
-        Require(Ensure(fresh, error, 1900000999), "Second boot");
+        Require(Ensure(fresh, error, {}, 1900000999), "Second boot");
         Require(ReadBytes(FilePath(fresh)) == firstBoot, "Second boot must not change any bytes");
+
+        const auto freshNtsc = root / "fresh-ntsc";
+        const BootDefaults ntscDefaults{"USA", "RVL-001(USA)", "LU", "NTSC", "US"};
+        Require(Ensure(freshNtsc, error, ntscDefaults, 1800000123), "Regional setting.txt must initialize");
+        const auto generatedNtsc = Read(freshNtsc);
+        Require(generatedNtsc && HasIdentity(*generatedNtsc), "Generated NTSC file must be readable");
+        Require(generatedNtsc->at("CODE") == "LU" && generatedNtsc->at("AREA") == "USA" &&
+                generatedNtsc->at("GAME") == "US", "NTSC first-boot fields");
+        Require(generatedNtsc->at("MODEL") == "RVL-001(USA)" && generatedNtsc->at("VIDEO") == "NTSC",
+                "Complete NTSC boot settings");
 
         const auto blocked = root / "blocked";
         { std::ofstream output(blocked); output << "file obstructing NAND directory"; }
-        Require(!Ensure(blocked, error, 1800000123), "Write failure must not return an ephemeral identity");
-        Require(!Ensure(root / "bad-clock", error, -1), "Clock failure must not initialize");
+        Require(!Ensure(blocked, error, {}, 1800000123), "Write failure must not return an ephemeral identity");
+        Require(!Ensure(root / "bad-clock", error, {}, -1), "Clock failure must not initialize");
 
         const auto concurrent = root / "concurrent";
         std::array<bool, 16> results{};
@@ -141,14 +151,14 @@ int main() {
         for (size_t i = 0; i < results.size(); ++i) {
             workers.emplace_back([&, i] {
                 std::string detail;
-                results[i] = Ensure(concurrent, detail, 1800000001 + i);
+                results[i] = Ensure(concurrent, detail, {}, 1800000001 + i);
             });
         }
         for (auto& worker : workers) worker.join();
         for (const bool result : results) Require(result, "Concurrent boot must read the persisted winner");
         const auto winner = ReadBytes(FilePath(concurrent));
         Require(Read(concurrent) && HasIdentity(*Read(concurrent)), "Concurrent boot must persist valid settings");
-        Require(Ensure(concurrent, error, 1900000999), "Boot after concurrent initialization");
+        Require(Ensure(concurrent, error, {}, 1900000999), "Boot after concurrent initialization");
         Require(ReadBytes(FilePath(concurrent)) == winner, "Concurrent winner must remain stable");
 
         // Independently decode as Nintendo does: stop at the first encoded NUL.

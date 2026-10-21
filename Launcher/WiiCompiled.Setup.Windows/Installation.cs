@@ -168,6 +168,26 @@ internal sealed class Installation
 
     public InstallState? ReadInstallState() => JsonState.TryRead<InstallState>(InstallStatePath);
 
+    /// <summary>The game id of the installed disc, which selects its region's Retro-WFC payload.</summary>
+    public string ReadGameId()
+    {
+        try { return ReadDiscGameId(GameDataDirectory); }
+        catch (IOException ex)
+        {
+            throw new InvalidDataException(
+                "The installed game data has no readable disc header. Apply setup again with the disc image.", ex);
+        }
+    }
+
+    /// <summary>The six-character game id in an extracted disc's <c>sys/boot.bin</c>.</summary>
+    internal static string ReadDiscGameId(string dataRoot)
+    {
+        using var stream = File.OpenRead(Path.Combine(dataRoot, "sys", "boot.bin"));
+        var id = new byte[6];
+        stream.ReadExactly(id);
+        return System.Text.Encoding.ASCII.GetString(id);
+    }
+
     internal ToolkitState? ReadToolkitState() => JsonState.TryRead<ToolkitState>(ToolkitStatePath);
 
     /// <summary>
@@ -396,7 +416,7 @@ internal sealed class Installation
 
         try
         {
-            var payload = InputValidation.ResolveRetroWfcPayloadFile(WorkspaceRetroWfcPayload);
+            var payload = InputValidation.ResolveRetroWfcPayloadFile(WorkspaceRetroWfcPayload, ReadGameId());
             if (!InputValidation.Sha256File(payload).Equals(fingerprint.RetroWfcPayloadSha256,
                     StringComparison.OrdinalIgnoreCase) ||
                 new FileInfo(payload).Length != fingerprint.RetroWfcPayloadLength)
@@ -581,7 +601,7 @@ internal sealed class Installation
     {
         try
         {
-            var payload = InputValidation.ResolveRetroWfcPayloadFile(WorkspaceRetroWfcPayload);
+            var payload = InputValidation.ResolveRetroWfcPayloadFile(WorkspaceRetroWfcPayload, ReadGameId());
             return new FileInfo(payload).Length == snapshot.ByteLength &&
                    InputValidation.Sha256File(payload).Equals(snapshot.Sha256, StringComparison.Ordinal);
         }

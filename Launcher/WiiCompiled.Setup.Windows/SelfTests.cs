@@ -28,19 +28,9 @@ internal static class SelfTests
             }
             finally { File.Delete(path); }
         }, failures);
-        Test("Disc compatibility", () =>
-            InputValidation.EnsureCompatibleDisc(new DiscHeader { GameId = "RMCP01" },
-                new PayloadManifest { ExpectedGameId = "RMCP01" }), failures);
-        Test("Disc rejection", () =>
-        {
-            try
-            {
-                InputValidation.EnsureCompatibleDisc(new DiscHeader { GameId = "RMCJ01" },
-                    new PayloadManifest { ExpectedGameId = "RMCP01" });
-                throw new Exception("Wrong region was accepted.");
-            }
-            catch (InvalidDataException) { }
-        }, failures);
+        Test("Disc compatibility", TestDiscCompatibility, failures);
+        Test("Payload manifest releases", TestPayloadManifestReleases, failures);
+        Test("Extracted game release validation", TestExtractedGameRelease, failures);
         Test("Payload timestamp normalization", TestPayloadTimestampNormalization, failures);
         Test("Workspace timestamp reconciliation", TestWorkspaceTimestampReconciliation, failures);
         Test("Toolkit accompanies the workspace", TestToolkitRefreshDecision, failures);
@@ -75,6 +65,152 @@ internal static class SelfTests
         Test("Products report contract", TestProductsReport, failures);
         foreach (var failure in failures) Console.Error.WriteLine("FAILED " + failure);
         return failures.Count == 0 ? 0 : 1;
+    }
+
+    private static PayloadManifest MultiReleaseManifest() => new()
+    {
+        SchemaVersion = PayloadManifest.CurrentSchemaVersion,
+        ToolkitFingerprint = "toolkit", ToolkitPackageFingerprint = "package", RuntimeAssetsFingerprint = "assets",
+        SupportedReleases =
+        [
+            new GameRelease { GameId = "RMCP01", DolSha256 = new string('1', 64), RelSha256 = new string('2', 64) },
+            new GameRelease { GameId = "RMCE01", DolSha256 = new string('3', 64), RelSha256 = new string('4', 64) },
+            new GameRelease { GameId = "RMCJ01", DolSha256 = new string('5', 64), RelSha256 = new string('6', 64) }
+        ]
+    };
+
+    private static void TestDiscCompatibility()
+    {
+        var manifest = MultiReleaseManifest();
+        foreach (var release in manifest.SupportedReleases)
+        {
+            var selected = InputValidation.EnsureCompatibleDisc(
+                new DiscHeader { GameId = release.GameId.ToLowerInvariant() }, manifest);
+            if (!ReferenceEquals(selected, release))
+                throw new Exception($"{release.GameId} did not select its own release.");
+        }
+
+        foreach (var unsupported in new[] { "RMCK01", "RMCP02", "RSBE01" })
+        {
+            try
+            {
+                InputValidation.EnsureCompatibleDisc(new DiscHeader { GameId = unsupported }, manifest);
+                throw new Exception($"{unsupported} was accepted.");
+            }
+            catch (InvalidDataException ex) when (ex.Message.Contains("NTSC-U (RMCE01)", StringComparison.Ordinal) &&
+                                                  ex.Message.Contains(unsupported, StringComparison.Ordinal)) { }
+        }
+    }
+
+    private static void TestPayloadManifestReleases()
+    {
+        PayloadArchive.ValidateManifest(MultiReleaseManifest());
+
+        // The shape Build-Installer.ps1 writes (PowerShell's ConvertTo-Json of the ordered manifest).
+        var dol = new string('a', 64);
+        var rel = new string('b', 64);
+        var json = $$"""
+            {
+                "SchemaVersion":  3,
+                "ProductVersion":  "1.0.0",
+                "SupportedReleases":  [
+                    { "GameId":  "RMCP01", "DolSha256":  "{{dol}}", "RelSha256":  "{{rel}}" },
+                    { "GameId":  "RMCE01", "DolSha256":  "{{rel}}", "RelSha256":  "{{dol}}" }
+                ],
+                "ToolkitReleaseTag":  "",
+                "BuildModel":  "local-translation-and-compilation",
+                "ToolkitFingerprint":  "toolkit",
+                "ToolkitPackageFingerprint":  "package",
+                "RuntimeAssetsFingerprint":  "assets",
+                "TranslationFingerprint":  "translation",
+                "NativeToolchainFingerprint":  "native"
+            }
+            """;
+        using (var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(json)))
+        {
+            var parsed = PayloadArchive.ParseManifest(stream);
+            if (parsed.SupportedReleases.Count != 2 || parsed.SupportedReleases[1].GameId != "RMCE01" ||
+                parsed.SupportedReleases[1].DolSha256 != rel)
+                throw new Exception("The packaged release list was not read back exactly.");
+        }
+
+        void Reject(string description, Action<PayloadManifest> corrupt)
+        {
+            var manifest = MultiReleaseManifest();
+            corrupt(manifest);
+            try
+            {
+                PayloadArchive.ValidateManifest(manifest);
+                throw new Exception($"A manifest with {description} was accepted.");
+            }
+            catch (InvalidDataException) { }
+        }
+
+        Reject("the previous single-release schema", manifest => manifest.SchemaVersion = 2);
+        Reject("no releases", manifest => manifest.SupportedReleases.Clear());
+        Reject("an unsupported release", manifest => manifest.SupportedReleases[0].GameId = "RMCK01");
+        Reject("a missing input digest", manifest => manifest.SupportedReleases[1].RelSha256 = "");
+        Reject("a duplicated release", manifest =>
+            manifest.SupportedReleases.Add(new GameRelease
+            {
+                GameId = "RMCE01", DolSha256 = new string('7', 64), RelSha256 = new string('8', 64)
+            }));
+    }
+
+    private static void TestExtractedGameRelease()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "mkwc-release-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var data = Path.Combine(root, "GameAssets", "DATA");
+            Directory.CreateDirectory(Path.Combine(data, "sys"));
+            Directory.CreateDirectory(Path.Combine(data, "files", "rel"));
+            File.WriteAllText(Path.Combine(data, "sys", "main.dol"), "ntsc-u dol");
+            File.WriteAllText(Path.Combine(data, "sys", "fst.bin"), "fst");
+            File.WriteAllText(Path.Combine(data, "files", "rel", "StaticR.rel"), "ntsc-u rel");
+            File.WriteAllText(Path.Combine(data, "sys", "boot.bin"), "RMCE01" + new string('\0', 26));
+            var release = new GameRelease
+            {
+                GameId = "RMCE01",
+                DolSha256 = InputValidation.Sha256File(Path.Combine(data, "sys", "main.dol")),
+                RelSha256 = InputValidation.Sha256File(Path.Combine(data, "files", "rel", "StaticR.rel"))
+            };
+
+            InstallerEngine.ValidateExtractedGame(data, release);
+            if (new Installation(root).ReadGameId() != "RMCE01")
+                throw new Exception("The installed game id was not read from the extracted disc header.");
+
+            void Reject(string description, GameRelease expected)
+            {
+                try
+                {
+                    InstallerEngine.ValidateExtractedGame(data, expected);
+                    throw new Exception($"{description} was accepted.");
+                }
+                catch (InvalidDataException) { }
+            }
+
+            Reject("Another release's digests", new GameRelease
+            {
+                GameId = "RMCE01", DolSha256 = new string('1', 64), RelSha256 = release.RelSha256
+            });
+            Reject("A disc header of another region", new GameRelease
+            {
+                GameId = "RMCJ01", DolSha256 = release.DolSha256, RelSha256 = release.RelSha256
+            });
+            File.Delete(Path.Combine(data, "sys", "boot.bin"));
+            Reject("An extraction without a disc header", release);
+            try
+            {
+                _ = new Installation(root).ReadGameId();
+                throw new Exception("A missing disc header produced a game id.");
+            }
+            catch (InvalidDataException) { }
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     private static void TestAcceptedExtension(string extension)
@@ -694,42 +830,91 @@ internal static class SelfTests
 
     private static void TestRetroWfcPayloadSnapshotReconciliation()
     {
-        // The endpoint is pinned in exactly one place; this test must not restate it.
-        const string endpoint = InputValidation.CurrentRetroWfcPayloadUri;
         const string shaB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
         var root = Path.Combine(Path.GetTempPath(), "mkwc-wfc-snapshot-" + Guid.NewGuid().ToString("N"));
         try
         {
-            InputValidation.ValidateRetroWfcPayloadUri(endpoint);
+            using var signingRsa = RSA.Create(2048);
+            var signingKey = signingRsa.ExportParameters(includePrivateParameters: false);
+            byte[] SignedPayload(string payloadGame)
+            {
+                var image = new byte[0x150];
+                "WWFC/Payload"u8.CopyTo(image);
+                BinaryPrimitives.WriteUInt32BigEndian(image.AsSpan(0x0C), (uint)image.Length);
+                System.Text.Encoding.ASCII.GetBytes(payloadGame).CopyTo(image, 0x138);
+                image[^1] = 0x5A;
+                signingRsa.SignData(image.AsSpan(0x110), HashAlgorithmName.SHA256,
+                    RSASignaturePadding.Pkcs1).CopyTo(image.AsSpan(0x10));
+                return image;
+            }
+
+            // Every supported release has its own endpoint and staged file, and a payload staged for
+            // one region never validates as another region's.
+            var endpoints = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var gameId in RetroWfcPayload.SupportedGameIds)
+            {
+                var endpoint = RetroWfcPayload.PayloadUri(gameId);
+                InputValidation.ValidateRetroWfcPayloadUri(endpoint);
+                if (!endpoints.Add(endpoint))
+                    throw new Exception($"{gameId} shares another release's Retro-WFC endpoint.");
+                try
+                {
+                    InputValidation.ValidateRetroWfcPayloadUri(endpoint + "&extra=1");
+                    throw new Exception("A non-canonical Retro-WFC endpoint was accepted.");
+                }
+                catch (InvalidDataException) { }
+
+                var regionalRoot = Path.Combine(root, "regional-" + gameId);
+                var regionalPath = Path.Combine(regionalRoot, RetroWfcPayload.PayloadRelativePath(gameId));
+                Directory.CreateDirectory(Path.GetDirectoryName(regionalPath)!);
+                File.WriteAllBytes(regionalPath, SignedPayload(RetroWfcPayload.PayloadGame(gameId)));
+                if (InputValidation.ResolveRetroWfcPayloadFile(regionalRoot, gameId, signingKey) != regionalPath)
+                    throw new Exception($"{gameId} did not resolve its own staged payload file.");
+                foreach (var otherGameId in RetroWfcPayload.SupportedGameIds.Where(other => other != gameId))
+                {
+                    var foreignRoot = Path.Combine(root, $"foreign-{gameId}-{otherGameId}");
+                    var foreignPath = Path.Combine(foreignRoot, RetroWfcPayload.PayloadRelativePath(otherGameId));
+                    Directory.CreateDirectory(Path.GetDirectoryName(foreignPath)!);
+                    File.WriteAllBytes(foreignPath, SignedPayload(RetroWfcPayload.PayloadGame(gameId)));
+                    try
+                    {
+                        _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(foreignRoot, otherGameId,
+                            signingKey);
+                        throw new Exception($"A {gameId} payload was accepted for {otherGameId}.");
+                    }
+                    catch (InvalidDataException) { }
+                    try
+                    {
+                        _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(regionalRoot, otherGameId,
+                            signingKey);
+                        throw new Exception($"{otherGameId} accepted a directory staged only for {gameId}.");
+                    }
+                    catch (InvalidDataException) { }
+                }
+            }
             try
             {
-                InputValidation.ValidateRetroWfcPayloadUri(endpoint + "&extra=1");
-                throw new Exception("A non-canonical Retro-WFC endpoint was accepted.");
+                _ = RetroWfcPayload.PayloadUri("RMCK01");
+                throw new Exception("An unsupported release has a Retro-WFC endpoint.");
             }
             catch (InvalidDataException) { }
 
+            const string gameUnderTest = "RMCE01";
             var installation = new Installation(root);
             Directory.CreateDirectory(installation.RetroDirectory);
             var payloadRoot = Path.Combine(root, "download");
-            var payloadPath = Path.Combine(payloadRoot, "binary", "payload.RMCPD00.bin");
+            var payloadPath = Path.Combine(payloadRoot, RetroWfcPayload.PayloadRelativePath(gameUnderTest));
             Directory.CreateDirectory(Path.GetDirectoryName(payloadPath)!);
-            using var signingRsa = RSA.Create(2048);
-            var signingKey = signingRsa.ExportParameters(includePrivateParameters: false);
-            var bytes = new byte[0x140];
-            "WWFC/Payload"u8.CopyTo(bytes);
-            BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0x0C), (uint)bytes.Length);
-            bytes[^1] = 0x5A;
-            signingRsa.SignData(bytes.AsSpan(0x110), HashAlgorithmName.SHA256,
-                RSASignaturePadding.Pkcs1).CopyTo(bytes.AsSpan(0x10));
+            var bytes = SignedPayload(RetroWfcPayload.PayloadGame(gameUnderTest));
             File.WriteAllBytes(payloadPath, bytes);
-            _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, signingKey);
+            _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameUnderTest, signingKey);
             try
             {
-                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot);
+                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameUnderTest);
                 throw new Exception("A payload signed by a foreign key passed the pinned production key.");
             }
             catch (InvalidDataException) { }
-            var shaA = InputValidation.ComputeRetroWfcPayloadSha256(payloadRoot, signingKey);
+            var shaA = InputValidation.ComputeRetroWfcPayloadSha256(payloadRoot, gameUnderTest, signingKey);
             var snapshot = new RetroWfcPayloadSnapshot(payloadRoot, shaA, bytes.Length);
             JsonState.Write(Path.Combine(installation.RetroDirectory, ProductFingerprint.FileName),
                 new ProductFingerprint
@@ -764,7 +949,7 @@ internal static class SelfTests
             File.WriteAllBytes(payloadPath, bytes);
             try
             {
-                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, signingKey);
+                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameUnderTest, signingKey);
                 throw new Exception("A payload with a malformed declared length was accepted.");
             }
             catch (InvalidDataException) { }
@@ -774,7 +959,7 @@ internal static class SelfTests
             File.WriteAllBytes(payloadPath, bytes);
             try
             {
-                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, signingKey);
+                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameUnderTest, signingKey);
                 throw new Exception("A payload with tampered signed content was accepted.");
             }
             catch (InvalidDataException) { }
@@ -784,7 +969,7 @@ internal static class SelfTests
             File.WriteAllBytes(payloadPath, bytes);
             try
             {
-                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, signingKey);
+                _ = InputValidation.ValidateStagedRetroWfcPayloadDirectory(payloadRoot, gameUnderTest, signingKey);
                 throw new Exception("A payload with a malformed header was accepted.");
             }
             catch (InvalidDataException) { }

@@ -40,7 +40,11 @@ internal static class ToolkitFingerprint
     ];
 
     private static readonly string[] TranslationFiles =
-        [InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1"];
+    [
+        InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1",
+        // Maps the PAL-keyed native index to the installed release's addresses.
+        InstalledLayout.WorkspaceEntryPrefix + "runtime/include/guest_abi/guest_address_table.inc"
+    ];
 
     private const string NativeSourcePrefix = InstalledLayout.WorkspaceEntryPrefix + "runtime/src/";
     private const string NativeIndexEntry = InstalledLayout.WorkspaceEntryPrefix + "runtime/native-index.json";

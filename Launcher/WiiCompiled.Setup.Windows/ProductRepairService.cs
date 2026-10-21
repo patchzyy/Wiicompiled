@@ -99,7 +99,11 @@ internal sealed class ProductRepairService
         Directory.CreateDirectory(scratchRoot);
 
         RetroWfcPayloadSnapshot? payloadSnapshot = null;
-        if (requestedPayloadMode == RetroWfcPayloadMode.Online)
+        // The installed disc's region decides which Retro-WFC payload the product embeds.
+        var payloadGameId = requestedPayloadMode == RetroWfcPayloadMode.Online
+            ? _installation.ReadGameId()
+            : null;
+        if (payloadGameId is not null)
         {
             _reporter.Progress(InstallStages.PrepareRetro,
                 "Downloading the current shared Retro-WFC payload snapshot...", 3);
@@ -107,12 +111,12 @@ internal sealed class ProductRepairService
             try
             {
                 payloadSnapshot = await InputValidation.DownloadRetroWfcPayloadAsync(
-                    InputValidation.CurrentRetroWfcPayloadUri, payloadScratch, cancellationToken);
+                    RetroWfcPayload.PayloadUri(payloadGameId), payloadScratch, cancellationToken);
             }
             catch (Exception ex) when (!cancellationToken.IsCancellationRequested &&
                                        ex is HttpRequestException or TimeoutException or IOException)
             {
-                payloadSnapshot = RecoverInstalledRetroWfcPayload(toolkitFingerprint,
+                payloadSnapshot = RecoverInstalledRetroWfcPayload(toolkitFingerprint, payloadGameId,
                     Path.Combine(scratchRoot, "retro-wfc-payload-recovered"), ex, cancellationToken);
             }
         }
@@ -236,7 +240,7 @@ internal sealed class ProductRepairService
                     "Recompiling Mario Kart Wii and Retro Rewind with the installed toolkit...", 5);
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.Both, retroOutput,
-                        requestedPayloadMode, payloadSnapshot?.Directory, cancellationToken,
+                        requestedPayloadMode, payloadSnapshot?.Directory, payloadGameId, cancellationToken,
                         toolkitComponents, clean,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildBase, 5, 92),
                         retroRewindPackageDirectory: compileInputs.RetroRewindRoot,
@@ -255,7 +259,7 @@ internal sealed class ProductRepairService
                     "Recompiling Mario Kart Wii with the installed toolkit...", 5);
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.Base, baseOutput,
-                        RetroWfcPayloadMode.NotApplicable, null, cancellationToken,
+                        RetroWfcPayloadMode.NotApplicable, null, null, cancellationToken,
                         toolkitComponents, clean,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildBase, 5, 92)));
                 LocalBuildService.WriteFingerprint(baseOutput, BuildProfile.Base, toolkitFingerprint,
@@ -270,7 +274,7 @@ internal sealed class ProductRepairService
                     "Recompiling Retro Rewind for the canonical Code.pul...", 5);
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.RetroRewind, retroOutput,
-                        requestedPayloadMode, payloadSnapshot?.Directory, cancellationToken,
+                        requestedPayloadMode, payloadSnapshot?.Directory, payloadGameId, cancellationToken,
                         toolkitComponents, clean,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildRetro, 5, 92),
                         retroRewindPackageDirectory: compileInputs.RetroRewindRoot));
@@ -310,7 +314,8 @@ internal sealed class ProductRepairService
 
 
     private RetroWfcPayloadSnapshot RecoverInstalledRetroWfcPayload(string toolkitFingerprint,
-        string destinationDirectory, Exception downloadFailure, CancellationToken cancellationToken)
+        string gameId, string destinationDirectory, Exception downloadFailure,
+        CancellationToken cancellationToken)
     {
         InvalidOperationException Unavailable(string reason) => new(
             "The Retro-WFC payload service is unavailable" +
@@ -334,7 +339,7 @@ internal sealed class ProductRepairService
         try
         {
             cachedFile = InputValidation.ResolveRetroWfcPayloadFile(
-                _installation.WorkspaceRetroWfcPayload);
+                _installation.WorkspaceRetroWfcPayload, gameId);
             cancellationToken.ThrowIfCancellationRequested();
             if (new FileInfo(cachedFile).Length != fingerprint.RetroWfcPayloadLength ||
                 !InputValidation.Sha256File(cachedFile).Equals(fingerprint.RetroWfcPayloadSha256,
@@ -343,11 +348,11 @@ internal sealed class ProductRepairService
                 throw Unavailable("the installed payload snapshot no longer matches its recorded identity.");
             }
 
-            var destination = Path.Combine(Path.GetFullPath(destinationDirectory), "binary",
-                "payload.RMCPD00.bin");
+            var destination = Path.Combine(Path.GetFullPath(destinationDirectory),
+                RetroWfcPayload.PayloadRelativePath(gameId));
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             File.Copy(cachedFile, destination, overwrite: true);
-            var root = InputValidation.ValidateStagedRetroWfcPayloadDirectory(destinationDirectory);
+            var root = InputValidation.ValidateStagedRetroWfcPayloadDirectory(destinationDirectory, gameId);
             _reporter.Diagnostic(
                 "The Retro-WFC payload service is unavailable; reusing the installation's verified " +
                 $"payload snapshot (sha256 {fingerprint.RetroWfcPayloadSha256[..12]}..., " +

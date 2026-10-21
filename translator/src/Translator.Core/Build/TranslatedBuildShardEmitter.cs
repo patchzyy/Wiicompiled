@@ -18,7 +18,8 @@ public sealed record TranslatedBuildShardOptions(
     int BaseShardCount = 72,
     int ModShardCount = 48,
     int RegistrationShardCount = 16,
-    RuntimeNativeIndex? NativeIndex = null);
+    RuntimeNativeIndex? NativeIndex = null,
+    GuestRegion Region = GuestRegion.Pal);
 
 /// <summary>
 /// Per-shard compile-cost spread for one partition. Frozen membership does not
@@ -247,6 +248,7 @@ public static partial class TranslatedBuildShardEmitter
         WriteCMakeManifest(
             cmakeManifestPath,
             outputRoot,
+            options.Region,
             commonBase.Length,
             portableCommonBase.Length,
             activeBase.Length,
@@ -1039,6 +1041,7 @@ public static partial class TranslatedBuildShardEmitter
     private static void WriteCMakeManifest(
         string path,
         string outputRoot,
+        GuestRegion region,
         int sharedBaseCount,
         int portableSharedBaseCount,
         int activeBaseCount,
@@ -1053,6 +1056,7 @@ public static partial class TranslatedBuildShardEmitter
         var output = new StringBuilder();
         output.AppendLine("# Translator-owned stable shard graph; do not edit.");
         output.AppendLine($"set(MKW_TRANSLATED_SHARD_ROOT \"{CMakePath(outputRoot)}\")");
+        output.AppendLine($"set(MKW_TRANSLATED_GUEST_REGION {(int)region})");
         output.AppendLine($"set(MKW_BASE_FUNCTION_COUNT {activeBaseCount})");
         output.AppendLine($"set(MKW_SHARED_BASE_FUNCTION_COUNT {sharedBaseCount})");
         output.AppendLine($"set(MKW_PORTABLE_SHARED_BASE_FUNCTION_COUNT {portableSharedBaseCount})");

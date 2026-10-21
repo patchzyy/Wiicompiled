@@ -100,8 +100,10 @@ public sealed class TranslatedBuildShardEmitterTests
 
             var options = new TranslatedBuildShardOptions(
                 metadataPath, functions, output, native,
-                resolvedPath, mod, BaseShardCount: 2, ModShardCount: 1, RegistrationShardCount: 1);
+                resolvedPath, mod, BaseShardCount: 2, ModShardCount: 1, RegistrationShardCount: 1,
+                Region: GuestRegion.NtscJ);
             var first = TranslatedBuildShardEmitter.Emit(options);
+            Assert.Contains("set(MKW_TRANSLATED_GUEST_REGION 2)", File.ReadAllText(first.CMakeManifestPath));
             Assert.Equal(1, first.SharedBaseFunctionCount);
             Assert.Equal(1, first.ProfileSensitiveTargetCount);
             Assert.Equal(1, first.ProfileSensitiveCallerCount);

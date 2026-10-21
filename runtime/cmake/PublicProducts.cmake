@@ -55,8 +55,14 @@ function(mkw_bound_translated_compiles target)
     endif()
 endfunction()
 
+# The region the translator built for; translated code and runtime/game bind addresses to it.
+if(NOT DEFINED MKW_TRANSLATED_GUEST_REGION)
+    message(FATAL_ERROR "The translator shard manifest names no guest region; re-run emit-build-shards.")
+endif()
+
 function(mkw_configure_translated_target target)
     mkw_configure_object_target(${target})
+    target_compile_definitions(${target} PRIVATE MKW_TRANSLATED_GUEST_REGION=${MKW_TRANSLATED_GUEST_REGION})
     mkw_apply_translated_compile_options(${target})
     mkw_bound_translated_compiles(${target})
 endfunction()
@@ -75,6 +81,7 @@ add_library(mkw_game_data OBJECT ${MKW_GAME_DATA_SOURCES})
 mkw_configure_object_target(mkw_game_data)
 target_compile_features(mkw_game_data PRIVATE cxx_std_20)
 target_compile_definitions(mkw_game_data PRIVATE
+    MKW_TRANSLATED_GUEST_REGION=${MKW_TRANSLATED_GUEST_REGION}
     SDL_MAIN_HANDLED
     _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
 if(MKW_SETUP_VERSION)

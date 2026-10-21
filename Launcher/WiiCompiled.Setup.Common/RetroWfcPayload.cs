@@ -11,22 +11,39 @@ namespace WiiCompiled.Setup.Common;
 public sealed record RetroWfcPayloadSnapshot(string Directory, string Sha256, long ByteLength);
 
 /// <summary>
-/// Downloads and verifies the Retro-WFC payload (a small, RSA-signed blob served from a single
-/// fixed endpoint). Shared by both installers - moved here from WiiCompiled.Setup.Windows's
-/// InputValidation.cs, which keeps every one of these method names as thin forwarding wrappers so
-/// its many existing call sites (ProductRepairService.cs, LocalBuildService.cs, Installation.cs,
-/// SelfTests.cs) needed no changes.
+/// Downloads and verifies the Retro-WFC payload (a small, RSA-signed blob served from one fixed
+/// endpoint per game release). Shared by both installers and the translator.
 /// </summary>
 public static class RetroWfcPayload
 {
     private const long MaximumRetroWfcPayloadBytes = 16L * 1024 * 1024;
-    // The payload is tens of kilobytes from a single fixed endpoint 30s is good.
+    // The payload is tens of kilobytes from a fixed regional endpoint; allow 30 seconds.
     private static readonly TimeSpan RetroWfcDownloadTimeout = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan RetroWfcRetryDelay = TimeSpan.FromSeconds(1);
 
-    public const string CurrentRetroWfcPayloadUri = "https://rwfc.net/api/wfc/payload?g=RMCPD00";
-    private static readonly string RetroWfcOfflinePayloadFile =
-        Path.Combine("binary", "payload.RMCPD00.bin");
+    /// <summary>
+    /// Base game id to Retro-WFC payload game. Test-PinnedFacts.ps1 checks this table against the
+    /// retro_wfc_payload every projects/*/recomp.yml pins.
+    /// </summary>
+    private static readonly Dictionary<string, string> PayloadGames = new(StringComparer.Ordinal)
+    {
+        ["RMCP01"] = "RMCPD00",
+        ["RMCE01"] = "RMCED00",
+        ["RMCJ01"] = "RMCJD00",
+    };
+
+    public static IReadOnlyCollection<string> SupportedGameIds => PayloadGames.Keys;
+
+    public static string PayloadGame(string gameId) =>
+        PayloadGames.TryGetValue(gameId, out var payloadGame)
+            ? payloadGame
+            : throw new InvalidDataException($"Unsupported Retro-WFC base game '{gameId}'.");
+
+    public static string PayloadRelativePath(string gameId) =>
+        Path.Combine("binary", $"payload.{PayloadGame(gameId)}.bin");
+
+    public static string PayloadUri(string gameId) =>
+        $"https://rwfc.net/api/wfc/payload?g={PayloadGame(gameId)}";
 
     /// <summary>Retro-WFC production payload signing key (PROD PayloadPublicKey). Verifies
     /// the payload past the 0x110 header; on-console stage1 pins the same key, so
@@ -45,47 +62,48 @@ public static class RetroWfcPayload
     private const int RetroWfcPayloadSignatureOffset = 0x10;
     private const int RetroWfcPayloadMinimumBytes = 0x130;
 
-    public static string ValidateStagedRetroWfcPayloadDirectory(string stagedDirectory,
+    public static string ValidateStagedRetroWfcPayloadDirectory(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null)
     {
         if (string.IsNullOrWhiteSpace(stagedDirectory))
             throw new InvalidDataException("The staged Retro-WFC payload directory is missing.");
 
         var root = Path.GetFullPath(stagedDirectory);
-        var payload = Path.Combine(root, RetroWfcOfflinePayloadFile);
+        var relativePath = PayloadRelativePath(gameId);
+        var payload = Path.Combine(root, relativePath);
         try
         {
             if ((File.GetAttributes(payload) & FileAttributes.Directory) != 0)
                 throw new InvalidDataException(
-                    "The staged Retro-WFC payload directory does not contain binary\\payload.RMCPD00.bin.");
+                    $"The staged Retro-WFC payload directory does not contain {relativePath}.");
         }
         catch (FileNotFoundException)
         {
             throw new InvalidDataException(
-                "The staged Retro-WFC payload directory does not contain binary\\payload.RMCPD00.bin.");
+                $"The staged Retro-WFC payload directory does not contain {relativePath}.");
         }
         catch (DirectoryNotFoundException)
         {
             throw new InvalidDataException(
-                "The staged Retro-WFC payload directory does not contain binary\\payload.RMCPD00.bin.");
+                $"The staged Retro-WFC payload directory does not contain {relativePath}.");
         }
-        ValidateRetroWfcPayloadFile(payload, signingKey);
+        ValidateRetroWfcPayloadFile(payload, PayloadGame(gameId), signingKey);
         return root;
     }
 
-    public static string ResolveRetroWfcPayloadFile(string stagedDirectory,
+    public static string ResolveRetroWfcPayloadFile(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null) =>
-        Path.Combine(ValidateStagedRetroWfcPayloadDirectory(stagedDirectory, signingKey),
-            RetroWfcOfflinePayloadFile);
+        Path.Combine(ValidateStagedRetroWfcPayloadDirectory(stagedDirectory, gameId, signingKey),
+            PayloadRelativePath(gameId));
 
-    public static string ComputeRetroWfcPayloadSha256(string stagedDirectory,
+    public static string ComputeRetroWfcPayloadSha256(string stagedDirectory, string gameId,
         RSAParameters? signingKey = null) =>
-        Sha256File(ResolveRetroWfcPayloadFile(stagedDirectory, signingKey));
+        Sha256File(ResolveRetroWfcPayloadFile(stagedDirectory, gameId, signingKey));
 
     public static void ValidateRetroWfcPayloadUri(string uriText)
     {
-        if (!string.Equals(uriText, CurrentRetroWfcPayloadUri, StringComparison.Ordinal))
-            throw new InvalidDataException("The installer does not define the fixed Retro-WFC payload endpoint.");
+        if (!PayloadGames.Keys.Any(gameId => string.Equals(uriText, PayloadUri(gameId), StringComparison.Ordinal)))
+            throw new InvalidDataException("The installer does not define this fixed Retro-WFC payload endpoint.");
     }
 
     public static async Task<RetroWfcPayloadSnapshot> DownloadRetroWfcPayloadAsync(string uriText,
@@ -96,7 +114,8 @@ public static class RetroWfcPayload
         var uri = new Uri(uriText, UriKind.Absolute);
 
         var root = Path.GetFullPath(destinationDirectory);
-        var destination = Path.Combine(root, RetroWfcOfflinePayloadFile);
+        var payloadGame = uri.Query[3..]; // ValidateRetroWfcPayloadUri accepts only the exact ?g= form.
+        var destination = Path.Combine(root, "binary", $"payload.{payloadGame}.bin");
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         using var handler = new HttpClientHandler { AllowAutoRedirect = false };
         using var client = new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
@@ -154,7 +173,7 @@ public static class RetroWfcPayload
                 }
                 actualSha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
             }
-            ValidateRetroWfcPayloadFile(temporary);
+            ValidateRetroWfcPayloadFile(temporary, uri.Query[3..]);
             File.Move(temporary, destination, overwrite: true);
             return new RetroWfcPayloadSnapshot(root, actualSha256, total);
         }
@@ -181,7 +200,8 @@ public static class RetroWfcPayload
                request.StatusCode is { } status && (int)status >= 500;
     }
 
-    private static void ValidateRetroWfcPayloadFile(string payload, RSAParameters? signingKey = null)
+    private static void ValidateRetroWfcPayloadFile(string payload, string expectedGame,
+        RSAParameters? signingKey = null)
     {
         byte[] image;
         using (var stream = File.OpenRead(payload))
@@ -200,6 +220,10 @@ public static class RetroWfcPayload
         if (declaredSize != image.Length)
             throw new InvalidDataException(
                 $"The Retro-WFC payload declares {declaredSize} bytes but contains {image.Length}.");
+
+        if (image.Length < 0x144 ||
+            System.Text.Encoding.ASCII.GetString(image, 0x138, 12).TrimEnd('\0') != expectedGame)
+            throw new InvalidDataException($"The Retro-WFC payload is not for {expectedGame}.");
 
         using var rsa = RSA.Create();
         rsa.ImportParameters(signingKey ?? new RSAParameters

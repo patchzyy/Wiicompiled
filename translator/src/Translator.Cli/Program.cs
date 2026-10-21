@@ -68,8 +68,8 @@ var canonicalIrStore = new CanonicalIrStore();
 // recursive ABI cache in one stable pass, exactly like translate-mod does.
 var inferredGuestAbi = new Lazy<InferredGuestFunctionAbiProvider>(() =>
     new InferredGuestFunctionAbiProvider(image.Value, canonicalIrStore));
-var runtimeNativeIndex = new Lazy<RuntimeNativeIndex>(() => RuntimeNativeIndexBuilder.Resolve(
-    RequireProject().Runtime.NativeRegistrationRoot, RequireProject().Runtime.NativeIndex, Console.Error));
+var runtimeNativeIndex = new Lazy<RuntimeNativeIndex>(() => ResolveRegionalNativeIndex(
+    RequireProject().Runtime.NativeRegistrationRoot, RequireProject().Runtime.NativeIndex));
 // Void-stub signatures are only trusted as declared guest ABIs when the stub
 // lives under runtime.native_abi_directories (the vetted set); everywhere else
 // the C++ signature is documentation and the inferred ABI stays authoritative.
@@ -217,6 +217,18 @@ int RunCheckBaseModAwareness(string[] argsTail)
     return 0;
 }
 
+// The runtime registers natives by PAL address; translated code needs the project region's.
+RuntimeNativeIndex ResolveRegionalNativeIndex(string nativeSourceDirectory, string? indexPath)
+{
+    var index = RuntimeNativeIndexBuilder.Resolve(nativeSourceDirectory, indexPath, Console.Error);
+    var region = GuestRegions.FromGameId(project?.Identity.GameId);
+    var tablePath = GuestAddressTable.DefaultPath(nativeSourceDirectory);
+    // A runtime without a table can only be built for PAL.
+    if (region == GuestRegion.Pal && !File.Exists(tablePath))
+        return index;
+    return index.ForRegion(GuestAddressTable.Load(tablePath), region);
+}
+
 int RunEmitBuildShards(string[] argsTail)
 {
     var baseMetadata = OptionValue(argsTail, "--base-metadata") ?? Path.Combine(root, "generated", "base_translation_output.json");
@@ -237,7 +249,7 @@ int RunEmitBuildShards(string[] argsTail)
             : Path.GetFullPath(nativeIndexOption);
         if (!Directory.Exists(nativeSourcePath) && !File.Exists(nativeIndexPath))
             throw new DirectoryNotFoundException(nativeSourcePath);
-        var nativeIndex = RuntimeNativeIndexBuilder.Resolve(nativeSourcePath, nativeIndexPath, Console.Error);
+        var nativeIndex = ResolveRegionalNativeIndex(nativeSourcePath, nativeIndexPath);
         var result = TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
             Path.GetFullPath(baseMetadata),
             Path.GetFullPath(baseFunctions),
@@ -245,7 +257,8 @@ int RunEmitBuildShards(string[] argsTail)
             nativeSourcePath,
             string.IsNullOrWhiteSpace(resolvedProfile) ? null : Path.GetFullPath(resolvedProfile),
             string.IsNullOrWhiteSpace(retroCpp) ? null : Path.GetFullPath(retroCpp),
-            NativeIndex: nativeIndex));
+            NativeIndex: nativeIndex,
+            Region: GuestRegions.FromGameId(project?.Identity.GameId)));
         Console.WriteLine("[translator] emitted stable translated build graph");
         Console.WriteLine($"  base functions: {result.BaseFunctionCount:N0}");
         Console.WriteLine($"  shared base functions: {result.SharedBaseFunctionCount:N0}");
@@ -402,7 +415,8 @@ int RunValidateRetroWfcPayload(string[] argsTail)
 
     try
     {
-        WiiCompiled.Setup.Common.RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(directory);
+        WiiCompiled.Setup.Common.RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(directory,
+            gameId: OptionValue(argsTail, "--game-id")!);
         Console.WriteLine("[translator] Retro WFC payload signature validated.");
         return 0;
     }
@@ -1743,6 +1757,12 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
     var modName = OptionValue(argsTail, "--mod-name")
         ?? (!string.IsNullOrWhiteSpace(modRoot) ? Path.GetFileName(Path.GetFullPath(modRoot)) : "Pulsar Mod");
     var region = OptionValue(argsTail, "--region") ?? profile?.Region ?? "P";
+    if (project?.Identity.Region is { } projectRegion &&
+        !string.Equals(region, projectRegion, StringComparison.OrdinalIgnoreCase))
+    {
+        Console.Error.WriteLine($"[translator] --region {region} does not match the project's region {projectRegion}.");
+        return 1;
+    }
     var moduleGuestBase = OptionValue(argsTail, "--module-guest-base") is { } moduleBaseText
         ? ParseAddress(moduleBaseText)
         : profile?.ModuleGuestBase ?? 0x81700000u;
@@ -1754,6 +1774,16 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
 
     var pul = KamekPulFile.Load(codePul);
     var selected = pul.SelectRegion(region);
+    if (string.Equals(profile?.Name, "retro-rewind", StringComparison.OrdinalIgnoreCase))
+    {
+        var corrected = RetroRewindRegionPatches.CorrectUsVoiceHook(selected, project?.Identity.GameId, image.Value);
+        if (!ReferenceEquals(corrected, selected))
+            Console.WriteLine("[translator] Corrected Retro Rewind US voice vtable hook: 0x808DBCD8 -> 0x808D7580.");
+        var esrb = RetroRewindRegionPatches.ApplyUsEsrbSkip(corrected, project?.Identity.GameId, image.Value);
+        if (!ReferenceEquals(esrb, corrected))
+            Console.WriteLine("[translator] Applied Retro Rewind's NTSC-U ESRB skip statically at 0x80604094.");
+        selected = esrb;
+    }
     if (requestedRetroWfc && profile?.RetroWfcLegacyBootstrapHook is { } legacyBootstrapHook)
     {
         selected = RetroWfcBootstrapSuppressor.Suppress(selected, legacyBootstrapHook);
@@ -3656,7 +3686,8 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
     }),
     "validate-retro-wfc-payload" => (null, new CommandOption[]
     {
-        new("--directory", "directory", Required: true)
+        new("--directory", "directory", Required: true),
+        new("--game-id", "id", Required: true)
     }),
     "emit-base-manifest" => (null, new CommandOption[]
     {
