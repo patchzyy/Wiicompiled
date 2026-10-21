@@ -765,6 +765,8 @@ extern "C" void DumpHostStackTraceForRuntimeHelper() {
 
 void MarkFatalErrorReported() {
     g_fatalErrorReported.store(true, std::memory_order_release);
+    // Every caller exits next; keep the worker out of static teardown.
+    GxWorker::Abandon();
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {

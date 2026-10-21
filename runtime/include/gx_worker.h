@@ -28,6 +28,8 @@ void FlushFifo();
 // Starts the worker unless [video] gx_worker disables it. Call once Aurora is up.
 void Start();
 void Stop();
+// Stops without running queued work; bounded, for fatal exits.
+void Abandon();
 
 inline bool Active() noexcept { return detail::g_active.load(std::memory_order_relaxed); }
 inline bool OnWorker() noexcept { return detail::t_onWorker; }

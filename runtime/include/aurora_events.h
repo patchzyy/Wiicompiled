@@ -134,6 +134,7 @@ inline void ApplyPendingMkwDynamicAspectSurface() {
 
 void GxWorkerBeginFrame();
 void GxWorkerEndFrame(AuroraImguiFrame* imgui);
+void SetAuroraFrameGxBegun(bool begun);
 
 inline bool BeginAuroraFrame() {
     if (GxWorker::ShouldDefer()) {
@@ -149,6 +150,7 @@ inline bool BeginAuroraFrame() {
     if (!aurora_begin_frame()) {
         return false;
     }
+    SetAuroraFrameGxBegun(true);
     ApplyPendingMkwDynamicAspectSurface();
     return true;
 }
@@ -163,6 +165,7 @@ inline void EndAuroraFrame() {
         return;
     }
     aurora_end_frame();
+    SetAuroraFrameGxBegun(false);
 }
 
 // Poll Aurora events and update cached window/framebuffer dimensions.

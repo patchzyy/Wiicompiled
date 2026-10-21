@@ -60,6 +60,8 @@ std::mutex g_tailMutex;
 std::condition_variable g_tailCv;
 void (*g_waitCallback)() = nullptr;
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_abandon{false};
+std::atomic<bool> g_exited{false};
 std::thread* g_thread = nullptr;
 std::vector<uint8_t> g_fifoBytes;
 
@@ -139,6 +141,13 @@ void ReplayFifo(void* payload) {
 
 void WorkerMain() {
     detail::t_onWorker = true;
+    struct SignalExit {
+        ~SignalExit() {
+            std::lock_guard lock{g_tailMutex};
+            g_exited.store(true, std::memory_order_release);
+            g_tailCv.notify_all();
+        }
+    } signalExit;
     AuroraSetGxProducerThread();
 #if defined(_WIN32)
     SetThreadDescription(GetCurrentThread(), L"GX worker");
@@ -173,6 +182,9 @@ void WorkerMain() {
             continue;
         }
         while (tail != head) {
+            if (g_abandon.load(std::memory_order_acquire)) {
+                return;
+            }
             uint8_t* record = g_ring + tail % kCapacity;
             const Header* header = reinterpret_cast<const Header*>(record);
             if (header->run != nullptr) {
@@ -205,15 +217,16 @@ void* Reserve(size_t payloadSize, void (*run)(void*)) {
     size_t offset = static_cast<size_t>(g_write % kCapacity);
     const size_t remaining = kCapacity - offset;
     if (total > remaining) {
-        WaitForSpace(remaining + total);
+        WaitForSpace(remaining);
         auto* wrap = reinterpret_cast<Header*>(g_ring + offset);
         wrap->run = nullptr;
         wrap->size = static_cast<uint32_t>(remaining);
         g_write += remaining;
+        // Publish the skip so the worker can drain past it while we wait for the front.
+        Commit();
         offset = 0;
-    } else {
-        WaitForSpace(total);
     }
+    WaitForSpace(total);
     auto* header = reinterpret_cast<Header*>(g_ring + offset);
     header->run = run;
     header->size = static_cast<uint32_t>(total);
@@ -303,6 +316,8 @@ void Start() {
     }
     g_fifoBytes.reserve(kFifoFlushBytes + 4096);
     g_stop.store(false, std::memory_order_relaxed);
+    g_abandon.store(false, std::memory_order_relaxed);
+    g_exited.store(false, std::memory_order_relaxed);
     g_thread = new std::thread(WorkerMain);
     detail::g_active.store(true, std::memory_order_release);
     RT_LOGF(RT_TAG_GX, "GX worker started\n");
@@ -321,6 +336,34 @@ void Stop() {
     if (g_thread != nullptr) {
         g_thread->join();
         delete g_thread;
+        g_thread = nullptr;
+    }
+}
+
+void Abandon() {
+    if (!Active() || detail::t_onWorker) {
+        return;
+    }
+    detail::g_active.store(false, std::memory_order_release);
+    g_abandon.store(true, std::memory_order_release);
+    g_stop.store(true, std::memory_order_release);
+    {
+        std::lock_guard lock{g_headMutex};
+        g_headCv.notify_one();
+    }
+    bool exited = false;
+    {
+        std::unique_lock lock{g_tailMutex};
+        exited = g_tailCv.wait_for(lock, std::chrono::seconds{2},
+                                   [] { return g_exited.load(std::memory_order_acquire); });
+    }
+    if (g_thread != nullptr) {
+        if (exited) {
+            g_thread->join();
+            delete g_thread;
+        } else {
+            g_thread->detach();
+        }
         g_thread = nullptr;
     }
 }

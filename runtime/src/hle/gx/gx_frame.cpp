@@ -112,26 +112,29 @@ void EnsureAuroraFrameActive() {
 }
 
 namespace {
-// GX worker only.
-bool g_workerFrameBegun = false;
+// Whether the GX half of the current frame has begun, on either path. Inline frame calls only run
+// after a sync, so the ring orders every access.
+bool g_frameGxBegun = false;
 }
+
+void SetAuroraFrameGxBegun(bool begun) { g_frameGxBegun = begun; }
 
 void GxWorkerBeginFrame() {
     // gfx::begin_frame can briefly fail to map a staging buffer; retry like the inline path does.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
-    while (!(g_workerFrameBegun = aurora_begin_frame_gx()) && std::chrono::steady_clock::now() < deadline) {
+    while (!(g_frameGxBegun = aurora_begin_frame_gx()) && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    if (!g_workerFrameBegun) {
+    if (!g_frameGxBegun) {
         RT_LOGF(RT_TAG_GX, "GX worker could not begin an aurora frame\n");
     }
 }
 
 void GxWorkerEndFrame(AuroraImguiFrame* imgui) {
-    if (g_workerFrameBegun) {
+    if (g_frameGxBegun) {
         aurora_end_frame_gx(imgui);
     } else {
         aurora_release_imgui_frame(imgui);
     }
-    g_workerFrameBegun = false;
+    g_frameGxBegun = false;
 }
