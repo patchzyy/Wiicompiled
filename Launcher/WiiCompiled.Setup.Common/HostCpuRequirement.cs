@@ -47,6 +47,17 @@ public static class HostCpuRequirement
             throw new PlatformNotSupportedException(Describe(profile, missing));
     }
 
+    // The highest profile this machine runs; builds fall back to v2 when v3 is missing.
+    public static X86CpuProfile SelectBuildProfile() =>
+        RuntimeInformation.ProcessArchitecture != Architecture.X64
+            ? X86CpuProfile.V3
+            : SelectBuildProfile(CpuId, Avx.IsSupported);
+
+    public static X86CpuProfile SelectBuildProfile(Func<uint, uint[]> cpuid, bool osSavesAvxState) =>
+        FindMissingFeatures(X86CpuProfile.V3, cpuid, osSavesAvxState).Count == 0
+            ? X86CpuProfile.V3
+            : X86CpuProfile.V2;
+
     public static IReadOnlyList<string> FindMissingFeatures(X86CpuProfile profile,
         Func<uint, uint[]> cpuid, bool osSavesAvxState)
     {

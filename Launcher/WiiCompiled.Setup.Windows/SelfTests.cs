@@ -1034,6 +1034,13 @@ internal static class SelfTests
         Expect(HostCpuRequirement.FindMissingFeatures(X86CpuProfile.V2, Cpu(11, v2Leaf1, 0, 0), false),
             "LAHF-SAHF", "Missing LAHF/SAHF");
 
+        if (HostCpuRequirement.SelectBuildProfile(nehalem, false) != X86CpuProfile.V2)
+            throw new Exception("A v2 processor was not given the v2 build.");
+        if (HostCpuRequirement.SelectBuildProfile(haswell, true) != X86CpuProfile.V3)
+            throw new Exception("A v3 processor was not given the v3 build.");
+        if (HostCpuRequirement.SelectBuildProfile(haswell, false) != X86CpuProfile.V2)
+            throw new Exception("A v3 processor without AVX state was given the v3 build.");
+
         var message = HostCpuRequirement.Describe(X86CpuProfile.V3, ["AVX2"]);
         if (!message.Contains("x86-64-v3") || !message.Contains("Missing on this machine: AVX2"))
             throw new Exception("The unsupported-processor message lost its detail.");
