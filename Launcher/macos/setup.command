@@ -41,6 +41,28 @@ done
 
 host_arch=$(uname -m)
 case "$host_arch" in arm64|x86_64) ;; *) fail "unsupported macOS architecture: $host_arch" ;; esac
+# Same x86-64-v3 check as runtime/src/host_cpu_baseline.cpp, before anything is built.
+if [[ "$host_arch" == x86_64 ]]; then
+    cpu_features=$(/usr/sbin/sysctl -n machdep.cpu.features machdep.cpu.leaf7_features machdep.cpu.extfeatures 2>/dev/null | tr '\n' ' ' || true)
+    if [[ -n "${cpu_features// /}" ]]; then
+        missing_features=""
+        for feature in SSE3=SSE3 SSSE3=SSSE3 CX16=CMPXCHG16B SSE4.1=SSE4.1 SSE4.2=SSE4.2 POPCNT=POPCNT \
+                LAHF=LAHF-SAHF FMA=FMA MOVBE=MOVBE OSXSAVE=OSXSAVE AVX1.0=AVX F16C=F16C BMI1=BMI1 \
+                AVX2=AVX2 BMI2=BMI2 LZCNT=LZCNT; do
+            [[ " $cpu_features " == *" ${feature%%=*} "* ]] || missing_features+="${missing_features:+, }${feature#*=}"
+        done
+        if [[ -n "$missing_features" ]]; then
+            message="This build needs a processor that supports the x86-64-v3 instruction set.
+
+Missing on this machine: $missing_features
+
+x86-64-v3 covers Intel Core processors from Haswell (4th generation, 2013) onward and AMD processors from Excavator (2015) onward."
+            printf 'WiiCompiled Setup: %s\n' "$message" >&2
+            notice "$message"
+            exit 1
+        fi
+    fi
+fi
 host_tools="$resources/tools/$host_arch"
 nodtool="$host_tools/nodtool"
 translator="$host_tools/Translator.Cli"

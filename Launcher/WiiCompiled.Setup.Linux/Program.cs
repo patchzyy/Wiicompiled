@@ -74,6 +74,8 @@ internal static class Program
 
     private static async Task InstallAsync(Dictionary<string, string?> flags, IInstallReporter reporter, CancellationToken token)
     {
+        // local-build.sh falls back to an x86-64-v2 build when this CPU lacks v3.
+        HostCpuRequirement.EnsureSupported(X86CpuProfile.V2);
         var retroDir = flags.GetValueOrDefault("retro-dir");
         var installsRetro = !string.IsNullOrEmpty(retroDir);
         var downloadPayload = flags.ContainsKey("download-retro-wfc-payload");
