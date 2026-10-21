@@ -7,6 +7,7 @@
 #include "memory.h"
 #include "runtime_product.h"
 
+#include <SDL3/SDL_clipboard.h>
 #include <SDL3/SDL_events.h>
 
 #include <atomic>
@@ -27,10 +28,31 @@ constexpr uint32_t kPageStateActive = 4;
 constexpr uint32_t kVtableGetTypeInfoOffset = 0x60;
 constexpr int kBackspace = -1;
 constexpr size_t kMaxPendingKeys = 32;
+constexpr size_t kFriendCodeDigits = 12;
 
 std::mutex g_pendingMutex;
 std::vector<int> g_pending;
 std::atomic_bool g_pageFocused{false};
+
+bool IsPaste(const SDL_KeyboardEvent& key) {
+    return !key.repeat && key.key == SDLK_V && (key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0 &&
+           (key.mod & SDL_KMOD_ALT) == 0;
+}
+
+void AppendClipboardDigits(std::vector<int>& keys) {
+    char* text = SDL_GetClipboardText();
+    if (!text) {
+        return;
+    }
+    size_t digits = 0;
+    for (const char* c = text; *c && digits < kFriendCodeDigits; ++c) {
+        if (*c >= '0' && *c <= '9') {
+            keys.push_back(*c - '0');
+            ++digits;
+        }
+    }
+    SDL_free(text);
+}
 
 std::optional<int> KeyValue(const SDL_KeyboardEvent& key) {
     if ((key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0) {
@@ -98,15 +120,26 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     if (!events || !g_pageFocused.load(std::memory_order_acquire) || InputBindings::InputBlocked()) {
         return;
     }
-    std::lock_guard lock(g_pendingMutex);
+    std::vector<int> keys;
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type != AURORA_SDL_EVENT || ev->sdl.type != SDL_EVENT_KEY_DOWN) {
             continue;
         }
-        const std::optional<int> key = KeyValue(ev->sdl.key);
-        if (key && g_pending.size() < kMaxPendingKeys) {
-            g_pending.push_back(*key);
+        if (IsPaste(ev->sdl.key)) {
+            AppendClipboardDigits(keys);
+        } else if (const std::optional<int> key = KeyValue(ev->sdl.key)) {
+            keys.push_back(*key);
         }
+    }
+    if (keys.empty()) {
+        return;
+    }
+    std::lock_guard lock(g_pendingMutex);
+    for (const int key : keys) {
+        if (g_pending.size() >= kMaxPendingKeys) {
+            break;
+        }
+        g_pending.push_back(key);
     }
 }
 
