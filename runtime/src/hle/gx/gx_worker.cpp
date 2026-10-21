@@ -294,8 +294,7 @@ void Start() {
     if (Active()) {
         return;
     }
-    const char* env = std::getenv("MKW_GX_WORKER");
-    if (!RuntimeConfigFile::GxWorkerEnabled(true) || (env != nullptr && std::strcmp(env, "0") == 0)) {
+    if (!RuntimeConfigFile::GxWorkerEnabled(true)) {
         RT_LOGF(RT_TAG_GX, "GX worker disabled\n");
         return;
     }

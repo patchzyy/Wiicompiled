@@ -25,7 +25,7 @@ void Commit();
 void FlushFifo();
 } // namespace detail
 
-// Starts the worker unless [video] gx_worker or MKW_GX_WORKER=0 disables it. Call once Aurora is up.
+// Starts the worker unless [video] gx_worker disables it. Call once Aurora is up.
 void Start();
 void Stop();
 
