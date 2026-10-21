@@ -1,5 +1,5 @@
 # NTSC-U (RMCE01) function map, ported from ../mkwii/MAP.txt (PAL RMCP01) by tools/region/port_map.py.
-# Every entry was validated against the RMCE01 main.dol/StaticR.rel; see MAP_REPORT.md next to this file.
+# Every entry was validated against the RMCE01 main.dol/StaticR.rel.
 # Verdicts: PROVEN=12178, REFERENCED=12573, PLAUSIBLE=4500, IDENTITY=15, INTERPOLATED=0, ADDED=143 (binary-proven entries no PAL entry covers); entries=29409
 800018a8 0x800018a8
 80001d50 0x80001d50

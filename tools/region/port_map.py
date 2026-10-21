@@ -11,7 +11,7 @@ exception-table records, function-pointer tables, or at least a terminator/prolo
 
 Plain Python 3 stdlib only. Output is deterministic (no timestamps, sorted everywhere).
 
-Method (see MAP_REPORT.md for the numbers of a given run):
+Method:
   A. Build the evidence set K of target function entry points proven by the binaries:
        - DOL text: `bl` targets (strong), `b` targets (weak), lis/addi(ori) pairs that
          materialise a code address (medium), the DOL entry point (strong).
@@ -36,13 +36,11 @@ Method (see MAP_REPORT.md for the numbers of a given run):
   C. Entries the chunk table cannot port: IDENTITY below 0x80004000, else INTERPOLATED when
      the PAL gap and the target gap between the nearest PROVEN neighbours hold the same number
      of entries, else DROPPED.
-  D. Verify the CodeWarrior save/restore thunk families the recompiler resolves by name.
   E. Emit MAP.txt sorted by target address, deduplicated, parseable by FunctionMap.cs.
   H. Append every target entry point K proves that no ported PAL entry covers (bl targets,
      .ctors/.dtors entries, REL prolog/epilog/unresolved, extabindex records, function-pointer
-     tables) as unnamed placeholder entries, reported per evidence class.
+     tables) as unnamed placeholder entries.
   F. Emit region_port.json with the vendored chunk table for other tooling.
-  G. Emit MAP_REPORT.md.
 
 Usage:
   port_map.py --region E --disc-root DIR      # DIR/RMCE01/sys/main.dol, DIR/RMCE01/files/rel/StaticR.rel
@@ -98,7 +96,7 @@ SDA_BASES = {"P": (0x8038CC00, 0x8038EFA0), "E": (0x80388880, 0x8038AC20),
 
 # Output project directory per destination region.
 PROJECT_DIR = {"E": "mkwii-ntsc-u", "J": "mkwii-ntsc-j"}
-# Display name and game ID of each target region, for the map header and the report.
+# Display name and game ID of each target region, for the map header.
 REGION_NAME = {"E": ("NTSC-U", "RMCE01"), "J": ("NTSC-J", "RMCJ01")}
 
 DOL_SECTIONS = {
@@ -321,18 +319,7 @@ def rel_secs():
 
 
 LOW_MEMORY_LIMIT = 0x80004000          # below this: exception vectors / runtime-copied code
-REL_MODULE_ID = 1
-INIT_REGISTERS_SYMBOL = "__init_registers"
-INIT_REGISTERS_PAL = 0x80006210
 
-# Save/restore thunk families resolved by name in GuestSaveRestoreThunks.cs:
-# (prefix, mnemonic, primary opcode, bytes per register)
-THUNK_FAMILIES = [
-    ("_save_gpr_", "stw", 36, 4),
-    ("_rest_gpr_", "lwz", 32, 4),
-    ("_save_fpr_", "stfd", 54, 8),
-    ("_rest_fpr_", "lfd", 50, 8),
-]
 
 # REL relocation types
 R_PPC_NONE, R_PPC_ADDR32, R_PPC_ADDR24, R_PPC_ADDR16 = 0, 1, 2, 3
@@ -376,8 +363,6 @@ ADDITION_CLASSES = [
 ]
 
 EMITTED_VERDICTS = ("PROVEN", "REFERENCED", "PLAUSIBLE", "IDENTITY", "INTERPOLATED")
-VERDICT_ORDER = ("PROVEN", "REFERENCED", "PLAUSIBLE", "IDENTITY", "INTERPOLATED",
-                 "UNVERIFIED", "DROPPED")
 
 
 # ---------------------------------------------------------------------------------------
@@ -461,7 +446,7 @@ def first_insn_quality(w: int) -> str:
 
 
 def decode_simple(w: int) -> str:
-    """Tiny disassembler for the instructions the report needs to show."""
+    """Tiny disassembler for the evidence notes."""
     op = opcd(w)
     if op == 36:
         return f"stw r{reg_d(w)},{simm(w)}(r{reg_a(w)})"
@@ -1244,105 +1229,6 @@ def finish_unported(entries: List[Entry]) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# Special checks
-# ---------------------------------------------------------------------------------------
-def thunk_expected(opcode: int, reg: int, step: int) -> int:
-    return ((opcode << 26) | (reg << 21) | (11 << 16) | ((-(step * (32 - reg))) & 0xFFFF)) & 0xFFFFFFFF
-
-
-def check_thunks(entries: List[Entry], mem: Memory) -> List[dict]:
-    by_name: Dict[str, Entry] = {}
-    for e in entries:
-        if e.named and e.name not in by_name:
-            by_name[e.name] = e
-    results = []
-    for prefix, mnemonic, opcode, step in THUNK_FAMILIES:
-        members = []
-        for name, e in by_name.items():
-            if name.startswith(prefix):
-                suffix = name[len(prefix):]
-                if suffix.isdigit():
-                    members.append((int(suffix), e))
-        members.sort()
-        rows = []
-        family_ok = True
-        for reg, e in members:
-            expected = thunk_expected(opcode, reg, step)
-            actual = mem.read_u32(e.ntsc) if e.ntsc is not None else None
-            ok = actual == expected and e.verdict in EMITTED_VERDICTS
-            family_ok &= ok
-            rows.append({
-                "name": e.name, "pal": e.pal, "ntsc": e.ntsc, "verdict": e.verdict,
-                "expected": expected, "actual": actual,
-                "decoded": decode_simple(actual) if actual is not None else "n/a", "ok": ok,
-            })
-        run_ok = True
-        run_note = ""
-        if len(members) >= 2:
-            first_reg, first = members[0]
-            last_reg, last = members[-1]
-            if first.ntsc is not None and last.ntsc is not None:
-                if last.ntsc != first.ntsc + 4 * (last_reg - first_reg):
-                    run_ok = False
-                    run_note = "family is not a four-byte-per-register run (FunctionMap.ResolveRange would throw)"
-                # full run: registers first..31 must all decode as expected
-                for reg in range(first_reg, 32):
-                    a = first.ntsc + 4 * (reg - first_reg)
-                    w = mem.read_u32(a)
-                    if w != thunk_expected(opcode, reg, step):
-                        run_ok = False
-                        run_note = f"register {reg} at {a:08x} decodes as {decode_simple(w) if w is not None else 'n/a'}"
-                        break
-        else:
-            run_ok = False
-            run_note = "fewer than two named members"
-        results.append({"prefix": prefix, "mnemonic": mnemonic, "rows": rows, "family_ok": family_ok and run_ok,
-                        "run_note": run_note})
-    return results
-
-
-def read_sda_bases(entries: List[Entry], mem: Memory) -> dict:
-    init = next((e for e in entries if e.named and e.name == INIT_REGISTERS_SYMBOL), None)
-    result = {"symbol": INIT_REGISTERS_SYMBOL, "pal": None, "ntsc": None, "values": {}, "listing": [], "status": ""}
-    if init is None or init.ntsc is None:
-        result["status"] = "symbol not found or not ported"
-        return result
-    result["pal"] = init.pal
-    result["ntsc"] = init.ntsc
-    pending: Dict[int, int] = {}
-    values: Dict[int, int] = {}
-    for i in range(48):
-        a = init.ntsc + 4 * i
-        w = mem.read_u32(a)
-        if w is None:
-            break
-        result["listing"].append((a, w, decode_simple(w)))
-        op = opcd(w)
-        if op == 15 and reg_a(w) == 0:                       # lis rD, hi
-            pending[reg_d(w)] = uimm(w) << 16
-        elif op == 24 and reg_a(w) == reg_d(w) and reg_d(w) in pending:      # ori rX,rX,lo
-            values[reg_a(w)] = (pending.pop(reg_a(w)) | uimm(w)) & 0xFFFFFFFF
-        elif op == 14 and reg_a(w) == reg_d(w) and reg_a(w) != 0 and reg_d(w) in pending:  # addi rX,rX,lo
-            values[reg_a(w)] = (pending.pop(reg_a(w)) + simm(w)) & 0xFFFFFFFF
-        if w == 0x4E800020:
-            break
-    result["values"] = {f"r{r}": v for r, v in sorted(values.items())}
-    r13 = values.get(13)
-    r2 = values.get(2)
-    checks = []
-    for reg, val in (("r13", r13), ("r2", r2)):
-        exp = SDA_BASES[TARGET][0 if reg == "r13" else 1]
-        if val is None:
-            checks.append(f"{reg}: not found")
-        elif val == exp:
-            checks.append(f"{reg}=0x{val:08X} (matches expectation)")
-        else:
-            checks.append(f"{reg}=0x{val:08X} (EXPECTED 0x{exp:08X})")
-    result["status"] = "; ".join(checks)
-    return result
-
-
-# ---------------------------------------------------------------------------------------
 # Output
 # ---------------------------------------------------------------------------------------
 def dedupe(entries: List[Entry]) -> Tuple[List[Entry], List[List[Entry]]]:
@@ -1437,7 +1323,7 @@ def write_map(path: str, kept: List[Entry], counts: Dict[str, int], pal_map: str
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     lines = [
         f"# {TN} ({TI}) function map, ported from {pal_map} (PAL RMCP01) by {TOOL_ID}.",
-        f"# Every entry was validated against the {TI} main.dol/StaticR.rel; see MAP_REPORT.md next to this file.",
+        f"# Every entry was validated against the {TI} main.dol/StaticR.rel.",
         "# Verdicts: " + ", ".join(f"{k}={counts.get(k, 0)}" for k in EMITTED_VERDICTS)
         + f", ADDED={counts.get('ADDED', 0)} (binary-proven entries no PAL entry covers); entries={len(kept)}",
     ]
@@ -1473,350 +1359,6 @@ def write_json(path: str, table: ChunkTable, dol: Dol, rel: Rel) -> None:
     write_if_changed(path, json.dumps(payload, indent=2) + "\n")
 
 
-def layout_check(dol: Dol, rel: Rel) -> List[str]:
-    """Compare the parsed target binaries with the vendored mkw-sp layout for that region."""
-    notes = []
-    parsed = {s.start: s for s in dol.sections}
-    for name, start, end in dol_secs():
-        if name in ("bss", "sbss", "sbss2"):
-            continue
-        s = parsed.get(start)
-        if s is None:
-            notes.append(f"DOL {name}: expected a section at {start:08x}, none parsed")
-        elif s.end != end:
-            notes.append(f"DOL {name}: parsed {s.start:08x}-{s.end:08x}, table says {start:08x}-{end:08x}")
-        else:
-            notes.append(f"DOL {name}: {start:08x}-{end:08x} OK")
-    if dol.bss_addr != dol_secs()[8][1]:
-        notes.append(f"DOL bss: header says {dol.bss_addr:08x}, table says {dol_secs()[8][1]:08x}")
-    parsed_rel = {s.start: s for s in rel.sections}
-    for name, start, end in rel_secs():
-        s = parsed_rel.get(start)
-        if s is None:
-            notes.append(f"REL {name}: expected a section at {start:08x}, none parsed")
-        elif s.end != end:
-            notes.append(f"REL {name}: parsed {s.start:08x}-{s.end:08x}, table says {start:08x}-{end:08x}")
-        else:
-            notes.append(f"REL {name}: {start:08x}-{end:08x} OK")
-    return notes
-
-
-def label_class_rows(entries: List[Entry]) -> List[List[str]]:
-    classes: Dict[str, collections.Counter] = collections.OrderedDict(
-        (k, collections.Counter()) for k in ("case", "switch", "data"))
-    for e in entries:
-        k = entry_kind(e.name)
-        if k in classes:
-            classes[k][e.verdict] += 1
-    rows = []
-    for k, c in classes.items():
-        rows.append([k, sum(c.values())] + [c.get(v, 0) for v in VERDICT_ORDER])
-    return rows
-
-
-def extent_check(entries: List[Entry], kept: List[Entry], table: ChunkTable) -> Tuple[int, List[List[str]], int]:
-    """For chunk-ported entries whose PAL successor is not ported by the same chunk (chunk tails and
-    entries next to holes), compare the PAL extent (distance to the next PAL entry) with the NTSC-U
-    extent (distance to the next emitted entry). Inside a chunk the two are equal by construction,
-    so a mismatch here marks exactly the places where the chunk table's edges may be sloppy."""
-    kept_addrs = sorted(e.ntsc for e in kept)
-    rows: List[List[str]] = []
-    unnamed_mismatch = checked = 0
-    for i, e in enumerate(entries):
-        if e.method != "chunk" or e.verdict not in EMITTED_VERDICTS or i + 1 >= len(entries):
-            continue
-        s = entries[i + 1]
-        if s.method == "chunk" and table.find(s.pal) == table.find(e.pal):
-            continue
-        checked += 1
-        ext_pal = s.pal - e.pal
-        j = bisect.bisect_right(kept_addrs, e.ntsc)
-        ext_ntsc = kept_addrs[j] - e.ntsc if j < len(kept_addrs) else None
-        if ext_ntsc == ext_pal:
-            continue
-        if e.named:
-            rows.append([hx(e.pal), e.display_name, hx(e.ntsc), e.verdict, f"{ext_pal:#x}",
-                         f"{ext_ntsc:#x}" if ext_ntsc is not None else "-", f"{s.display_name} ({s.verdict})"])
-        else:
-            unnamed_mismatch += 1
-    return checked, rows, unnamed_mismatch
-
-
-def md_table(header: List[str], rows: List[List[str]]) -> List[str]:
-    out = ["| " + " | ".join(header) + " |", "|" + "|".join("---" for _ in header) + "|"]
-    for r in rows:
-        out.append("| " + " | ".join(str(c).replace("|", "\\|") for c in r) + " |")
-    return out
-
-
-def hx(a: Optional[int]) -> str:
-    return "-" if a is None else f"{a:08x}"
-
-
-def write_report(path: str, args: argparse.Namespace, dol: Dol, rel: Rel, table: ChunkTable, ev: Evidence,
-                 entries: List[Entry], kept: List[Entry], collisions: List[List[Entry]], gaps: List[GapResult],
-                 thunks: List[dict], sda: dict, added: List[Entry], add_stats: AdditionStats) -> str:
-    L: List[str] = []
-    counts = collections.Counter(e.verdict for e in entries)
-    per_module: Dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
-    for e in entries:
-        per_module[e.module][e.verdict] += 1
-    emitted_counts = collections.Counter(e.verdict for e in kept)
-    L.append(f"# {TN} ({TI}) function map port report")
-    L.append("")
-    L.append(f"Generated by `{TOOL_ID}`. Deterministic; no timestamps.")
-    L.append("")
-    L.append("## Summary")
-    L.append("")
-    L.append(f"- PAL map: `{repo_relative(args.pal_map)}` ({len(entries)} entries, {sum(1 for e in entries if e.named)} named)")
-    L.append(f"- {TN} DOL: `{os.path.basename(dol.path)}` sha256 `{dol.sha256}` entry `0x{dol.entry:08X}`")
-    L.append(f"- {TN} REL: `{os.path.basename(rel.path)}` sha256 `{rel.sha256}` load `0x{rel.load_address:08X}` "
-             f"(module {rel.module_id}, v{rel.version}, prolog `0x{rel.prolog:08X}`, epilog `0x{rel.epilog:08X}`, "
-             f"unresolved `0x{rel.unresolved:08X}`)")
-    L.append(f"- Chunk table: {len(table.chunks)} PAL->{TN} chunks (mkw-sp port.py, MIT)"
-             + (f"; problems: {'; '.join(table.problems)}" if table.problems else "; no overlaps, all deltas word-aligned"))
-    L.append(f"- Output map: `{repo_relative(args.out_map)}` with **{len(kept)}** entries "
-             f"({sum(1 for e in kept if e.named)} named); `{repo_relative(args.out_json)}` carries the chunk table.")
-    L.append("")
-    L.append("### Verdict totals (all PAL entries)")
-    L.append("")
-    rows = []
-    for v in VERDICT_ORDER:
-        rows.append([v, counts.get(v, 0), per_module["low"].get(v, 0), per_module["dol"].get(v, 0),
-                     per_module["rel"].get(v, 0), "yes" if v in EMITTED_VERDICTS else "no"])
-    rows.append(["total", len(entries), sum(per_module["low"].values()), sum(per_module["dol"].values()),
-                 sum(per_module["rel"].values()), ""])
-    L += md_table(["verdict", "entries", "low-mem", "DOL", "REL", "emitted"], rows)
-    L.append("")
-    L.append("Emitted after deduplication: " + ", ".join(f"{v}={emitted_counts.get(v, 0)}" for v in EMITTED_VERDICTS)
-             + f"; total {len(kept)} ported entries, plus {len(added)} binary-proven entries no PAL entry covers "
-             f"(section below) = **{len(kept) + len(added)}** lines in MAP.txt. UNVERIFIED and DROPPED entries are "
-             f"never written to MAP.txt.")
-    L.append("")
-    L.append(f"### Binary-proven entries added (step H: {TN} entry points no ported PAL entry covers)")
-    L.append("")
-    L.append("Emitted as unnamed placeholders (`hexaddr 0xhexaddr`). Strong classes are taken as proven; the "
-             "pointer-referenced classes must also pass the structural check (not a conditional-branch target, "
-             "terminator before, decodable first instruction) because no PAL entry vouches for them. Each address "
-             "is counted once, under the first class that applies.")
-    L.append("")
-    L += md_table(["evidence class", "added"], [[k, v] for k, v in add_stats.per_class.items()]
-                  + [["total added", len(added)]])
-    L.append("")
-    ctor_labels = {"ctor:dol": "DOL .ctors", "dtor:dol": "DOL .dtors", "ctor:rel": "REL .ctors", "dtor:rel": "REL .dtors"}
-    L.append("Constructor/destructor tables: "
-             + "; ".join(f"{ctor_labels[t]} {add_stats.ctor_total.get(t, 0)} entries, "
-                         f"{add_stats.ctor_missing.get(t, 0)} previously missing from the map"
-                         for t in ("ctor:dol", "dtor:dol", "ctor:rel", "dtor:rel")) + ".")
-    L.append(f"Not added: {add_stats.rejected_medium} pointer-referenced addresses that failed the structural check "
-             f"(jump-table targets and similar), {add_stats.skipped_weak} addresses with only weak evidence "
-             f"(conditional/unconditional branch targets, lis/addi pairs, jump-table-like runs). Strong additions "
-             f"that are also a conditional-branch target: {add_stats.strong_bc_anomalies}.")
-    L.append("")
-    for label, addrs in add_stats.per_class_addrs.items():
-        if not addrs:
-            continue
-        L.append(f"{label} ({len(addrs)}):")
-        L.append("")
-        L.append("```text")
-        for i in range(0, len(addrs), 12):
-            L.append(" ".join(f"{a:08x}" for a in addrs[i:i + 12]))
-        L.append("```")
-        L.append("")
-    strong_q = collections.Counter()
-    for e in kept:
-        strong_q[(e.verdict, e.quality)] += 1
-    L.append("First-instruction quality of emitted entries (strong = typical prologue/first instruction, "
-             "valid = any decodable instruction): "
-             + ", ".join(f"{v}/{q}={n}" for (v, q), n in sorted(strong_q.items())))
-    L.append("")
-    dropped_n = counts.get("DROPPED", 0)
-    unv_n = counts.get("UNVERIFIED", 0)
-    L.append("### Reading the numbers")
-    L.append("")
-    L.append(f"- {counts.get('PROVEN', 0) + counts.get('REFERENCED', 0)} of {len(entries)} entries land on an address the "
-             f"{TN} binaries reference as code (call target, exception-table record, entry point, function-pointer "
-             f"table, jump table for case labels); {counts.get('PLAUSIBLE', 0)} more sit right after a function "
-             f"terminator (or are verified switch dispatch sites) with a decodable first instruction.")
-    L.append(f"- {unv_n} UNVERIFIED entries are withheld: see the per-class breakdown in the Unverified section. None of "
-             f"the no-evidence ones lies near a chunk edge; they are surrounded by validated neighbours inside their "
-             f"chunk, which points at PAL-map noise (mid-function addresses, round addresses, names misplaced by one "
-             f"instruction) rather than at the chunk table.")
-    L.append(f"- {dropped_n} DROPPED entries: jump tables and other data symbols the PAL map carries, PAL-only code "
-             f"regions with no {TN} counterpart, and chunk-table holes with no interpolation gap.")
-    L.append(f"- The PAL project uses sda_base/sda2_base 0x8038CC00/0x8038EFA0; the {TN} values read below are the "
-             f"ones an {TN} project must configure.")
-    L.append("")
-    L.append("### Non-function labels carried by the PAL map")
-    L.append("")
-    L.append("The PAL map contains Ghidra-style labels that are not function starts: `*_caseD_N` switch case "
-             "labels (validated here by a jump-table reference at the ported address), `*_switch` dispatch "
-             "points (validated as `mtctr`+`bctr`), and `switchdataD_*` jump tables (data, never code). "
-             "They are ported with the same rules; the verdict spread per class:")
-    L.append("")
-    L += md_table(["class", "entries"] + list(VERDICT_ORDER), label_class_rows(entries))
-    L.append("")
-    checked, ext_rows, ext_unnamed = extent_check(entries, kept, table)
-    L.append("### Chunk-edge extent check")
-    L.append("")
-    L.append(f"{checked} emitted chunk-ported entries sit at a chunk edge (their PAL successor is not ported by the "
-             f"same chunk). For these the PAL extent (distance to the next PAL entry) was compared with the "
-             f"{TN} extent (distance to the next emitted entry): {len(ext_rows)} named and {ext_unnamed} unnamed "
-             f"entries differ. A difference means the function's size changed, the successor was dropped, or the "
-             f"chunk edge is sloppy; the address is still a verified entry point, but for named entries the name "
-             f"deserves a second look.")
-    L.append("")
-    if ext_rows:
-        L += md_table(["PAL", "name", f"{TN}", "verdict", "PAL extent", f"{TN} extent", "PAL successor"], ext_rows)
-        L.append("")
-
-    L.append(f"### SDA bases read from the {TN} `__init_registers`")
-    L.append("")
-    L.append(f"- `{sda['symbol']}` PAL `{hx(sda['pal'])}` -> {TN} `{hx(sda['ntsc'])}`")
-    L.append(f"- Result: **{sda['status']}**")
-    if sda["values"]:
-        L.append("- All lis/ori(addi) register values materialised in the function: "
-                 + ", ".join(f"{r}=0x{v:08X}" for r, v in sda["values"].items()))
-    L.append("")
-    if sda["listing"]:
-        L.append("```text")
-        for a, w, d in sda["listing"]:
-            L.append(f"{a:08x}  {w:08x}  {d}")
-        L.append("```")
-        L.append("")
-
-    L.append("### Save/restore thunk families (resolved by name in GuestSaveRestoreThunks.cs)")
-    L.append("")
-    for fam in thunks:
-        status = "OK" if fam["family_ok"] else "PROBLEM"
-        L.append(f"**`{fam['prefix']}N`** ({fam['mnemonic']} rN,-off(r11)): {status}"
-                 + (f" - {fam['run_note']}" if fam["run_note"] else " - full run to r31 verified"))
-        L.append("")
-        L += md_table(["name", "PAL", f"{TN}", "verdict", "expected", "actual", "decoded", "ok"],
-                      [[r["name"], hx(r["pal"]), hx(r["ntsc"]), r["verdict"], f"{r['expected']:08x}",
-                        hx(r["actual"]), r["decoded"], "yes" if r["ok"] else "NO"] for r in fam["rows"]])
-        L.append("")
-
-    L.append(f"## Evidence set K ({TN} function entry points proven by the binaries)")
-    L.append("")
-    strong_n = sum(1 for f in ev.flags.values() if f & STRONG)
-    medium_only = sum(1 for f in ev.flags.values() if (f & MEDIUM) and not (f & STRONG))
-    b_only = sum(1 for f in ev.flags.values() if f == F_B)
-    jt_only = sum(1 for f in ev.flags.values() if f == F_JT)
-    L.append(f"- Strong (bl target / extabindex record / entry point): **{strong_n}** addresses")
-    L.append(f"- Medium only (function-pointer word, ADDR32/ADDR16 relocation, lis/addi pair): **{medium_only}** addresses")
-    L.append(f"- Weak only (`b` target, not used for verdicts): {b_only} addresses")
-    L.append(f"- Jump-table-like pointer runs (excluded from REFERENCED): {len(ev.jump_table_runs)} runs, "
-             f"{jt_only} addresses referenced only from them")
-    L.append("")
-    L += md_table(["source", "count"], [[k, v] for k, v in ev.stats.items()])
-    L.append("")
-    L.append("REL relocation type counts (module, type): "
-             + ", ".join(f"({m},{t})={n}" for (m, t), n in sorted(rel.reloc_type_counts.items())))
-    L.append("")
-
-    L.append("## Binary layout check (parsed headers vs vendored mkw-sp table)")
-    L.append("")
-    for n in layout_check(dol, rel):
-        L.append(f"- {n}")
-    L.append("")
-
-    L.append("## Interpolation gaps (step C.2)")
-    L.append("")
-    if gaps:
-        L += md_table(["PAL gap", f"{TN} gap", "unported", "K candidates", "outcome"],
-                      [[f"{g.pal_lo:08x}..{g.pal_hi:08x}", f"{g.ntsc_lo:08x}..{g.ntsc_hi:08x}", g.unported,
-                        g.candidates, g.outcome] for g in gaps])
-    else:
-        L.append("No gaps needed interpolation.")
-    L.append("")
-    interp = [e for e in entries if e.verdict == "INTERPOLATED"]
-    if interp:
-        L.append("Interpolated entries:")
-        L.append("")
-        L += md_table(["PAL", "name", f"{TN}", "evidence", "gap"],
-                      [[hx(e.pal), e.display_name, hx(e.ntsc), e.evidence, e.note] for e in interp])
-        L.append("")
-
-    L.append(f"## Collisions (two PAL entries porting to one {TN} address)")
-    L.append("")
-    L.append("The named entry is kept (both PAL entries are functions, so the address is a real entry point either "
-             "way; only the name is in question). Extents are the distance to the next PAL entry / next emitted "
-             f"{TN} entry: the PAL entry whose extent matches the {TN} extent is the likelier owner of the address.")
-    L.append("")
-    if collisions:
-        kept_addrs = sorted(e.ntsc for e in kept)
-        rows = []
-        for group in collisions:
-            kept_e = next(e for e in group if e.verdict in EMITTED_VERDICTS)
-            addr = group[0].ntsc
-            j = bisect.bisect_right(kept_addrs, addr)
-            ext_ntsc = f"{kept_addrs[j] - addr:#x}" if j < len(kept_addrs) else "-"
-            parts = []
-            for e in group:
-                ext_pal = f"{entries[e.index + 1].pal - e.pal:#x}" if e.index + 1 < len(entries) else "-"
-                parts.append(f"{e.display_name} (PAL {e.pal:08x}, {e.method}, extent {ext_pal})")
-            rows.append([hx(addr), "; ".join(parts), ext_ntsc, kept_e.display_name])
-        L += md_table([f"{TN}", "PAL entries", f"{TN} extent", "kept"], rows)
-    else:
-        L.append("None.")
-    L.append("")
-
-    dropped = [e for e in entries if e.verdict == "DROPPED"]
-    L.append(f"## Dropped entries ({len(dropped)})")
-    L.append("")
-    if dropped:
-        L += md_table(["PAL", "name", "reason"], [[hx(e.pal), e.display_name, e.note] for e in dropped])
-    else:
-        L.append("None.")
-    L.append("")
-
-    unv = [e for e in entries if e.verdict == "UNVERIFIED"]
-    L.append(f"## Unverified entries ({len(unv)}; ported by the chunk table but not confirmed by the binary, not emitted)")
-    L.append("")
-    sub = collections.Counter()
-    for e in unv:
-        if "not in a text section" in e.note:
-            sub["outside text (data symbols)"] += 1
-        elif "conditional-branch target" in e.note and ("jt" in e.evidence or "ptr" in e.evidence):
-            sub["conditional-branch target that is also jump-table referenced (a case label without a label name)"] += 1
-        elif "conditional-branch target" in e.note:
-            sub["conditional-branch target (inside a function)"] += 1
-        elif "word=00000000" in e.note:
-            sub["lands on a padding word (real function usually at +4)"] += 1
-        elif "jt" in e.evidence or "ptr" in e.evidence:
-            sub["jump-table referenced but named/unnamed as a function"] += 1
-        else:
-            sub["no evidence, predecessor is not a terminator"] += 1
-    for k, v in sorted(sub.items()):
-        L.append(f"- {k}: {v}")
-    L.append("")
-    if unv:
-        L += md_table(["PAL", "name", f"{TN}", "evidence", "detail"],
-                      [[hx(e.pal), e.display_name, hx(e.ntsc), e.evidence, e.note] for e in unv])
-    else:
-        L.append("None.")
-    L.append("")
-
-    ident = [e for e in entries if e.verdict == "IDENTITY"]
-    L.append(f"## Identity (low-memory) entries ({len(ident)})")
-    L.append("")
-    L.append("Below 0x80004000 the PAL address is kept unchanged. These addresses are outside every DOL/REL "
-             f"section, so the binaries cannot vouch for them; the evidence column shows whether any {TN} code "
-             "branches to them.")
-    L.append("")
-    if ident:
-        L += md_table(["address", "name", "binary evidence"],
-                      [[hx(e.pal), e.display_name, f"{e.note} ({e.evidence})"] for e in ident])
-    L.append("")
-
-    while L and L[-1] == "":
-        L.pop()
-    text = "\n".join(L) + "\n"
-    write_if_changed(path, text)
-    return text
-
-
 # ---------------------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------------------
@@ -1824,17 +1366,11 @@ def repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 
 
-def repo_relative(path: str) -> str:
-    """A path as it should read in a committed report: relative to the repository, forward slashes."""
-    return os.path.relpath(os.path.abspath(path), repo_root()).replace(os.sep, "/")
-
-
 def default_paths(region: str = "E") -> dict:
     repo = repo_root()
     return {
         "pal_map": os.path.join(repo, "projects", "mkwii", "MAP.txt"),
         "out_map": os.path.join(repo, "projects", PROJECT_DIR[region], "MAP.txt"),
-        "out_report": os.path.join(repo, "projects", PROJECT_DIR[region], "MAP_REPORT.md"),
         "out_json": os.path.join(repo, "projects", PROJECT_DIR[region], "region_port.json"),
     }
 
@@ -1858,9 +1394,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--rel", help=f"{TN} files/rel/StaticR.rel (overrides --disc-root)")
     ap.add_argument("--rel-load", default=None, help="target REL load address (default: the region's)")
     ap.add_argument("--out-map", default=d["out_map"])
-    ap.add_argument("--out-report", default=d["out_report"])
     ap.add_argument("--out-json", default=d["out_json"])
-    ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
     if args.disc_root:
         disc = os.path.join(args.disc_root, f"RMC{TARGET}01")
@@ -1883,25 +1417,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     entries = load_pal_map(args.pal_map)
 
     port_entries(entries, table, ev, mem)
-    gaps = interpolate_unported(entries, ev, mem)
+    interpolate_unported(entries, ev, mem)
     finish_unported(entries)
-    kept, collisions = dedupe(entries)
+    kept, _ = dedupe(entries)
 
-    thunks = check_thunks(entries, mem)
-    sda = read_sda_bases(entries, mem)
-
-    added, add_stats = binary_additions(ev, mem, {e.ntsc for e in kept})
+    added, _ = binary_additions(ev, mem, {e.ntsc for e in kept})
     counts = collections.Counter(e.verdict for e in kept)
     counts["ADDED"] = len(added)
     write_map(args.out_map, kept + added, counts,
               os.path.relpath(args.pal_map, os.path.dirname(os.path.abspath(args.out_map))).replace(os.sep, "/"))
     write_json(args.out_json, table, dol, rel)
-    report = write_report(args.out_report, args, dol, rel, table, ev, entries, kept, collisions, gaps, thunks, sda,
-                          added, add_stats)
-    if not args.quiet:
-        # print the summary section (up to the evidence section)
-        cut = report.find("## Evidence set K")
-        sys.stdout.write(report[:cut] if cut > 0 else report)
     return 0
 
 

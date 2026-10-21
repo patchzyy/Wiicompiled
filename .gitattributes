@@ -7,7 +7,6 @@ translator/tests/Translator.Tests/TestAssets/**/*.bin binary
 
 # Region tables reproduced by tools/region/
 projects/mkwii-ntsc-*/MAP.txt linguist-generated=true
-projects/mkwii-ntsc-*/MAP_REPORT.md linguist-generated=true
 projects/mkwii-ntsc-*/region_port.json linguist-generated=true
 projects/mkwii-ntsc-j/data_addresses.txt linguist-generated=true
 runtime/include/guest_abi/guest_address_table.inc linguist-generated=true
