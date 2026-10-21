@@ -1,5 +1,6 @@
 #pragma once
 
+#include "friend_code_keyboard.h"
 #include "settings_overlay.h"
 #include "runtime_config.h"
 #include "gx_worker.h"
@@ -118,6 +119,7 @@ inline void ProcessAuroraEvents(const AuroraEvent* events) {
         g_mkwDynamicAspectSurfacePending.store(true, std::memory_order_release);
     }
     settings_overlay::HandleEvents(events);
+    FriendCodeKeyboard::HandleEvents(events);
 }
 
 inline void ApplyPendingMkwDynamicAspectSurface() {
