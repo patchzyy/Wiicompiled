@@ -33,28 +33,33 @@ if (-not (Test-Path -LiteralPath $auroraCMake -PathType Leaf)) {
 $packages = @(
     [pscustomobject]@{
         Name = 'SDL'; File = 'SDL3-3.4.10.tar.gz'
+        Sha256 = '12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785'
         Uris = @('https://github.com/libsdl-org/SDL/releases/download/release-3.4.10/SDL3-3.4.10.tar.gz')
         Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_SDL3_REF "refs/tags/release-3.4.10"' },
                  @{ File = $auroraSdl; Text = 'URL "https://github.com/libsdl-org/SDL/archive/${AURORA_SDL3_REF}.tar.gz"' })
     },
     [pscustomobject]@{
         Name = 'abseil-cpp'; File = 'abseil-cpp-20240722.0.tar.gz'
+        Sha256 = 'f50e5ac311a81382da7fa75b97310e4b9006474f9560ac46f54a9967f07d4ae3'
         Uris = @('https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'dawn_prebuilt'; File = 'dawn-v20260807.225922-windows-amd64.tar.gz'
+        Sha256 = '42a7a295c87b2e8a36312e2f84a5823aac63325e8e1d271bc7ced6f83bfb075f'
         Uris = @('https://github.com/encounter/dawn/releases/download/v20260807.225922/dawn-windows-amd64.tar.gz')
         Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_DAWN_VERSION "v20260807.225922"' },
                  @{ File = $auroraDawn; Text = 'SHA256=42a7a295c87b2e8a36312e2f84a5823aac63325e8e1d271bc7ced6f83bfb075f' })
     },
     [pscustomobject]@{
         Name = 'fmt'; File = 'fmt-12.1.0.tar.gz'
+        Sha256 = 'ea7de4299689e12b6dddd392f9896f08fb0777ac7168897a244a6d6085043fea'
         Uris = @('https://github.com/fmtlib/fmt/archive/refs/tags/12.1.0.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/fmtlib/fmt/archive/refs/tags/12.1.0.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'freetype'; File = 'freetype-2.14.3.tar.gz'
+        Sha256 = 'e61b31ab26358b946e767ed7eb7f4bb2e507da1cfefeb7a8861ace7fd5c899a1'
         Uris = @('https://files.twilitrealm.dev/freetype-2.14.3.tar.gz',
                  'https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.gz',
                  'https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.gz')
@@ -62,42 +67,50 @@ $packages = @(
     },
     [pscustomobject]@{
         Name = 'imgui'; File = 'imgui-1.91.9b-docking.tar.gz'
+        Sha256 = '466fdef9b18de15f0bb6e288e3d00ffa3d82200ec458ce5e4f724a161d9528a5'
         Uris = @('https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz')
         Pins = @(@{ File = $auroraImgui; Text = 'https://github.com/ocornut/imgui/archive/refs/tags/v1.91.9b-docking.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'libusb'; File = 'libusb-1.0.30.tar.bz2'
+        Sha256 = 'fea36f34f9156400209595e300840767ab1a385ede1dc7ee893015aea9c6dbaf'
         Uris = @('https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2')
         Pins = @(@{ File = $auroraVersions; Text = '_aurora_dependency_version(AURORA_LIBUSB_VERSION "1.0.30"' },
                  @{ File = $auroraLibUsb; Text = 'releases/download/v${AURORA_LIBUSB_VERSION}/libusb-${AURORA_LIBUSB_VERSION}.tar.bz2' })
     },
     [pscustomobject]@{
         Name = 'png'; File = 'libpng-1.6.58.tar.gz'
+        Sha256 = 'a9d4df463d36a6e5f9c29bd6f4967312d17e996c1854f3511f833924eb1993cf'
         Uris = @('https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.58.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.58.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'sqlite3'; File = 'sqlite-amalgamation-3510300.zip'
+        Sha256 = 'acb1e6f5d832484bf6d32b681e858c38add8b2acdfd42ac5df24b8afb46552b4'
         Uris = @('https://sqlite.org/2026/sqlite-amalgamation-3510300.zip')
         Pins = @(@{ File = $auroraExtern; Text = 'https://sqlite.org/2026/sqlite-amalgamation-3510300.zip' })
     },
     [pscustomobject]@{
         Name = 'tracy'; File = 'tracy-0.14.1.zip'
+        Sha256 = '908f3a2917fa86a247abfcf85dcf04bad1db6986a4d40f94b70512f3e9e98d5b'
         Uris = @('https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.zip')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/wolfpld/tracy/archive/refs/tags/v0.14.1.zip' })
     },
     [pscustomobject]@{
         Name = 'xxhash'; File = 'xxHash-0.8.4.tar.gz'
+        Sha256 = '5738270935e7c3d38a79b3adf7c9692566ce7895a25f67de43ad52ab504acd32'
         Uris = @('https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.4.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'zlib'; File = 'zlib-ng-2.3.3.tar.gz'
+        Sha256 = 'f9c65aa9c852eb8255b636fd9f07ce1c406f061ec19a2e7d508b318ca0c907d1'
         Uris = @('https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.3.3.tar.gz' })
     },
     [pscustomobject]@{
         Name = 'zstd'; File = 'zstd-1.5.7.tar.gz'
+        Sha256 = 'eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3'
         Uris = @('https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz')
         Pins = @(@{ File = $auroraExtern; Text = 'https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz' })
     }
@@ -106,6 +119,7 @@ $packages = @(
 # The C++/WinRT compiler (NuGet package = zip) that generates the projection headers.
 $cppWinRtTool = [pscustomobject]@{
     Name = 'cppwinrt-tool'; File = 'Microsoft.Windows.CppWinRT.3.0.260818.1.nupkg'
+    Sha256 = 'a8993608ae9263a8288e1a1d9ee2684a5632f4acc59e1e89ddd86b3b889a7367'
     Uris = @('https://www.nuget.org/api/v2/package/Microsoft.Windows.CppWinRT/3.0.260818.1')
     Pins = @()
 }
@@ -128,11 +142,20 @@ function Assert-Pinned($Package) {
     }
 }
 
+function Get-Sha256([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+
+# Every archive this returns, cached or downloaded, matches its pinned Sha256.
 function Get-Archive($Package) {
     $archive = Join-Path $downloads $Package.File
-    if (Test-Path -LiteralPath $archive -PathType Leaf) { return $archive }
+    if (Test-Path -LiteralPath $archive -PathType Leaf) {
+        $actual = Get-Sha256 $archive
+        if ($actual -eq $Package.Sha256) { return $archive }
+        Write-Warning "$($Package.Name): cached $archive has SHA-256 $actual, expected $($Package.Sha256); discarding it and downloading again."
+        Remove-Item -LiteralPath $archive -Force
+    }
     $temporary = $archive + '.partial'
     $failures = @()
+    $mismatch = $false
     foreach ($uri in $Package.Uris) {
         Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
         Write-Host "Downloading $($Package.Name) from $uri..."
@@ -142,11 +165,21 @@ function Get-Archive($Package) {
             $failures += "$uri ($($_.Exception.Message))"
             continue
         }
+        $actual = Get-Sha256 $temporary
+        if ($actual -ne $Package.Sha256) {
+            $failures += "$uri (SHA-256 $actual, expected $($Package.Sha256))"
+            $mismatch = $true
+            continue
+        }
         Move-Item -LiteralPath $temporary -Destination $archive -Force
         return $archive
     }
     Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-    throw "$($Package.Name) could not be fetched: $($failures -join '; ')"
+    $hint = ''
+    if ($mismatch) {
+        $hint = ' If upstream republished this archive, check the new file against an upstream-published checksum before updating its Sha256 in Prepare-Dependencies.ps1.'
+    }
+    throw "$($Package.Name) could not be fetched: $($failures -join '; ').$hint"
 }
 
 function Expand-Package([string]$Archive, [string]$Target) {
@@ -175,10 +208,11 @@ foreach ($package in $packages) {
     $target = Join-Path $Destination $package.Name
     # Records which archive a tree came from, so a pin change replaces a stale tree.
     $stamp = $target + '.source'
-    $current = (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $package.File)
+    $stampText = "$($package.File) $($package.Sha256)"
+    $current = (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $stampText)
     if ($current -and (Test-Path -LiteralPath $target -PathType Container)) { continue }
     Expand-Package (Get-Archive $package) $target
-    [IO.File]::WriteAllText($stamp, $package.File)
+    [IO.File]::WriteAllText($stamp, $stampText)
     Write-Host "Prepared $($package.Name)"
 }
 
