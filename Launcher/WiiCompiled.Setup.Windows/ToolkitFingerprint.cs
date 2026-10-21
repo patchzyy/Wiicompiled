@@ -43,7 +43,7 @@ internal static class ToolkitFingerprint
     [
         InstalledLayout.WorkspaceEntryPrefix + "LocalBuild.ps1",
         // Maps the PAL-keyed native index to the installed release's addresses.
-        InstalledLayout.WorkspaceEntryPrefix + "runtime/include/guest_abi/guest_address_table.inc"
+        InstalledLayout.WorkspaceEntryPrefix + "runtime/include/guest_abi/guest_versions.inc"
     ];
 
     private const string NativeSourcePrefix = InstalledLayout.WorkspaceEntryPrefix + "runtime/src/";

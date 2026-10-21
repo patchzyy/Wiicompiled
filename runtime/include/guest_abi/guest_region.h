@@ -7,8 +7,8 @@
 //   MKW_GADDR(801A9E84)       address of that identity in the running region
 //   MKW_GADDR_CT(801A9E84)    same, as a constant expression; translated code only
 //
-// A PAL address missing from guest_address_table.inc does not compile; regenerate the table
-// with tools/region/gen_guest_address_table.py.
+// guest_versions.inc maps PAL ranges to the other regions. A PAL address outside every range
+// of a region does not compile.
 
 #include <cstddef>
 #include <cstdint>
@@ -28,39 +28,72 @@ struct Row {
     constexpr uint32_t In(Id region) const { return address[static_cast<size_t>(region)]; }
 };
 
-inline constexpr Row kRows[] = {
-#define MKW_GUEST_ADDRESS(pal, ntscU, ntscJ) {{0x##pal##u, 0x##ntscU##u, 0x##ntscJ##u}},
-#include "guest_abi/guest_address_table.inc"
-#undef MKW_GUEST_ADDRESS
+struct Range {
+    Id region;
+    uint32_t first;
+    uint32_t last;
+    int32_t delta;
 };
-inline constexpr size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 
-constexpr bool RowsAreSorted() {
-    for (size_t i = 1; i < kRowCount; ++i) {
-        if (kRows[i - 1].address[0] >= kRows[i].address[0]) {
+inline constexpr Range kRanges[] = {
+#define MKW_REGION_RANGE(region, first, last, delta) {Id::region, 0x##first##u, 0x##last##u, delta},
+#include "guest_abi/guest_versions.inc"
+#undef MKW_REGION_RANGE
+};
+inline constexpr size_t kRangeCount = sizeof(kRanges) / sizeof(kRanges[0]);
+
+constexpr bool Precedes(Id region, uint32_t address, const Range& range) {
+    return region < range.region || (region == range.region && address < range.first);
+}
+
+constexpr bool RangesAreOrdered() {
+    for (size_t i = 0; i < kRangeCount; ++i) {
+        const Range& range = kRanges[i];
+        if (range.region == Id::Pal || range.first > range.last) {
+            return false;
+        }
+        if (i != 0 && !Precedes(kRanges[i - 1].region, kRanges[i - 1].last, range)) {
             return false;
         }
     }
     return true;
 }
-static_assert(RowsAreSorted(), "guest_address_table.inc must be sorted by PAL address without duplicates");
+static_assert(RangesAreOrdered(), "guest_versions.inc ranges must be sorted by region and PAL address without overlaps");
 
-constexpr const Row* Find(uint32_t pal) {
+struct Mapping {
+    bool found;
+    uint32_t address;
+};
+
+constexpr Mapping Map(uint32_t pal, Id region) {
+    if (region == Id::Pal) {
+        return {true, pal};
+    }
     size_t lo = 0;
-    size_t hi = kRowCount;
+    size_t hi = kRangeCount;
     while (lo < hi) {
         const size_t mid = lo + (hi - lo) / 2;
-        if (kRows[mid].address[0] < pal) {
-            lo = mid + 1;
-        } else {
+        if (Precedes(region, pal, kRanges[mid])) {
             hi = mid;
+        } else {
+            lo = mid + 1;
         }
     }
-    return lo < kRowCount && kRows[lo].address[0] == pal ? &kRows[lo] : nullptr;
+    if (lo == 0) {
+        return {false, 0};
+    }
+    const Range& range = kRanges[lo - 1];
+    if (range.region != region || pal > range.last) {
+        return {false, 0};
+    }
+    return {true, static_cast<uint32_t>(static_cast<int64_t>(pal) + range.delta)};
 }
 
-constexpr const Row& RowOf(uint32_t pal) {
-    return Find(pal) ? *Find(pal) : throw "PAL address missing from guest_abi/guest_address_table.inc";
+constexpr Row RowOf(uint32_t pal) {
+    const Mapping ntscU = Map(pal, Id::NtscU);
+    const Mapping ntscJ = Map(pal, Id::NtscJ);
+    return ntscU.found && ntscJ.found ? Row{{pal, ntscU.address, ntscJ.address}}
+                                      : throw "PAL address outside guest_abi/guest_versions.inc";
 }
 
 } // namespace GuestRegion
@@ -94,15 +127,11 @@ inline bool Is(uint32_t target) noexcept {
 
 // For hand-written registrations, which name the PAL address.
 inline uint32_t Translate(uint32_t pal) noexcept {
-    const Id region = Current();
-    if (region == Id::Pal) {
-        return pal;
-    }
-    const Row* row = Find(pal);
-    if (!row) {
+    const Mapping mapping = Map(pal, Current());
+    if (!mapping.found) {
         FatalUnknownAddress(pal);
     }
-    return row->In(region);
+    return mapping.address;
 }
 
 struct Facts {

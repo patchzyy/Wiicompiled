@@ -77,7 +77,7 @@ mkw_translation_identity() {
         printf 'rel %s\n' "$(mkw_digest_path "$workspace/Assets/StaticR.rel")"
         printf 'translator %s\n' "$(mkw_digest_path "$translator")"
         printf 'script %s\n' "$(mkw_digest_path "$script")"
-        printf 'regions %s\n' "$(mkw_digest_path "$workspace/runtime/include/guest_abi/guest_address_table.inc")"
+        printf 'regions %s\n' "$(mkw_digest_path "$workspace/runtime/include/guest_abi/guest_versions.inc")"
         mkw_digest_tree "$workspace" projects
         mkw_native_index_identity "$workspace"
     } | mkw_sha256
