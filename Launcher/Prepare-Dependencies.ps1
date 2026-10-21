@@ -203,26 +203,33 @@ function Expand-Package([string]$Archive, [string]$Target) {
     if (Test-Path -LiteralPath $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
 }
 
+# Records which archive a tree came from, so a pin change replaces a stale tree.
+function Get-Stamp($Package) { "$($Package.File) $($Package.Sha256)" }
+
+function Test-Stamp([string]$Target, [string]$Text) {
+    $stamp = $Target + '.source'
+    (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $Text)
+}
+
+function Install-Package($Package, [string]$Target, [string]$Required = $Target) {
+    if ((Test-Stamp $Target (Get-Stamp $Package)) -and (Test-Path -LiteralPath $Required)) { return }
+    Expand-Package (Get-Archive $Package) $Target
+    [IO.File]::WriteAllText($Target + '.source', (Get-Stamp $Package))
+    Write-Host "Prepared $($Package.Name)"
+}
+
 foreach ($package in $packages) {
     Assert-Pinned $package
-    $target = Join-Path $Destination $package.Name
-    # Records which archive a tree came from, so a pin change replaces a stale tree.
-    $stamp = $target + '.source'
-    $stampText = "$($package.File) $($package.Sha256)"
-    $current = (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $stampText)
-    if ($current -and (Test-Path -LiteralPath $target -PathType Container)) { continue }
-    Expand-Package (Get-Archive $package) $target
-    [IO.File]::WriteAllText($stamp, $stampText)
-    Write-Host "Prepared $($package.Name)"
+    Install-Package $package (Join-Path $Destination $package.Name)
 }
 
 $cppWinRt = Join-Path $Destination 'cppwinrt'
-if (-not (Test-Path -LiteralPath (Join-Path $cppWinRt 'winrt\base.h') -PathType Leaf)) {
+$cppWinRtCurrent = (Test-Path -LiteralPath (Join-Path $cppWinRt 'winrt\base.h') -PathType Leaf) -and
+    (Test-Stamp $cppWinRt (Get-Stamp $cppWinRtTool))
+if (-not $cppWinRtCurrent) {
     $toolRoot = Join-Path $PSScriptRoot 'artifacts\cppwinrt-tool'
     $compiler = Join-Path $toolRoot 'bin\cppwinrt.exe'
-    if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) {
-        Expand-Package (Get-Archive $cppWinRtTool) $toolRoot
-    }
+    Install-Package $cppWinRtTool $toolRoot $compiler
     if (-not (Test-Path -LiteralPath $compiler -PathType Leaf)) { throw "cppwinrt.exe is missing: $compiler" }
     if (Test-Path -LiteralPath $cppWinRt) { Remove-Item -LiteralPath $cppWinRt -Recurse -Force }
     [IO.Directory]::CreateDirectory($cppWinRt) | Out-Null
@@ -233,6 +240,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $cppWinRt 'winrt\base.h') -PathType 
         throw "cppwinrt.exe produced no winrt\base.h under $cppWinRt"
     }
     Copy-Item -LiteralPath (Join-Path $toolRoot 'LICENSE') -Destination (Join-Path $cppWinRt 'LICENSE.txt')
+    [IO.File]::WriteAllText($cppWinRt + '.source', (Get-Stamp $cppWinRtTool))
     Write-Host 'Prepared cppwinrt'
 }
 
