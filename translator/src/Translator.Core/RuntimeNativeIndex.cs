@@ -46,7 +46,7 @@ public sealed record RuntimeNativeIndex(
 
     /// <summary>
     /// The index is keyed by the PAL addresses the runtime sources name; this is the same index
-    /// keyed by <paramref name="region"/>'s addresses. Every address must be in the table, PAL too.
+    /// keyed by <paramref name="region"/>'s addresses. Every address must have a counterpart in that region.
     /// </summary>
     public RuntimeNativeIndex ForRegion(GuestAddressTable table, GuestRegion region) => new(
         Registrations.Select(entry => entry with { Address = table.Map(entry.Address, region) }).ToArray(),
