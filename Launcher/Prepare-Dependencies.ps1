@@ -211,8 +211,9 @@ function Test-Stamp([string]$Target, [string]$Text) {
     (Test-Path -LiteralPath $stamp -PathType Leaf) -and ([IO.File]::ReadAllText($stamp) -eq $Text)
 }
 
-function Install-Package($Package, [string]$Target, [string]$Required = $Target) {
-    if ((Test-Stamp $Target (Get-Stamp $Package)) -and (Test-Path -LiteralPath $Required)) { return }
+function Install-Package($Package, [string]$Target, [string]$RequiredFile) {
+    $ready = if ($RequiredFile) { Test-Path -LiteralPath $RequiredFile -PathType Leaf } else { Test-Path -LiteralPath $Target -PathType Container }
+    if ($ready -and (Test-Stamp $Target (Get-Stamp $Package))) { return }
     Expand-Package (Get-Archive $Package) $Target
     [IO.File]::WriteAllText($Target + '.source', (Get-Stamp $Package))
     Write-Host "Prepared $($Package.Name)"
