@@ -413,14 +413,18 @@ void SystemBridge::Initialize() {
 }
 
 void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path) {
+    auto writeRegion = [&](const char* label, uint32_t base, uint32_t size,
+                           const std::filesystem::path& path) {
+        std::ofstream dump(path, std::ios::binary | std::ios::trunc);
+        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(base, size)), size);
+        os << "[runtime] " << label << " snapshot written to " << RuntimeConfigFile::PathToUtf8(path)
+           << (dump.good() ? "" : " (write failed)") << std::endl;
+    };
+
     constexpr uint32_t kMem1Base = 0x80000000u;
     constexpr uint32_t kMem1Size = 0x01800000u;
     if (Memory::Contains(kMem1Base, kMem1Size)) {
-        std::ofstream dump(mem1Path, std::ios::binary | std::ios::trunc);
-        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem1Base, kMem1Size)),
-                   kMem1Size);
-        os << "[runtime] MEM1 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem1Path)
-           << (dump.good() ? "" : " (write failed)") << std::endl;
+        writeRegion("MEM1", kMem1Base, kMem1Size, mem1Path);
     }
     constexpr uint32_t kMem2Base = 0x90000000u;
     for (uint32_t mem2Size : {0x08000000u, 0x04000000u}) {
@@ -429,12 +433,15 @@ void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesys
         }
         std::filesystem::path mem2Path = mem1Path;
         mem2Path += ".mem2";
-        std::ofstream dump(mem2Path, std::ios::binary | std::ios::trunc);
-        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem2Base, mem2Size)),
-                   mem2Size);
-        os << "[runtime] MEM2 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem2Path)
-           << (dump.good() ? "" : " (write failed)") << std::endl;
+        writeRegion("MEM2", kMem2Base, mem2Size, mem2Path);
         break;
+    }
+    constexpr uint32_t kKamekBase = 0x81800000u;
+    constexpr uint32_t kKamekSize = 0x00200000u;
+    if (Memory::Contains(kKamekBase, kKamekSize)) {
+        std::filesystem::path kamekPath = mem1Path;
+        kamekPath += ".kamek";
+        writeRegion("Kamek overlay", kKamekBase, kKamekSize, kamekPath);
     }
 }
 
