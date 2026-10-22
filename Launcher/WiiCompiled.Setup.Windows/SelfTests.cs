@@ -1328,12 +1328,19 @@ internal static class SelfTests
             if (afterRuntimeSource == afterTranslator)
                 throw new Exception("A runtime source change did not change the fingerprint.");
 
+            var icon = Path.Combine(root, "BuildWorkspace", "runtime", "resources", "WiiCompiled.ico");
+            Directory.CreateDirectory(Path.GetDirectoryName(icon)!);
+            File.WriteAllText(icon, "icon-v1");
+            var afterIcon = ToolkitFingerprint.Compute(root);
+            if (afterIcon == afterRuntimeSource)
+                throw new Exception("A product icon change did not change the fingerprint.");
+
             var patch = Path.Combine(root, "BuildWorkspace", "aurora-main", "cmake", "patches",
                 "sdl3.patch");
             Directory.CreateDirectory(Path.GetDirectoryName(patch)!);
             File.WriteAllText(patch, "patch-v1");
             var afterPatch = ToolkitFingerprint.Compute(root);
-            if (afterPatch == afterRuntimeSource)
+            if (afterPatch == afterIcon)
                 throw new Exception("An Aurora patch consumed by the provider did not change compile identity.");
 
             var installation = new Installation(root);
