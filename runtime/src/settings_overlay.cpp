@@ -109,6 +109,7 @@ int g_displayMode = [] {
     return static_cast<int>(AURORA_DISPLAY_MODE_WINDOWED);
 }();
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
+bool g_vsync = RuntimeConfigFile::Vsync();
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
 bool g_forceAspect169 = RuntimeConfigFile::ForceAspect169Enabled();
@@ -1189,6 +1190,10 @@ void DrawGraphicsSettings() {
         aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
         RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
     }
+    if (ImGui::Checkbox("VSync", &g_vsync)) {
+        aurora_enable_vsync(g_vsync);
+        RuntimeConfigFile::SetVsync(g_vsync);
+    }
     if (ImGui::Checkbox("Show FPS", &g_showFps)) {
         RuntimeConfigFile::SetShowFps(g_showFps);
     }
@@ -1199,7 +1204,12 @@ void DrawGraphicsSettings() {
 void DrawFpsOverlay() {
     AuroraPresentTiming presentTiming{};
     aurora_get_present_timing(&presentTiming);
-    if (!g_showFps) {
+    const uint32_t targetFps = kFrameInterpolationTargetFps[static_cast<size_t>(g_frameInterpolationMode)];
+    const double refreshRate = aurora_get_display_refresh_rate();
+    const bool interpolationInactive = targetFps > 60 && !aurora_display_shows_interpolation();
+    const bool unevenPacing =
+        !g_vsync && !interpolationInactive && refreshRate > 0.0 && targetFps > refreshRate + 1.0;
+    if (!g_showFps && !unevenPacing && !interpolationInactive) {
         return;
     }
 
@@ -1216,9 +1226,9 @@ void DrawFpsOverlay() {
                                          ImGuiWindowFlags_NoNav |
                                          ImGuiWindowFlags_NoSavedSettings;
     if (ImGui::Begin("FPS Overlay", nullptr, kFlags)) {
-        if (presentTiming.sampleCount == 0) {
+        if (g_showFps && presentTiming.sampleCount == 0) {
             ImGui::TextUnformatted("FPS: --");
-        } else {
+        } else if (g_showFps) {
             // Present timing includes the additional frames produced by
             // interpolation, so this remains the actual displayed FPS.
             ImGui::Text("FPS: %.1f", presentTiming.framesPerSecond);
@@ -1230,6 +1240,17 @@ void DrawFpsOverlay() {
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Motion: %.1f",
                                    presentTiming.effectiveFramesPerSecond);
             }
+        }
+        if (interpolationInactive) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                               "%u FPS interpolation has no effect on a %.0f Hz display.", targetFps,
+                               refreshRate);
+        }
+        if (unevenPacing) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                               "%u FPS interpolation on a %.0f Hz display without VSync is not smooth.\n"
+                               "Enable VSync for smooth motion.",
+                               targetFps, refreshRate);
         }
     }
     ImGui::End();

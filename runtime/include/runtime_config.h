@@ -44,6 +44,7 @@ struct RuntimeUserConfig {
     std::optional<uint32_t> frameInterpolationFps;
     std::optional<bool> metalFxSpatialUpscaling;
     std::optional<bool> skipUnreadyPipelines;
+    std::optional<bool> vsync;
     std::optional<bool> gxWorker;
     std::optional<bool> disableCopyFilter;
     std::optional<bool> textureReplacements;
@@ -276,6 +277,7 @@ inline void EnsureConfigFile() {
               "display_mode = \"windowed\"\n"
               "graphics_api = \"auto\"\n"
               "skip_unready_pipelines = true\n"
+              "vsync = false\n"
               "# Runs GX command processing on its own thread. Read once, at startup.\n"
               "gx_worker = true\n"
               "disable_copy_filter = true\n"
@@ -435,6 +437,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.metalFxSpatialUpscaling =
         FindConfigValue<bool>(document, "video", "metalfx_spatial_upscaling");
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
+    config.vsync = FindConfigValue<bool>(document, "video", "vsync");
     config.gxWorker = FindConfigValue<bool>(document, "video", "gx_worker");
     config.disableCopyFilter = FindConfigValue<bool>(document, "video", "disable_copy_filter");
     config.showFps = FindConfigValue<bool>(document, "video", "show_fps");
@@ -638,6 +641,11 @@ inline bool SetDisplayMode(std::string value) {
 inline bool SetSkipUnreadyPipelines(bool value) {
     Mutable().skipUnreadyPipelines = value;
     return WriteSetting("video", "skip_unready_pipelines", value ? "true" : "false");
+}
+
+inline bool SetVsync(bool value) {
+    Mutable().vsync = value;
+    return WriteSetting("video", "vsync", value ? "true" : "false");
 }
 
 inline bool SetDisableCopyFilter(bool value) {
@@ -891,6 +899,10 @@ inline bool SkipUnreadyPipelines(bool fallback = true) {
     return Get().skipUnreadyPipelines.value_or(fallback);
 }
 
+inline bool Vsync(bool fallback = false) {
+    return Get().vsync.value_or(fallback);
+}
+
 inline bool DisableCopyFilter(bool fallback = true) {
     return Get().disableCopyFilter.value_or(fallback);
 }
@@ -1002,6 +1014,9 @@ inline void LogLoadedConfig() {
             }
             if (config.skipUnreadyPipelines) {
                 std::cout << " skip_unready_pipelines=" << (*config.skipUnreadyPipelines ? "true" : "false");
+            }
+            if (config.vsync) {
+                std::cout << " vsync=" << (*config.vsync ? "true" : "false");
             }
             if (config.disableCopyFilter) {
                 std::cout << " disable_copy_filter=" << (*config.disableCopyFilter ? "true" : "false");
