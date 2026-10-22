@@ -152,4 +152,69 @@ public sealed class PairedFlowCodeGenTests
         Assert.Contains("SetCRFloatResident(cr, 0, f31.d, f1.d);", code, StringComparison.Ordinal);
         Assert.DoesNotContain("SetCRFloatResident(cr, 0, PPC_PsToScalarInline(f31.d)", code, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void ResolvedScalarLoadEndsPairedStateAcrossEdge()
+    {
+        var function = new IrFunction("resolved_load_clears_paired", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrCall("f5", "PPC_PsMul", new[] { IrValue.Register("f1"), IrValue.Register("f2") }),
+                new IrResolveGuestMemoryRange("range", IrValue.Register("r3"), 0, 8, true, false),
+                new IrResolvedLoad("f5", "range", new IrAddress("r3", 0), 0, 8),
+                new IrJump("next")
+            }),
+            new IrBasicBlock("next", new IrInstruction[]
+            {
+                new IrSetCrField(0, IrValue.Register("f5"), IrValue.Register("f1"), false),
+                new IrReturn(null)
+            })
+        });
+        var types = new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>
+        {
+            ["f1"] = ValueRepresentation.Float64,
+            ["f2"] = ValueRepresentation.Float64,
+            ["f5"] = ValueRepresentation.Float64,
+            ["r3"] = ValueRepresentation.UInt32
+        });
+        var signature = new FunctionAbiClassification("resolved_load_clears_paired", ValueRepresentation.Void);
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80006008, new SsaTransformer().Convert(function), signature, types);
+
+        Assert.Contains("SetCRFloatResident(cr, 0, f5.d, f1.d);", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("PPC_PsToScalarInline(f5.d)", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ResolvedPsqLoadStaysPairedAcrossEdge()
+    {
+        var function = new IrFunction("resolved_psq_load_paired", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrResolveGuestMemoryRange("range", IrValue.Register("r3"), 0, 8, true, false),
+                new IrResolvedPsqLoad("f5", "range", IrValue.Register("r3"), 0, 0, 0, 0u),
+                new IrJump("next")
+            }),
+            new IrBasicBlock("next", new IrInstruction[]
+            {
+                new IrSetCrField(0, IrValue.Register("f5"), IrValue.Register("f1"), false),
+                new IrReturn(null)
+            })
+        });
+        var types = new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>
+        {
+            ["f1"] = ValueRepresentation.Float64,
+            ["f5"] = ValueRepresentation.Float64,
+            ["r3"] = ValueRepresentation.UInt32
+        });
+        var signature = new FunctionAbiClassification("resolved_psq_load_paired", ValueRepresentation.Void);
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x8000600C, new SsaTransformer().Convert(function), signature, types);
+
+        Assert.Contains("SetCRFloatResident(cr, 0, PPC_PsToScalarInline(f5.d), f1.d);", code, StringComparison.Ordinal);
+    }
 }

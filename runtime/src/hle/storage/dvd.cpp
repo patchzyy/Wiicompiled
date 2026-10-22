@@ -1031,16 +1031,17 @@ extern "C" int32_t DVDLowInit_80164848() {
 }
 PPC_NATIVE_OVERRIDE(80164848, DVDLowInit_80164848, int32_t, (), ());
 
-extern "C" int32_t DVDLowInquiry_80165A30(uint32_t cmdBlockPtr, uint32_t callback)
+// DVDLowInquiry(DVDDriveInfo* info, DVDLowCallback cb); reports a retail drive.
+extern "C" int32_t DVDLowInquiry_80165A30(uint32_t driveInfoPtr, uint32_t callback)
 {
-    // HLE: acknowledge the drive is present. Must mark the command block complete
-    // (State = 0) or callers polling this address hang waiting for "Busy" to clear.
-    if (cmdBlockPtr) {
-        Memory::Write32(cmdBlockPtr + DVD_CB_OFFSET_STATE, DVD_STATE_END);
+    if (driveInfoPtr && Memory::Contains(driveInfoPtr, 0x20)) {
+        Memory::Write32(driveInfoPtr + 0x0, 0x00000002); // revision level, device code
+        Memory::Write32(driveInfoPtr + 0x4, 0x20060526); // release date
+        Memory::Write32(driveInfoPtr + 0x8, 0x41000000);
     }
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
     CompleteDvdCancelState();
-
-    return 1; // Return 1 to indicate the command was successfully issued.
+    return 1;
 }
 PPC_NATIVE_OVERRIDE(80165A30, DVDLowInquiry_80165A30, int32_t, (uint32_t b, uint32_t c), (b, c));
 
@@ -1051,10 +1052,20 @@ extern "C" int32_t DVDLowReadDiskID_80164AAC(uint32_t diskIdPtr, uint32_t callba
         Memory::Write16(diskIdPtr + 0x04, 0x3031);
         Memory::Write8 (diskIdPtr + 0x06, 0x01);
     }
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
     CompleteDvdCancelState();
     return 1; // Success
 }
 PPC_NATIVE_OVERRIDE(80164AAC, DVDLowReadDiskID_80164AAC, int32_t, (uint32_t p, uint32_t c), (p, c));
+
+// Host files need no head positioning.
+extern "C" int32_t DVDLowSeek_801664E0(uint32_t offset, uint32_t callback) {
+    (void)offset;
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
+    CompleteDvdCancelState();
+    return 1;
+}
+PPC_NATIVE_OVERRIDE(801664E0, DVDLowSeek_801664E0, int32_t, (uint32_t o, uint32_t c), (o, c));
 
 // 0x80166330 -> DVDLowRead (And 0x80165708 UnencryptedRead)
 // The game calls this to read the Disk Header (offset 0) or raw data.

@@ -253,6 +253,12 @@ public sealed partial class CxxLinearCodeGenerator
             ? index
             : -1;
 
+    private static uint ClearPairedBit(uint mask, string destination)
+    {
+        var bit = PairedFloatRegisterBit(destination);
+        return bit >= 0 ? mask & ~(1u << bit) : mask;
+    }
+
     private static HashSet<string> MaterializePairedFloatSet(uint mask, StringComparer comparer)
     {
         var set = new HashSet<string>(comparer);
@@ -454,11 +460,21 @@ public sealed partial class CxxLinearCodeGenerator
                                 break;
                             }
                         case IrLoad load:
+                            newOut = ClearPairedBit(newOut, load.Destination);
+                            break;
+                        case IrResolvedLoad load:
+                            newOut = ClearPairedBit(newOut, load.Destination);
+                            break;
+                        case IrResolvedLoadPair pair:
+                            newOut = ClearPairedBit(newOut, pair.FirstDestination);
+                            newOut = ClearPairedBit(newOut, pair.SecondDestination);
+                            break;
+                        case IrResolvedPsqLoad load:
                             {
                                 var destBit = PairedFloatRegisterBit(load.Destination);
                                 if (destBit >= 0)
                                 {
-                                    newOut &= ~(1u << destBit);
+                                    newOut |= 1u << destBit;
                                 }
                                 break;
                             }

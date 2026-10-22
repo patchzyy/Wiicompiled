@@ -538,4 +538,122 @@ public class FunctionTranslatorCoverageTests
         Assert.Equal("// generated", result.CxxCode);
         Assert.Same(metrics, result.Metrics);
     }
+
+    [Fact]
+    public void Translate_JumpTableBoundFollowsShiftedIndexPastStaleCompare()
+    {
+        const uint entry = 0x80000000;
+        const uint table = 0x80000100;
+        const uint case0 = entry + 0x20;
+        const uint case1 = entry + 0x28;
+        const uint case2 = entry + 0x30;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x2C040001), // cmpwi r4, 1
+            (entry + 0x04, 0x28030002), // cmplwi r3, 2
+            (entry + 0x08, 0x5464103A), // slwi r4, r3, 2
+            (entry + 0x0C, 0x3D808000), // lis r12, 0x8000
+            (entry + 0x10, 0x398C0100), // addi r12, r12, 0x100
+            (entry + 0x14, 0x7C0C202E), // lwzx r0, r12, r4
+            (entry + 0x18, 0x7C0903A6), // mtctr r0
+            (entry + 0x1C, 0x4E800420), // bctr
+            (case0 + 0x00, 0x38600007), // li r3, 7
+            (case0 + 0x04, 0x4E800020), // blr
+            (case1 + 0x00, 0x38600009), // li r3, 9
+            (case1 + 0x04, 0x4E800020), // blr
+            (case2 + 0x00, 0x3860000B), // li r3, 11
+            (case2 + 0x04, 0x4E800020), // blr
+            (table + 0x00, case0),
+            (table + 0x04, case1),
+            (table + 0x08, case2));
+        var result = new FunctionTranslator(image).Translate(
+            entry,
+            TranslationOptions.Default with
+            {
+                MaxBytes = 0x80,
+                AllowUnsupportedInstructions = true,
+                KnownFunctionEntryPoints = new HashSet<uint> { entry }
+            });
+
+        Assert.Contains("case 0x80000030u:", result.CxxCode, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Translate_JumpTableBoundSurvivesCopyOfIndex()
+    {
+        const uint entry = 0x80000000;
+        const uint table = 0x80000100;
+        const uint case0 = entry + 0x28;
+        const uint case1 = entry + 0x30;
+        const uint case2 = entry + 0x38;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x28030002), // cmplwi r3, 2
+            (entry + 0x04, 0x7C7F1B78), // mr r31, r3
+            (entry + 0x08, 0x2C040001), // cmpwi r4, 1
+            (entry + 0x0C, 0x5460103A), // slwi r0, r3, 2
+            (entry + 0x10, 0x3D808000), // lis r12, 0x8000
+            (entry + 0x14, 0x398C0100), // addi r12, r12, 0x100
+            (entry + 0x18, 0x7C0C002E), // lwzx r0, r12, r0
+            (entry + 0x1C, 0x7C0903A6), // mtctr r0
+            (entry + 0x20, 0x4E800420), // bctr
+            (entry + 0x24, 0x4E800020), // blr
+            (case0 + 0x00, 0x38600007), // li r3, 7
+            (case0 + 0x04, 0x4E800020), // blr
+            (case1 + 0x00, 0x38600009), // li r3, 9
+            (case1 + 0x04, 0x4E800020), // blr
+            (case2 + 0x00, 0x3860000B), // li r3, 11
+            (case2 + 0x04, 0x4E800020), // blr
+            (table + 0x00, case0),
+            (table + 0x04, case1),
+            (table + 0x08, case2));
+        var result = new FunctionTranslator(image).Translate(
+            entry,
+            TranslationOptions.Default with
+            {
+                MaxBytes = 0x80,
+                AllowUnsupportedInstructions = true,
+                KnownFunctionEntryPoints = new HashSet<uint> { entry }
+            });
+
+        Assert.Contains("case 0x80000038u:", result.CxxCode, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Translate_JumpTableBoundAcceptsNonCr0Compare()
+    {
+        const uint entry = 0x80000000;
+        const uint table = 0x80000100;
+        const uint case0 = entry + 0x1C;
+        const uint case1 = entry + 0x24;
+        const uint case2 = entry + 0x2C;
+
+        var image = TranslatorCppTestHarness.CreateImage(
+            (entry + 0x00, 0x28830002), // cmplwi cr1, r3, 2
+            (entry + 0x04, 0x5463103A), // slwi r3, r3, 2
+            (entry + 0x08, 0x3D808000), // lis r12, 0x8000
+            (entry + 0x0C, 0x398C0100), // addi r12, r12, 0x100
+            (entry + 0x10, 0x7C0C182E), // lwzx r0, r12, r3
+            (entry + 0x14, 0x7C0903A6), // mtctr r0
+            (entry + 0x18, 0x4E800420), // bctr
+            (case0 + 0x00, 0x38600007), // li r3, 7
+            (case0 + 0x04, 0x4E800020), // blr
+            (case1 + 0x00, 0x38600009), // li r3, 9
+            (case1 + 0x04, 0x4E800020), // blr
+            (case2 + 0x00, 0x3860000B), // li r3, 11
+            (case2 + 0x04, 0x4E800020), // blr
+            (table + 0x00, case0),
+            (table + 0x04, case1),
+            (table + 0x08, case2));
+        var result = new FunctionTranslator(image).Translate(
+            entry,
+            TranslationOptions.Default with
+            {
+                MaxBytes = 0x80,
+                AllowUnsupportedInstructions = true,
+                KnownFunctionEntryPoints = new HashSet<uint> { entry }
+            });
+
+        Assert.Contains("case 0x8000002Cu:", result.CxxCode, StringComparison.Ordinal);
+    }
 }

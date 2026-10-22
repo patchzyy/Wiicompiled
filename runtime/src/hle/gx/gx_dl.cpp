@@ -807,21 +807,17 @@ struct DlMayContainDrawVisitor {
 
     bool OnNop(uint8_t) { return true; }
     bool OnBpReg(const uint8_t*, uint32_t) { return true; }
-    // An array base/stride write means the list is setting up indexed geometry.
-    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) { return !(reg >= 0xA0 && reg <= 0xBF); }
+    // CP writes must reach the HLE vertex state, and indexed XF loads need their
+    // array resolved, so neither may be passed through raw.
+    bool OnCpReg(const uint8_t*, uint8_t, uint32_t) { return false; }
     bool OnXfReg(const uint8_t*, uint32_t) { return true; }
-    bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return true; }
+    bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return false; }
     bool OnInvalidateVertexCache(uint8_t) { return true; }
     // Draw opcodes reach this too (kHandlesDraw is false): a draw opcode, or a
     // command byte this walker does not model, both mean "assume it draws".
     bool OnUnknownCommand(uint8_t) { return false; }
-    bool OnCallDisplayList(uint32_t addr, uint32_t size, int depth) {
-        if (addr == 0 || size == 0) return true;
-        const uint8_t* nested = static_cast<const uint8_t*>(GuestToHostPtr(addr, size));
-        if (!nested) return false;
-        DlMayContainDrawVisitor child;
-        return WalkDisplayList(nested, size, child, depth + 1);
-    }
+    // Aurora skips nested calls, so the child has to be flattened.
+    bool OnCallDisplayList(uint32_t addr, uint32_t size, int) { return addr == 0 || size == 0; }
 };
 
 static bool DisplayListMayContainDraw(const uint8_t* data, uint32_t nbytes) {
@@ -1142,8 +1138,7 @@ static void ApplyAuroraVtxDesc() {
         // GXGetVtxDesc only decodes GX_VA_PNMTXIDX..GX_VA_TEX7; the XF array
         // pseudo-attributes above GX_VA_TEX7 have no CP descriptor bits, so
         // probing them would always report GX_NONE and republish a no-op.
-        if (!needsPublish && !IsMatrixIndexAttr(gxAttr) && gxAttr <= GX_VA_TEX7 &&
-            (type == GX_INDEX8 || type == GX_INDEX16)) {
+        if (!needsPublish && gxAttr <= GX_VA_TEX7) {
             needsPublish = !AuroraVtxDescMatchesLive(gxAttr, type);
         }
         if (needsPublish) {
