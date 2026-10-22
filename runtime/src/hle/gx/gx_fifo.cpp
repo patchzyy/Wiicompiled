@@ -490,9 +490,16 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
             const uint16_t vtxCount = ReadBE16(data + 1);
             const GXVtxFmt vtxFmt = static_cast<GXVtxFmt>(cmd & GX_VAT_MASK_CMD);
             const GXPrimitive prim = OpcodeToGXPrimitive(cmd);
+            if (vtxCount == 0) {
+                if (!consumeBytes(3, sink)) break;
+                continue;
+            }
             uint32_t rawVertexSize = 0;
-            if (TryGetRawDirectFifoVertexSize(vtxFmt, rawVertexSize)) {
-                const uint32_t packetBytes = 3u + static_cast<uint32_t>(vtxCount) * rawVertexSize;
+            const uint32_t packetBytes = TryGetRawDirectFifoVertexSize(vtxFmt, rawVertexSize)
+                ? 3u + static_cast<uint32_t>(vtxCount) * rawVertexSize
+                : 0u;
+            // A packet that cannot fit the buffer is streamed per vertex instead.
+            if (packetBytes != 0 && packetBytes <= g_hleGxState.fifoBytes.size()) {
                 if (g_hleGxState.fifoByteCount < packetBytes) {
                     break;
                 }

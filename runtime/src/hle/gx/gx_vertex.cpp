@@ -150,7 +150,7 @@ extern "C" void GX__SetVtxAttrFmtv_8016de08(uint32_t vf, uint32_t la) {
     while(true){
         uint32_t a=Memory::Read32(p);
         if(a==0xFFu) break;
-        list.push_back({a, Memory::Read32(p+4), Memory::Read32(p+8), Memory::Read32(p+12)&0xFFu});
+        list.push_back({a, Memory::Read32(p+4), Memory::Read32(p+8), Memory::Read8(p+12)});
         p+=16;
     }
     GxWorker::Run([vf, list = std::move(list)] {
@@ -326,7 +326,7 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
 static void GxBeginImpl(uint32_t t, uint32_t vf, uint32_t nv) {
     ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
     g_hleGxState.currentVtxFmt=(GXVtxFmt)vf; g_hleGxState.currentPrim=(GXPrimitive)t;
-    g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=true; g_hleGxState.auroraBeginCalled=false;
+    g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=nv!=0; g_hleGxState.auroraBeginCalled=false;
     g_hleGxState.fifoReadOffset = 0;
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
 }

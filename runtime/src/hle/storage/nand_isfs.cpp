@@ -964,7 +964,7 @@ static int32_t HandleIsfsReadDir(uint32_t numIn, uint32_t numOut, uint32_t vecto
     }
     const std::filesystem::path hostPath = TranslateNandPath(wiiPath.c_str());
     if (!IsDirectory(hostPath)) {
-        return ISFS_ENOENT;
+        return PathExists(hostPath) ? ISFS_EINVAL : ISFS_ENOENT;
     }
 
     // NAND names are at most 12 characters; longer host names cannot exist on

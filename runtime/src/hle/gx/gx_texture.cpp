@@ -703,8 +703,11 @@ extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
 }
 PPC_NATIVE_OVERRIDE_VOID(80170f2c, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));
 
-extern "C" void GX__LoadTexObjPreLoaded_80170dc8(uint32_t oa, uint32_t tid) { GX__LoadTexObj_80170f2c(oa, tid); }
-PPC_NATIVE_OVERRIDE_VOID(80170dc8, GX__LoadTexObjPreLoaded_80170dc8, (uint32_t oa, uint32_t tid), (oa, tid));
+extern "C" void GX__LoadTexObjPreLoaded_80170dc8(uint32_t oa, uint32_t region, uint32_t tid) {
+    (void)region;
+    GX__LoadTexObj_80170f2c(oa, tid);
+}
+PPC_NATIVE_OVERRIDE_VOID(80170dc8, GX__LoadTexObjPreLoaded_80170dc8, (uint32_t oa, uint32_t region, uint32_t tid), (oa, region, tid));
 
 // ============================================================================
 // Texture Object Getters
