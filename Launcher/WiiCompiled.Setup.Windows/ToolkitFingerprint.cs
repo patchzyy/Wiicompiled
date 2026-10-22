@@ -25,8 +25,7 @@ internal static class ToolkitFingerprint
 
     private static readonly string[] SourceExtensions =
         [".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".inl", ".inc", ".s", ".asm",
-         ".cmake", ".txt", ".yml", ".yaml", ".toml", ".json", ".ps1", ".in", ".def", ".patch",
-         ".rc", ".ico"];
+         ".cmake", ".txt", ".yml", ".yaml", ".toml", ".json", ".ps1", ".in", ".def", ".patch"];
 
     /// <summary>
     /// Inputs that decide translator output: translator, translation project, the native override
