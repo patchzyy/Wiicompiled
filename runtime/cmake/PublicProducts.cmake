@@ -301,6 +301,8 @@ endif()
 function(mkw_add_product_icon target)
     if(MKW_PLATFORM_WINDOWS)
         add_library(${target}_icon OBJECT "${MKW_RUNTIME_SOURCE_DIR}/resources/${target}.rc")
+        set_property(SOURCE "${MKW_RUNTIME_SOURCE_DIR}/resources/${target}.rc" APPEND PROPERTY
+            OBJECT_DEPENDS "${MKW_RUNTIME_SOURCE_DIR}/resources/${target}.ico")
         target_sources(${target} PRIVATE $<TARGET_OBJECTS:${target}_icon>)
     endif()
 endfunction()
