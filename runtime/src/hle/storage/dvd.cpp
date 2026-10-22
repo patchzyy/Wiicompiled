@@ -1047,10 +1047,14 @@ PPC_NATIVE_OVERRIDE(80165A30, DVDLowInquiry_80165A30, int32_t, (uint32_t b, uint
 
 // 0x80164AAC -> DVDLowReadDiskID
 extern "C" int32_t DVDLowReadDiskID_80164AAC(uint32_t diskIdPtr, uint32_t callback) {
-    if (diskIdPtr) {
+    if (diskIdPtr && Memory::Contains(diskIdPtr, 0x20)) {
+        for (uint32_t i = 0x07; i < 0x20; ++i) {
+            Memory::Write8(diskIdPtr + i, 0);
+        }
         Memory::Write32(diskIdPtr + 0x00, CurrentDiscGameCode());
         Memory::Write16(diskIdPtr + 0x04, 0x3031);
         Memory::Write8 (diskIdPtr + 0x06, 0x01);
+        Memory::Write32(diskIdPtr + 0x18, 0x5D1C9EA3); // Wii disc magic
     }
     InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
     CompleteDvdCancelState();
