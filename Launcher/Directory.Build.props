@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- The one product version. Release tags must match it. -->
-    <Version>0.2.36</Version>
+    <Version>0.9.0</Version>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 </Project>
