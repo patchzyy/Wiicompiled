@@ -58,6 +58,7 @@
 
 #include "abi_bridge.h"
 #include "boot_race.h"
+#include "guest_abi/guest_region.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
 #include "memory.h"
@@ -697,6 +698,7 @@ void WriteFatalLogImpl(std::string_view reason, std::string_view extraDetails = 
     out << "[runtime] fatal log" << std::endl;
     out << "[runtime] reason: " << reason << std::endl;
     out << "[runtime] timestamp(seconds): " << nowSecs << std::endl;
+    out << "[runtime] game: " << GuestRegion::CurrentFacts().gameId << std::endl;
     out << "[runtime] entry: " << (g_lastEntryLabel.empty() ? "<unknown>" : g_lastEntryLabel) << std::endl;
     if (!extraDetails.empty()) {
         out << "[runtime] details: " << extraDetails << std::endl;
