@@ -194,6 +194,17 @@ extern "C" void KartLink_IsCPU_80590664(CpuContext* ctx) {
 }
 REGISTER_NATIVE_FUNCTION_AS(0x80590664, KartLink_IsCPU_80590664, "KartLink_IsCPU_80590664");
 
+// RacedataScenario::InitRNG; fixed seeds keep --race-cpu runs repeatable for benchmarking.
+extern "C" void RacedataScenario_InitRng_8052f924(CpuContext* ctx) {
+    const uint32_t scenario = ctx->gpr[3];
+    MKW_GUEST_FUNC(8052F924)(ctx);
+    if (g_cpuDriven) {
+        Memory::Write32(scenario + kSettingsOffset + 0x2C, 0x74A1B095u);
+        Memory::Write32(scenario + kSettingsOffset + 0x30, 0x1234567u);
+    }
+}
+REGISTER_NATIVE_FUNCTION_AS(0x8052F924, RacedataScenario_InitRng_8052f924, "RacedataScenario_InitRng_8052f924");
+
 // SectionPad::GetFirstDeactivatedPad; a CPU driven racer needs no controller.
 extern "C" void SectionPad_GetFirstDeactivatedPad_8061b9bc(CpuContext* ctx) {
     MKW_GUEST_FUNC(8061B9BC)(ctx);
