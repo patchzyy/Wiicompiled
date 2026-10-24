@@ -1,6 +1,6 @@
 # NTSC-U (RMCE01) function map, ported from ../mkwii/MAP.txt (PAL RMCP01).
 # Every entry was validated against the RMCE01 main.dol/StaticR.rel.
-# Verdicts: PROVEN=12178, REFERENCED=12573, PLAUSIBLE=4500, IDENTITY=15, INTERPOLATED=0, ADDED=143 (binary-proven entries no PAL entry covers); entries=29409
+# Verdicts: PROVEN=12178, REFERENCED=12584, PLAUSIBLE=4500, IDENTITY=15, INTERPOLATED=0, ADDED=142 (binary-proven entries no PAL entry covers); entries=29419
 800018a8 0x800018a8
 80001d50 0x80001d50
 80001d6c 0x80001d6c
@@ -10702,6 +10702,14 @@
 80243e80 nw4r::g3d::ScnRfl::GetTypeName
 80243eb0 nw4r::g3d::ScnRfl::IsDerivedFrom
 80243f18 0x80243f18
+80243f68 0x80243f68
+80243fa8 0x80243fa8
+80244010 0x80244010
+80244064 0x80244064
+802440a0 0x802440a0
+802440f8 0x802440f8
+802441ac 0x802441ac
+802441f0 0x802441f0
 802441fc shadTex_802402E0
 80244274 EGG::EGG__GlobalScreenCapture_Take
 80244760 EGG::EGG__GlobalScreenCapture_Release
@@ -20501,6 +20509,7 @@
 806c3c40 Objects::Heyho::vf_0xc
 806c3c48 Objects::Heyho::UpdateCollision
 806c3d28 Objects::Heyho::GetPropertiesBitfield
+806c3d30 0x806c3d30
 806c3d38 Objects::HighwayManager::__ct
 806c4418 Objects::HighwayManager::__dt
 806c44ec 0x806c44ec
@@ -21390,6 +21399,7 @@
 806f1e54 Objects::HwanwanBall::LoadRoute
 806f1e58 Objects::HwanwanBall::GetSubFileName
 806f1e64 Objects::HwanwanBall::GetPropertiesBitfield
+806f1e6c Objects::HwanwanBall::__dt(thunk)
 806f1e74 0x806f1e74
 806f2024 0x806f2024
 806f2194 0x806f2194
