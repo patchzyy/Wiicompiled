@@ -80,7 +80,10 @@ if (( builds_retro )); then
     [[ -n "$retro_wfc" ]] && (( skip_retro_wfc )) && fail 'choose only one Retro-WFC mode'
     [[ -n "$retro_wfc" || $skip_retro_wfc -eq 1 ]] || fail 'choose a Retro-WFC payload directory or --skip-retro-wfc-payload'
 fi
-for tool in "$cmake_bin" "$ninja_bin" clang clang++ shasum; do command -v "$tool" >/dev/null || fail "required tool not found: $tool"; done
+# Apple clang must match the SDK headers; another clang earlier on PATH may not.
+cc_bin=$(xcrun -f clang 2>/dev/null) || fail 'Apple clang not found; install the Xcode Command Line Tools (xcode-select --install)'
+cxx_bin=$(xcrun -f clang++ 2>/dev/null) || fail 'Apple clang++ not found; install the Xcode Command Line Tools (xcode-select --install)'
+for tool in "$cmake_bin" "$ninja_bin" "$cc_bin" "$cxx_bin" shasum; do command -v "$tool" >/dev/null || fail "required tool not found: $tool"; done
 
 assets="$workspace/Assets"; generated="$workspace/generated"
 functions="$generated/functions"; metadata="$generated/base_translation_output.json"; manifest_dir="$workspace/build/base"
@@ -88,7 +91,7 @@ manifest="$manifest_dir/mkwii_base_manifest.json"; shards="$generated/build_shar
 native_build="$workspace/native-build-macos-$macos_arch"
 x86_cpu_profile=v3
 if [[ "$macos_arch" == x86_64 ]]; then
-    native_macros=$(clang -march=native -dM -E -x c /dev/null 2>/dev/null || true)
+    native_macros=$("$cc_bin" -march=native -dM -E -x c /dev/null 2>/dev/null || true)
     for macro in __AVX__ __AVX2__ __BMI__ __BMI2__ __F16C__ __FMA__ __LZCNT__ __MOVBE__; do
         if ! grep -q "^#define $macro " <<<"$native_macros"; then
             x86_cpu_profile=v2
@@ -175,7 +178,7 @@ if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatc
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 
 toolchain_provenance="$native_build/toolchain-provenance.json"
-toolchain_fingerprint=$(mkw_toolchain_identity "$workspace" clang clang++ "$cmake_bin" "$ninja_bin")
+toolchain_fingerprint=$(mkw_toolchain_identity "$workspace" "$cc_bin" "$cxx_bin" "$cmake_bin" "$ninja_bin")
 if [[ -d "$native_build" && "$(mkw_read_identity "$toolchain_provenance" ToolchainFingerprint)" != "$toolchain_fingerprint" ]]; then
     printf 'MKWCBUILD: The toolchain or a pinned dependency changed; rebuilding the native build from scratch\n'
     rm -rf "$native_build"
@@ -183,7 +186,7 @@ fi
 step configure-native 'Configuring the native toolchain'
 # Use Aurora's pinned SDL3 source on macOS.  A system SDL3 can be older than
 # Aurora's required API even when find_package() succeeds.
-"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DMKW_X86_CPU_PROFILE="$x86_cpu_profile" -DAURORA_SDL3_PROVIDER=vendor -DMKW_SETUP_VERSION="$setup_version"
+"$cmake_bin" -S "$workspace/runtime" -B "$native_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="$cc_bin" -DCMAKE_CXX_COMPILER="$cxx_bin" -DCMAKE_MAKE_PROGRAM="$ninja_bin" -DCMAKE_OSX_ARCHITECTURES="$macos_arch" -DCMAKE_OSX_DEPLOYMENT_TARGET="$macos_deployment_target" -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs" -DMKW_X86_CPU_PROFILE="$x86_cpu_profile" -DAURORA_SDL3_PROVIDER=vendor -DMKW_SETUP_VERSION="$setup_version"
 mkw_write_identity "$toolchain_provenance" ToolchainFingerprint "$toolchain_fingerprint"
 targets=(); [[ "$profile" != retro-rewind ]] && targets+=(WiiCompiled); [[ "$profile" != base ]] && targets+=(RetroRewind)
 step compile "Compiling ${targets[*]} locally"; "$cmake_bin" --build "$native_build" --target "${targets[@]}" --parallel "$global_jobs"
