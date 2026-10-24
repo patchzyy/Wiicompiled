@@ -4,6 +4,7 @@
 #include "settings_overlay.h"
 #include "runtime_config.h"
 #include "gx_worker.h"
+#include "perf_stats.h"
 
 #include <aurora/aurora.h>
 #include <aurora/event.h>
@@ -142,7 +143,12 @@ inline bool BeginAuroraFrame() {
     if (GxWorker::ShouldDefer()) {
         // The window half can touch the surface and render targets the worker draws into.
         GxWorker::Sync();
-        if (!aurora_begin_frame_window()) {
+        bool begun = false;
+        {
+            PerfStats::WaitScope wait;
+            begun = aurora_begin_frame_window();
+        }
+        if (!begun) {
             return false;
         }
         GxWorker::Submit([] { GxWorkerBeginFrame(); });

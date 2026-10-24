@@ -8,6 +8,7 @@
 #include "fiber_manager.h"
 #include "platform/host_platform.h"
 #include "runtime_log.h"
+#include "perf_stats.h"
 
 #include <dolphin/vi.h>
 
@@ -161,6 +162,7 @@ constexpr std::chrono::microseconds kFinalSpinWindow{500};
 
 void SleepPreciselyUntil(Clock::time_point deadline, bool finishWithSpin = false,
                          std::chrono::microseconds spinWindow = 750us) {
+    PerfStats::WaitScope wait;
     const auto now = Clock::now();
     if (now >= deadline) {
         return;
@@ -584,6 +586,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
     settings_overlay::AdvancePresentedFrame();
+    PerfStats::OnFramePresented();
     g_auroraFrameActive.store(false, std::memory_order_release);
     g_auroraFrameHadWork.store(false, std::memory_order_release);
     if (presentedXfb) {

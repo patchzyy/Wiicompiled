@@ -1,5 +1,6 @@
 #include "gx_worker.h"
 
+#include "perf_stats.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 
@@ -85,11 +86,18 @@ void WaitTailBriefly(std::unique_lock<std::mutex>& lock) {
 }
 
 void WaitForTail(uint64_t minTail, bool service) {
-    for (int spin = 0; spin < 256 && g_tail.load(std::memory_order_acquire) < minTail; ++spin) {
-        CpuRelax();
+    if (g_tail.load(std::memory_order_acquire) >= minTail) {
+        return;
+    }
+    {
+        PerfStats::WaitScope wait;
+        for (int spin = 0; spin < 256 && g_tail.load(std::memory_order_acquire) < minTail; ++spin) {
+            CpuRelax();
+        }
     }
     while (g_tail.load(std::memory_order_acquire) < minTail) {
         {
+            PerfStats::WaitScope wait;
             std::unique_lock lock{g_tailMutex};
             g_producerWaiting.store(true, std::memory_order_seq_cst);
             if (g_tail.load(std::memory_order_seq_cst) < minTail) {

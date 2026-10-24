@@ -3,6 +3,7 @@
 #include "ax_internal.h"
 
 #include "abi_bridge.h"
+#include "perf_stats.h"
 #include "audio_backend.h"
 #include "ax_mix_kernels.h"
 #include "isa/big_endian.h"
@@ -122,6 +123,7 @@ public:
 
     void JoinMix() {
         if (m_mixThread.joinable()) {
+            PerfStats::WaitScope wait;
             std::unique_lock<std::mutex> lock(m_mixMutex);
             m_mixIdle.wait(lock, [this] { return !m_mixPending && !m_mixBusy; });
         }
