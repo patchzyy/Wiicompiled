@@ -57,6 +57,7 @@
 #endif
 
 #include "abi_bridge.h"
+#include "boot_race.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
 #include "memory.h"
@@ -1343,8 +1344,11 @@ int RuntimeMain(int argc, char** argv) {
     std::string currentEntryLabel;
 
     try {
-        if (argc != 1) {
-            throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
+        for (int i = 1; i < argc; ++i) {
+            if (!BootRace::ParseArgument(argv[i])) {
+                throw std::invalid_argument(std::string("Unknown command-line option '") + argv[i] +
+                                            "'; the game runtime only accepts --race[=<course id>] and --race-cpu, use Config.toml through the installed host.");
+            }
         }
         RuntimeConfigFile::LogLoadedConfig();
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
