@@ -129,9 +129,19 @@ void WaitForTail(uint64_t minTail, bool service) {
     }
 }
 
+// Producer-only copy of a tail already observed; avoids reading the worker-written line per record.
+uint64_t g_tailSeen = 0;
+
 void WaitForSpace(size_t bytes) {
     if (g_write + bytes > kCapacity) {
-        WaitForTail(g_write + bytes - kCapacity, false);
+        const uint64_t minTail = g_write + bytes - kCapacity;
+        if (g_tailSeen >= minTail) {
+            return;
+        }
+        g_tailSeen = g_tail.load(std::memory_order_acquire);
+        if (g_tailSeen < minTail) {
+            WaitForTail(minTail, false);
+        }
     }
 }
 
