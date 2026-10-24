@@ -85,10 +85,28 @@ void WaitTailBriefly(std::unique_lock<std::mutex>& lock) {
 #endif
 }
 
+// Producer-only: the last write position handed to the worker. Publishing every record kept the
+// head cache line bouncing between the game thread and the polling worker.
+uint64_t g_published = 0;
+constexpr uint64_t kPublishBytes = 2048;
+
+void Publish() {
+    if (g_published == g_write) {
+        return;
+    }
+    g_published = g_write;
+    g_head.store(g_write, std::memory_order_seq_cst);
+    if (g_consumerWaiting.load(std::memory_order_seq_cst)) {
+        std::lock_guard lock{g_headMutex};
+        g_headCv.notify_one();
+    }
+}
+
 void WaitForTail(uint64_t minTail, bool service) {
     if (g_tail.load(std::memory_order_acquire) >= minTail) {
         return;
     }
+    Publish();
     {
         PerfStats::WaitScope wait;
         for (int spin = 0; spin < 256 && g_tail.load(std::memory_order_acquire) < minTail; ++spin) {
@@ -242,11 +260,10 @@ void* Reserve(size_t payloadSize, void (*run)(void*)) {
     return g_ring + offset + kHeaderSize;
 }
 
+// Anything that waits on the worker publishes first (WaitForTail), so batching here only delays it.
 void Commit() {
-    g_head.store(g_write, std::memory_order_seq_cst);
-    if (g_consumerWaiting.load(std::memory_order_seq_cst)) {
-        std::lock_guard lock{g_headMutex};
-        g_headCv.notify_one();
+    if (g_write - g_published >= kPublishBytes) {
+        Publish();
     }
 }
 
@@ -341,6 +358,7 @@ void Stop() {
     detail::g_active.store(false, std::memory_order_release);
     g_stop.store(true, std::memory_order_release);
     Submit([] {});
+    Publish();
     if (g_thread != nullptr) {
         g_thread->join();
         delete g_thread;
