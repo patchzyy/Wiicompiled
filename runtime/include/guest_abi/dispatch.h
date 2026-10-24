@@ -291,6 +291,11 @@ struct KnownTypedNativeCpuCall {
     static constexpr bool kAvailable = false;
 };
 
+template <typename T, typename = void>
+struct IsPureTypedNativeCpuCall : std::false_type {};
+template <typename T>
+struct IsPureTypedNativeCpuCall<T, std::void_t<decltype(T::kPure)>> : std::bool_constant<T::kPure> {};
+
 #include "guest_abi/native_cpu_calls.inc"
 
 // Direct-mapped thread-local memo in front of the sorted registry lookup every bctrl performs;
@@ -554,7 +559,10 @@ inline void InvokeDirectCpu(CpuContext* ctx) {
         return;
     }
 
-    if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
+    if constexpr (IsPureTypedNativeCpuCall<KnownTypedNativeCpuCall<Target>>::value) {
+        KnownTypedNativeCpuCall<Target>::Invoke(cpu);
+        return;
+    } else if constexpr (KnownTypedNativeCpuCall<Target>::kAvailable) {
         PpcNonvolatileGprGuard gprGuard(cpu);
         if (TryGetCpuContext() != cpu) {
             CpuContextScope scope(cpu);

@@ -43,6 +43,9 @@ extern "C" void GX__SetNumTevStages_801722a8(uint32_t n);
 extern "C" void GX__SetBlendMode_8017277c(uint32_t t, uint32_t s, uint32_t d, uint32_t op);
 extern "C" void GX__LoadPosMtxImm_8017310c(uint32_t ma, uint32_t id);
 extern "C" void GX__SetCurrentMtx_80173214(uint32_t id);
+extern "C" int32_t OS__DisableInterrupts_801a65ac();
+extern "C" int32_t OS__EnableInterrupts_801a65c0();
+extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level);
 
 // Keyed by the translated region's addresses, so only translated code sees them;
 // runtime calls resolve through the registry.
@@ -89,6 +92,20 @@ MKW_KNOWN_TYPED_NATIVE(8017310C, GX__LoadPosMtxImm_8017310c, cpu->gpr[3], cpu->g
 MKW_KNOWN_TYPED_NATIVE(80173214, GX__SetCurrentMtx_80173214, cpu->gpr[3]);
 
 #undef MKW_KNOWN_TYPED_NATIVE
+
+// Natives that neither touch CpuContext nor re-enter guest code: no register guard or context scope.
+#define MKW_KNOWN_PURE_TYPED_NATIVE_R3(addr, fn, ...) \
+template <> struct KnownTypedNativeCpuCall<MKW_GADDR_CT(addr)> { \
+    static constexpr bool kAvailable = true; \
+    static constexpr bool kPure = true; \
+    static void Invoke(CpuContext* cpu) { cpu->gpr[3] = static_cast<uint32_t>(fn(__VA_ARGS__)); } \
+}
+
+MKW_KNOWN_PURE_TYPED_NATIVE_R3(801A65AC, OS__DisableInterrupts_801a65ac);
+MKW_KNOWN_PURE_TYPED_NATIVE_R3(801A65C0, OS__EnableInterrupts_801a65c0);
+MKW_KNOWN_PURE_TYPED_NATIVE_R3(801A65D4, OS__RestoreInterrupts_801a65d4, static_cast<int32_t>(cpu->gpr[3]));
+
+#undef MKW_KNOWN_PURE_TYPED_NATIVE_R3
 
 #define MKW_KNOWN_NATIVE_CPU_CALL(addr, fn) \
 template <> struct KnownNativeCpuCall<MKW_GADDR_CT(addr)> { \
