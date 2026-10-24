@@ -125,6 +125,10 @@ bool ParseArgument(std::string_view arg) {
     return true;
 }
 
+bool Requested() {
+    return g_course.has_value();
+}
+
 } // namespace BootRace
 
 // ArgumentParser::parse, picks the boot section in SectionMgr::Init.

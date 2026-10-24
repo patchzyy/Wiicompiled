@@ -7,4 +7,5 @@
 namespace BootRace {
 // False when `arg` is not a boot-race option; throws on a malformed one.
 bool ParseArgument(std::string_view arg);
+bool Requested();
 } // namespace BootRace

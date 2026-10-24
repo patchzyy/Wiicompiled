@@ -15,7 +15,7 @@ AudioBackend& AudioBackend::Instance() {
 }
 
 float AudioBackend::EffectiveGainLocked() const {
-    return m_muted ? 0.0f : m_masterVolume;
+    return m_muted || m_silenced ? 0.0f : m_masterVolume;
 }
 
 void AudioBackend::ApplyGainLocked() {
@@ -33,6 +33,12 @@ void AudioBackend::SetMasterVolume(float volume) {
 void AudioBackend::SetMuted(bool muted) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_muted = muted;
+    ApplyGainLocked();
+}
+
+void AudioBackend::SetSilenced(bool silenced) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_silenced = silenced;
     ApplyGainLocked();
 }
 

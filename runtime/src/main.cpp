@@ -57,6 +57,7 @@
 #endif
 
 #include "abi_bridge.h"
+#include "audio_backend.h"
 #include "boot_race.h"
 #include "guest_abi/guest_region.h"
 #include "guest_flat_memory.h"
@@ -167,6 +168,7 @@ std::atomic_bool g_auroraInitialized{false};
 std::atomic_flag g_abortSignalHandled = ATOMIC_FLAG_INIT;
 std::atomic_bool g_fatalErrorReported{false};
 std::atomic_bool g_fatalPopupShown{false};
+bool g_headless = false;
 std::atomic<int> g_lastExitCode{0};
 std::atomic_bool g_exitCodeSet{false};
 
@@ -773,7 +775,7 @@ void MarkFatalErrorReported() {
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
-    if (g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
+    if (g_headless || g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
@@ -1345,15 +1347,25 @@ int RuntimeMain(int argc, char** argv) {
     
     std::string currentEntryLabel;
 
+    // `--headless`: with a boot race, run without a window, sound or dialogs.
+    g_headless = std::any_of(argv + 1, argv + argc,
+                             [](const char* arg) { return std::string_view(arg) == "--headless"; });
+
     try {
         for (int i = 1; i < argc; ++i) {
-            if (!BootRace::ParseArgument(argv[i])) {
+            if (std::string_view(argv[i]) != "--headless" && !BootRace::ParseArgument(argv[i])) {
                 throw std::invalid_argument(std::string("Unknown command-line option '") + argv[i] +
-                                            "'; the game runtime only accepts --race[=<course id>] and --race-cpu, use Config.toml through the installed host.");
+                                            "'; the game runtime only accepts --race[=<course id>], --race-cpu and --headless, use Config.toml through the installed host.");
             }
         }
+        if (g_headless && !BootRace::Requested()) {
+            throw std::invalid_argument("--headless needs --race[=<course id>] or --race-cpu");
+        }
+        if (g_headless) {
+            AudioBackend::Instance().SetSilenced(true);
+        }
         RuntimeConfigFile::LogLoadedConfig();
-        if (RuntimeConfigFile::DiscordPresenceEnabled()) {
+        if (!g_headless && RuntimeConfigFile::DiscordPresenceEnabled()) {
             DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "Mario Kart Wii");
         }
         SystemBridge::Initialize();
@@ -1387,7 +1399,8 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.windowHeight = RuntimeConfigFile::WindowHeight(auroraConfig.windowHeight);
         auroraConfig.hasWindowPosition = RuntimeConfigFile::WindowPosition(
             auroraConfig.windowPosX, auroraConfig.windowPosY);
-        auroraConfig.allowJoystickBackgroundEvents = true;
+        auroraConfig.allowJoystickBackgroundEvents = !g_headless;
+        auroraConfig.startHidden = g_headless;
         auroraConfig.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
         // Dolphin-style custom textures. Aurora indexes <userPath>/texture_replacements
         // once during aurora_initialize, so both knobs only take effect on the next launch.
@@ -1466,6 +1479,9 @@ int RuntimeMain(int argc, char** argv) {
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
+        if (BootRace::Requested()) {
+            aurora_set_skip_unready_pipelines(false);
+        }
         RT_LOG(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
                   << " force_16_9=" << (forceAspect169 ? "true" : "false")
                   << " SCGetAspectRatio=" << (configWidescreen || forceAspect169 ? 1 : 0)
