@@ -178,7 +178,7 @@ if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatc
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 
 toolchain_provenance="$native_build/toolchain-provenance.json"
-toolchain_fingerprint=$(mkw_toolchain_identity "$workspace" "$cc_bin" "$cxx_bin" "$cmake_bin" "$ninja_bin")
+toolchain_fingerprint=$(printf '%s\n' "$(mkw_toolchain_identity "$workspace" "$cc_bin" "$cxx_bin" "$cmake_bin" "$ninja_bin")" "$cc_bin" "$cxx_bin" | mkw_sha256)
 if [[ -d "$native_build" && "$(mkw_read_identity "$toolchain_provenance" ToolchainFingerprint)" != "$toolchain_fingerprint" ]]; then
     printf 'MKWCBUILD: The toolchain or a pinned dependency changed; rebuilding the native build from scratch\n'
     rm -rf "$native_build"
