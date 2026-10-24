@@ -33,7 +33,8 @@
 
 struct RuntimeUserConfig {
     std::optional<bool> widescreen;
-    std::optional<bool> forceAspect169;
+    std::optional<std::string> advertisedAspectRatio;
+    std::optional<bool> forceAspect;
     std::optional<int32_t> windowPosX;
     std::optional<int32_t> windowPosY;
     std::optional<uint32_t> windowWidth;
@@ -271,7 +272,8 @@ inline void EnsureConfigFile() {
               "# Set paths.dvd_root to an extracted Mario Kart Wii DATA directory.\n\n"
               "[video]\n"
               "widescreen = true\n"
-              "force_16_9 = false\n"
+              "advertised_aspect_ratio = \"16:9\"\n"
+              "force_aspect = false\n"
               "resolution_multiplier = 1.0\n"
               "frame_interpolation_fps = 0\n"
               "display_mode = \"windowed\"\n"
@@ -403,7 +405,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
 
     config.widescreen = FindConfigValue<bool>(document, "video", "widescreen");
-    config.forceAspect169 = FindConfigValue<bool>(document, "video", "force_16_9");
+    config.advertisedAspectRatio = FindConfigValue<std::string>(document, "video", "advertised_aspect_ratio");
+    config.forceAspect = FindConfigValue<bool>(document, "video", "force_aspect");
     config.windowPosX = FindConfigInt(document, "video", "window_x");
     config.windowPosY = FindConfigInt(document, "video", "window_y");
     if (auto value = FindConfigUint(document, "video", "window_width"); value && *value != 0) {
@@ -760,13 +763,23 @@ inline bool WidescreenEnabled(bool fallback = false) {
     return Get().widescreen.value_or(fallback);
 }
 
-inline bool ForceAspect169Enabled(bool fallback = false) {
-    return Get().forceAspect169.value_or(fallback);
+inline bool AdvertisedAspectRatio169(bool fallback = false) {
+    if (Get().advertisedAspectRatio) {
+        return *Get().advertisedAspectRatio != "4:3";
+    }
+    return WidescreenEnabled(fallback);
 }
 
-inline bool SetForceAspect169(bool value) {
-    Mutable().forceAspect169 = value;
-    return WriteSetting("video", "force_16_9", value ? "true" : "false");
+inline bool SetAdvertisedAspectRatio169(bool value) {
+    return WriteSetting("video", "advertised_aspect_ratio", value ? "\"16:9\"" : "\"4:3\"");
+}
+
+inline bool ForceAspectEnabled(bool fallback = false) {
+    return Get().forceAspect.value_or(fallback);
+}
+
+inline bool SetForceAspect(bool value) {
+    return WriteSetting("video", "force_aspect", value ? "true" : "false");
 }
 
 inline bool WindowPosition(int32_t& x, int32_t& y) {

@@ -37,6 +37,11 @@ inline float AspectRatioFactor(uint32_t width, uint32_t height) noexcept {
     return SurfaceAspect(width, height) / kPresentationAspect169;
 }
 
+inline float AspectRatioFactor(uint32_t width, uint32_t height,
+                               float referenceAspect) noexcept {
+    return SurfaceAspect(width, height) / referenceAspect;
+}
+
 // Hor+ factor, clamped at 1 so a tighter-than-16:9 surface never narrows the
 // canvas (that would crop away scene the 16:9 view showed).
 inline float HorizontalExpansion(uint32_t width, uint32_t height) noexcept {
@@ -53,10 +58,30 @@ inline float VerticalExpansion(uint32_t width, uint32_t height) noexcept {
     return std::clamp(1.0f / factor, 1.0f, kMaxVerticalExpansion);
 }
 
+inline float VerticalExpansion(uint32_t width, uint32_t height,
+                               float referenceAspect) noexcept {
+    const float factor = AspectRatioFactor(width, height, referenceAspect);
+    if (!(factor > 0.0f)) {
+        return 1.0f;
+    }
+    return std::clamp(1.0f / factor, 1.0f, kMaxVerticalExpansion);
+}
+
 inline uint32_t EggRecordWidth(uint32_t baseWidth, uint32_t surfaceWidth,
                                uint32_t surfaceHeight) noexcept {
     const float scaledWidth =
         static_cast<float>(baseWidth) * HorizontalExpansion(surfaceWidth, surfaceHeight);
+    return std::clamp<uint32_t>(
+        static_cast<uint32_t>(std::lround(scaledWidth / 4.0f)) * 4u, 4u, 0xFFFCu);
+}
+
+inline uint32_t EggRecordWidth(uint32_t baseWidth, uint32_t surfaceWidth,
+                               uint32_t surfaceHeight,
+                               float referenceAspect) noexcept {
+    const float scaledWidth = static_cast<float>(baseWidth) *
+                              std::max(1.0f, AspectRatioFactor(surfaceWidth,
+                                                               surfaceHeight,
+                                                               referenceAspect));
     return std::clamp<uint32_t>(
         static_cast<uint32_t>(std::lround(scaledWidth / 4.0f)) * 4u, 4u, 0xFFFCu);
 }

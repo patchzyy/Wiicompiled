@@ -112,7 +112,8 @@ bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_vsync = RuntimeConfigFile::Vsync();
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
-bool g_forceAspect169 = RuntimeConfigFile::ForceAspect169Enabled();
+bool g_forceAspect = RuntimeConfigFile::ForceAspectEnabled();
+bool g_advertisedAspect169 = RuntimeConfigFile::AdvertisedAspectRatio169(true);
 #if defined(__APPLE__)
 bool g_metalFxSpatialUpscaling = RuntimeConfigFile::MetalFxSpatialUpscaling(false);
 #endif
@@ -1069,11 +1070,23 @@ void DrawAudioSettings() {
 
 void DrawGraphicsSettings() {
     g_displayMode = static_cast<int>(aurora_get_display_mode());
-    if (ImGui::Checkbox("Force 16:9", &g_forceAspect169)) {
-        SetMkwForceAspect169(g_forceAspect169);
-        RuntimeConfigFile::SetForceAspect169(g_forceAspect169);
+    const char* advertisedAspectLabel = g_advertisedAspect169 ? "16:9" : "4:3";
+    if (ImGui::BeginCombo("Advertised aspect ratio (restart required)", advertisedAspectLabel)) {
+        if (ImGui::Selectable("16:9", g_advertisedAspect169)) {
+            g_advertisedAspect169 = true;
+            RuntimeConfigFile::SetAdvertisedAspectRatio169(true);
+        }
+        if (ImGui::Selectable("4:3", !g_advertisedAspect169)) {
+            g_advertisedAspect169 = false;
+            RuntimeConfigFile::SetAdvertisedAspectRatio169(false);
+        }
+        ImGui::EndCombo();
     }
-    ImGui::TextDisabled("Keep a 16:9 image with black bars when the window has another shape.");
+    if (ImGui::Checkbox("Force aspect ratio", &g_forceAspect)) {
+        SetMkwForceAspect(g_forceAspect);
+        RuntimeConfigFile::SetForceAspect(g_forceAspect);
+    }
+    ImGui::TextDisabled("Keep the current aspect ratio with black bars when the window has another shape.");
     ImGui::Separator();
     struct EffectFlag {
         const char* label;
