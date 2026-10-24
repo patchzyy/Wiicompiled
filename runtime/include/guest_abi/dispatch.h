@@ -589,12 +589,20 @@ inline void InvokeDirectCpu(CpuContext* ctx) {
 // Cold tail of InvokeIndirectJump: a bctr target that is not a registered function.
 [[noreturn]] MKW_PPC_NO_INLINE MKW_PPC_COLD void ReportMissingIndirectJumpTarget(uint32_t target, CpuContext* cpu);
 
-// Indirect jump (bctr without link) - used for switch tables.
-inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
-    // Use the caller's context, not the persistent global context!
-    // This is essential for tail calls via bctr where the 'this' pointer (r3)
-    // must be passed correctly to the target function.
-    CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+// The common indirect case: an unguarded record called from its own CpuContext, so the full
+// TryDispatchRawCpuTarget would only set the execution address and call.
+MKW_PPC_FORCE_INLINE bool TryDispatchUnguardedRawCpuTarget(uint32_t target, CpuContext* cpu) {
+    const RawDispatchRecord* record = TranslatedFunctionRegistry::FindRawByAddressPtr(target);
+    if (record == nullptr || record->entry == nullptr || record->preserveNonvolatileGprs ||
+        record->nonvolatileFprWriteMask != 0 || TryGetCpuContext() != cpu) {
+        return false;
+    }
+    RecompMod::ScopedTranslatedExecutionAddress translatedExecution(record->address);
+    record->entry(cpu);
+    return true;
+}
+
+MKW_PPC_NO_INLINE inline void InvokeIndirectJumpSlow(uint32_t target, CpuContext* cpu) {
     if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
         return;
     }
@@ -609,12 +617,22 @@ inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
     ReportMissingIndirectJumpTarget(target, cpu);
 }
 
-inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
+// Indirect jump (bctr without link) - used for switch tables.
+inline void InvokeIndirectJump(uint32_t target, CpuContext* ctx) {
+    // Use the caller's context, not the persistent global context!
+    // This is essential for tail calls via bctr where the 'this' pointer (r3)
+    // must be passed correctly to the target function.
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    if (TryDispatchUnguardedRawCpuTarget(target, cpu)) {
+        return;
+    }
+    InvokeIndirectJumpSlow(target, cpu);
+}
+
+MKW_PPC_NO_INLINE inline void InvokeIndirectCpuSlow(uint32_t target, CpuContext* cpu) {
     if (target == 0) {
         ReportMissingCpuTarget(target, cpu);
     }
-    ApplyRuntimeCallOptions(target, cpu);
     if (TryDispatchRawCpuTarget(TranslatedFunctionRegistry::FindRawByAddressPtr(target), cpu)) {
         return;
     }
@@ -622,4 +640,13 @@ inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
         return;
     }
     ReportMissingCpuTarget(target, cpu);
+}
+
+inline void InvokeIndirectCpu(uint32_t target, CpuContext* ctx) {
+    CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    ApplyRuntimeCallOptions(target, cpu);
+    if (TryDispatchUnguardedRawCpuTarget(target, cpu)) {
+        return;
+    }
+    InvokeIndirectCpuSlow(target, cpu);
 }
