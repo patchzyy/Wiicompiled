@@ -301,6 +301,7 @@ void ApplyConfiguredMappings() {
 
 bool g_wiiRemotesEnabled = RuntimeConfigFile::WiiRemotesEnabled();
 const bool g_wiiRemotesAtLaunch = g_wiiRemotesEnabled;
+bool g_wiiRemotesSaveFailed = false;
 bool g_wiiAutoPair = RuntimeConfigFile::WiiAutoPairEnabled(true);
 bool g_wiiSensorBarAbove = RuntimeConfigFile::WiiSensorBarAbove(false);
 int g_wiiIrSensitivity = RuntimeConfigFile::WiiIrSensitivity(3);
@@ -381,11 +382,15 @@ void DrawWiiRemoteSetup() {
         ImGui::SetTooltip("The sensor bar sensitivity from the Wii settings.\nTakes effect the next time the game starts.");
     }
     if (ImGui::Checkbox("Use Wii Remotes", &g_wiiRemotesEnabled)) {
-        RuntimeConfigFile::SetWiiRemotesEnabled(g_wiiRemotesEnabled);
-        g_restartPromptOpen = g_wiiRemotesEnabled != g_wiiRemotesAtLaunch;
+        g_wiiRemotesSaveFailed = !RuntimeConfigFile::SetWiiRemotesEnabled(g_wiiRemotesEnabled);
+        if (g_wiiRemotesSaveFailed) g_wiiRemotesEnabled = !g_wiiRemotesEnabled;
+        g_restartPromptOpen = g_wiiRemotesEnabled != g_wiiRemotesAtLaunch && !g_wiiRemotesSaveFailed;
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("Takes effect after restarting the game. Turn this off to use a Wii U Pro Controller as a gamepad.");
+    }
+    if (g_wiiRemotesSaveFailed) {
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Could not save this setting to Config.toml.");
     }
     if (g_wiiRemotesEnabled != g_wiiRemotesAtLaunch) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Restart the game to apply this change.");
