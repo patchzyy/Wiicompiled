@@ -236,69 +236,121 @@ function Get-MkwDawnRuntimeSha256([string]$DependenciesDirectory) {
     return Get-MkwFileSha256 $runtime
 }
 
-function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
+function ConvertTo-MkwHex([byte[]]$Bytes) {
+    return [BitConverter]::ToString($Bytes).Replace('-', '').ToLowerInvariant()
+}
+
+function Get-MkwSourceTreeFingerprint([string]$Directory, [string[]]$ExcludedTopDirectories = @()) {
     <#
-    SHA-256 over runtime/third_party, the vendored sources behind the prebuilt package. The
-    precompiled Crypto++ archive is linked while first-party TUs compile against the same headers,
-    so a workspace whose vendored tree moved on must not consume archives harvested from an older
-    one (same reasoning as the aurora fingerprint below), skipping dot-paths by name the same way.
-    Returns '' when absent.
+    SHA-256 over "relative-path content-sha256" lines of a source tree. It must come out the same
+    under powershell.exe 5.1 and pwsh 7 and for any checkout's line endings, because the package is
+    harvested on a release machine and re-checked on every user's: paths are sorted ordinally (not
+    with Sort-Object, whose culture collation differs between NLS and ICU) and text content is hashed
+    with CRLF folded to LF. Dot-paths are skipped by name, not by the hidden attribute, which the
+    payload zip drops. Returns '' when the tree is absent.
     #>
-    if ([string]::IsNullOrWhiteSpace($ThirdPartyDirectory)) { return '' }
-    if (-not (Test-Path -LiteralPath $ThirdPartyDirectory -PathType Container)) { return '' }
-    $root = [IO.Path]::GetFullPath($ThirdPartyDirectory).TrimEnd('\')
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
-        Where-Object { -not ($_.FullName.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') }) } |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
+    if ([string]::IsNullOrWhiteSpace($Directory)) { return '' }
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return '' }
+    $root = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    $relatives = [Collections.Generic.List[string]]::new()
+    foreach ($file in [IO.Directory]::EnumerateFiles($root, '*', [IO.SearchOption]::AllDirectories)) {
+        $relative = $file.Substring($root.Length + 1).Replace('\', '/')
+        $parts = $relative.Split('/')
+        if ($parts.Length -gt 1 -and $ExcludedTopDirectories -contains $parts[0]) { continue }
+        $hidden = $false
+        foreach ($part in $parts) { if ($part.StartsWith('.', [StringComparison]::Ordinal)) { $hidden = $true; break } }
+        if (-not $hidden) { $relatives.Add($relative) }
+    }
+    $sorted = $relatives.ToArray()
+    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+
+    $latin1 = [Text.Encoding]::GetEncoding(28591)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $builder = [Text.StringBuilder]::new()
-        foreach ($file in $files) {
-            $relative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
-            $content = Get-MkwFileSha256 $file.FullName
-            [void]$builder.Append($relative).Append(' ').Append($content).Append("`n")
+        foreach ($relative in $sorted) {
+            $bytes = [IO.File]::ReadAllBytes($root + '\' + $relative.Replace('/', '\'))
+            # Latin-1 maps bytes 1:1, so the round trip only changes the line endings.
+            $text = $latin1.GetString($bytes)
+            if ($text.IndexOf([char]0) -lt 0 -and $text.Contains("`r`n")) {
+                $bytes = $latin1.GetBytes($text.Replace("`r`n", "`n"))
+            }
+            [void]$builder.Append($relative).Append(' ').Append((ConvertTo-MkwHex $sha.ComputeHash($bytes))).Append("`n")
         }
-        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
+        return ConvertTo-MkwHex $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
     } finally { $sha.Dispose() }
-    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
+    <#
+    runtime/third_party, the vendored sources behind the prebuilt package. The precompiled Crypto++
+    archive is linked while first-party TUs compile against the same headers, so a workspace whose
+    vendored tree moved on must not consume archives harvested from an older one.
+    #>
+    return Get-MkwSourceTreeFingerprint $ThirdPartyDirectory
 }
 
 function Get-MkwAuroraSourceFingerprint([string]$AuroraDirectory) {
     <#
-    SHA-256 over the aurora sources the precompiled archives were harvested from. The compiler,
-    flag, and Dawn digests only prove the package agrees with its target environment; none notice
-    aurora itself moving on, and since the runtime calls aurora headers directly, a package
-    harvested before an aurora change links old code against new call sites (undefined symbol at
-    best, silently stale renderer at worst). extern/ is excluded because the payload ships those
-    trees separately. Returns '' when the tree is absent.
+    The aurora sources the precompiled archives were harvested from. The compiler, flag, and Dawn
+    digests only prove the package agrees with its target environment; none notice aurora itself
+    moving on, and since the runtime calls aurora headers directly, a package harvested before an
+    aurora change links old code against new call sites. extern/ is excluded because the payload
+    ships those trees separately.
     #>
-    if ([string]::IsNullOrWhiteSpace($AuroraDirectory)) { return '' }
-    if (-not (Test-Path -LiteralPath $AuroraDirectory -PathType Container)) { return '' }
-    $root = [IO.Path]::GetFullPath($AuroraDirectory).TrimEnd('\')
-    $excludedPrefixes = @(
-        (Join-Path $root 'extern') + '\',
-        (Join-Path $root 'build') + '\'
-    )
-    # Dot-paths (the submodule's .git pointer) are skipped by name, not by the hidden attribute:
-    # the payload zip drops that attribute, so the installed side would otherwise hash them.
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
-        Where-Object {
-            $full = $_.FullName
-            -not ($excludedPrefixes | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) -and
-            -not ($full.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') })
-        } |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
-    $sha = [Security.Cryptography.SHA256]::Create()
+    return Get-MkwSourceTreeFingerprint $AuroraDirectory @('extern', 'build')
+}
+
+function Resolve-MkwNativePrebuiltDirectory([string]$DependenciesDirectory, [string]$ToolchainBin,
+    [string]$AuroraDirectory, [string]$ThirdPartyDirectory) {
+    <#
+    The shipped precompiled aurora/third-party package, verified against its recorded provenance
+    (exact compiler, exact flags, sources) before use. Anything unexpected falls back to building
+    from source. Shared with Build-Installer.ps1, which runs it against the staged payload under
+    powershell.exe so a package users would reject never ships.
+    #>
+    $package = Join-Path $DependenciesDirectory 'native_prebuilt'
+    $provenancePath = Join-Path $package 'provenance.json'
+    if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
+        Write-Host 'MKWCBUILD: No precompiled aurora package was shipped; building it from source'
+        return ''
+    }
     try {
-        $builder = [Text.StringBuilder]::new()
-        foreach ($file in $files) {
-            $relative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
-            $content = Get-MkwFileSha256 $file.FullName
-            [void]$builder.Append($relative).Append(' ').Append($content).Append("`n")
+        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+        if ($provenance.CompilerSha256 -ne (Get-MkwFileSha256 (Join-Path $ToolchainBin 'clang-22.exe'))) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built by a different compiler; building it from source'
+            return ''
         }
-        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
-    } finally { $sha.Dispose() }
-    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+        if ($provenance.FlagFingerprint -ne (Get-MkwNativeFlagFingerprint)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built with different flags; building it from source'
+            return ''
+        }
+        # The archives embed Dawn's headers and link its import library; a different Dawn is an
+        # ABI mismatch that only shows up as a crash inside the GPU backend.
+        $recordedDawn = $provenance.PSObject.Properties['DawnRuntimeSha256']
+        if ($null -eq $recordedDawn -or
+            $recordedDawn.Value -ne (Get-MkwDawnRuntimeSha256 $DependenciesDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built against a different Dawn; building it from source'
+            return ''
+        }
+        $recordedAurora = $provenance.PSObject.Properties['AuroraSourceFingerprint']
+        if ($null -eq $recordedAurora -or
+            $recordedAurora.Value -ne (Get-MkwAuroraSourceFingerprint $AuroraDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different aurora sources; building it from source'
+            return ''
+        }
+        $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
+        if ($null -eq $recordedThirdParty -or
+            $recordedThirdParty.Value -ne (Get-MkwThirdPartySourceFingerprint $ThirdPartyDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different vendored third-party sources; building it from source'
+            return ''
+        }
+    } catch {
+        Write-Host "MKWCBUILD: The precompiled aurora package could not be validated ($($_.Exception.Message)); building it from source"
+        return ''
+    }
+    Write-Host 'MKWCBUILD: Using the precompiled aurora and third-party libraries'
+    return $package
 }
 
 function ConvertTo-MkwCMakePath([string]$Path) {
@@ -347,9 +399,9 @@ function Get-MkwNativeConfigureArguments {
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($NativePrebuiltDirectory)) {
-        $arguments += "-DMKW_NATIVE_PREBUILT_DIR=$(ConvertTo-MkwCMakePath $NativePrebuiltDirectory)"
-    }
+    # Always set, so a reused CMake cache can never keep a package this run rejected.
+    $arguments += if ([string]::IsNullOrWhiteSpace($NativePrebuiltDirectory)) { '-DMKW_NATIVE_PREBUILT_DIR=' }
+        else { "-DMKW_NATIVE_PREBUILT_DIR=$(ConvertTo-MkwCMakePath $NativePrebuiltDirectory)" }
 
     $arguments += $AdditionalArguments
     return $arguments

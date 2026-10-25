@@ -278,6 +278,24 @@ $packagedRuntimeFingerprint = (Get-Content -LiteralPath (Join-Path $workspace 'D
 if ($stagedRuntimeFingerprint -ne $packagedRuntimeFingerprint) {
     throw "The staged runtime ($stagedRuntimeFingerprint) does not match the precompiled runtime archive ($packagedRuntimeFingerprint)."
 }
+# Users' builds run LocalBuild.ps1 under Windows PowerShell 5.1, whatever shell built this
+# installer, so the staged package is accepted (or not) exactly the way theirs will be.
+$prebuiltGate = Join-Path $workRoot 'native-prebuilt-gate.ps1'
+@'
+param([string]$Workspace, [string]$Toolkit)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 3.0
+. (Join-Path $Workspace 'NativeBuildFlags.ps1')
+$package = Resolve-MkwNativePrebuiltDirectory (Join-Path $Workspace 'Dependencies') `
+    (Join-Path $Toolkit 'llvm-mingw\bin') (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
+if (-not $package) { exit 3 }
+'@ | Set-Content -LiteralPath $prebuiltGate -Encoding UTF8
+& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoLogo -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File $prebuiltGate -Workspace $workspace -Toolkit $toolkit
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows PowerShell rejects the staged precompiled aurora package (exit $LASTEXITCODE); every installation would build aurora from source."
+}
+Remove-Item -LiteralPath $prebuiltGate -Force
 
 [IO.Directory]::CreateDirectory((Join-Path $payloadRoot 'host')) | Out-Null
 Copy-Item $setupHost (Join-Path $payloadRoot 'host\WiiCompiled-Setup.exe')

@@ -34,65 +34,6 @@ Set-StrictMode -Version 3.0
 # See NativeBuildFlags.ps1; Build-Installer.ps1 stages it beside this script.
 . (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1')
 
-function Resolve-NativePrebuiltDirectory([string]$DependenciesDirectory, [string]$ToolchainBin, [string]$AuroraDirectory, [string]$ThirdPartyDirectory) {
-    <#
-    The shipped precompiled aurora/third-party package, verified against its recorded provenance
-    (exact compiler, exact flags) before use. Anything unexpected falls back to building from source.
-    #>
-    $package = Join-Path $DependenciesDirectory 'native_prebuilt'
-    $provenancePath = Join-Path $package 'provenance.json'
-    if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
-        Write-Host 'MKWCBUILD: No precompiled aurora package was shipped; building it from source'
-        return ''
-    }
-    try {
-        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
-        $compiler = Join-Path $ToolchainBin 'clang-22.exe'
-        $compilerHash = Get-MkwFileSha256 $compiler
-        if ($provenance.CompilerSha256 -ne $compilerHash) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built by a different compiler; building it from source'
-            return ''
-        }
-        if ($provenance.FlagFingerprint -ne (Get-MkwNativeFlagFingerprint)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built with different flags; building it from source'
-            return ''
-        }
-        # The archives embed Dawn's headers and link its import library, so a
-        # dawn_prebuilt tree that is not the one they were harvested against is
-        # an ABI mismatch that only shows up as a crash inside the GPU backend.
-        $recordedDawn = $provenance.PSObject.Properties['DawnRuntimeSha256']
-        if ($null -eq $recordedDawn -or
-            $recordedDawn.Value -ne (Get-MkwDawnRuntimeSha256 $DependenciesDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built against a different Dawn; building it from source'
-            return ''
-        }
-        # The archives are aurora; the runtime compiled here calls its headers.
-        # If this workspace's aurora sources are not the ones that were harvested
-        # (a newer toolkit, or a locally modified tree), linking the package would
-        # mix two versions of aurora, so build it from source instead.
-        $recordedAurora = $provenance.PSObject.Properties['AuroraSourceFingerprint']
-        if ($null -eq $recordedAurora -or
-            $recordedAurora.Value -ne (Get-MkwAuroraSourceFingerprint $AuroraDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different aurora sources; building it from source'
-            return ''
-        }
-        # Same reasoning for the vendored Crypto++ the package also carries:
-        # first-party TUs compile against this workspace's third_party headers,
-        # so a package harvested from an older tree must not be linked here.
-        $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
-        if ($null -eq $recordedThirdParty -or
-            $recordedThirdParty.Value -ne (Get-MkwThirdPartySourceFingerprint $ThirdPartyDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different vendored third-party sources; building it from source'
-            return ''
-        }
-    } catch {
-        Write-Host "MKWCBUILD: The precompiled aurora package could not be validated ($($_.Exception.Message)); building it from source"
-        return ''
-    }
-    Write-Host 'MKWCBUILD: Using the precompiled aurora and third-party libraries'
-    return $package
-}
-
 function Write-MkwBuildStep([string]$StepId, [string]$Message) {
     <#
     Announces a build step. The identifier is the contract (BuildStepIds in
@@ -208,8 +149,9 @@ if ($Parallel -gt 0) {
     $globalJobs = $Parallel
 } else {
     $translatorThreads = [math]::Max(1, [math]::Min([Environment]::ProcessorCount, 16))
+    # A translated TU peaks around 0.26 GB in clang; 0.5 GiB each after a 2 GiB reserve.
     $translatedJobs = [math]::Max(1, [math]::Min([Environment]::ProcessorCount,
-        [math]::Floor($memoryGiB / 2)))
+        [math]::Floor(($memoryGiB - 2) / 0.5)))
     $globalJobs = [math]::Max($translatedJobs, [Environment]::ProcessorCount)
 }
 
@@ -396,7 +338,7 @@ try {
             }
         }
         $dependencies = Join-Path $Workspace 'Dependencies'
-        $nativePrebuilt = Resolve-NativePrebuiltDirectory $dependencies $toolchainBin `
+        $nativePrebuilt = Resolve-MkwNativePrebuiltDirectory $dependencies $toolchainBin `
             (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
         if ($X86CpuProfile -eq 'v2') {
             Write-Host 'MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2'
