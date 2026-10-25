@@ -230,11 +230,18 @@ try {
                 # same translated functions produces the same base tree. Only the translator can
                 # decide that - it takes parsing the Kamek patch set against the recorded translated
                 # function ranges - and it fails closed, so anything but exit 0 retranslates.
-                & $translator @(
-                    'check-base-mod-awareness', '--project', $project, '--profile', 'retro-rewind',
-                    '--translation-output-metadata', $baseMetadata, '--code-pul', $retroCodePul
-                ) | Write-Host
-                if ($LASTEXITCODE -ne 0) {
+                $modAware = $true
+                try {
+                    Invoke-Checked $translator @(
+                        'check-base-mod-awareness', '--project', $project, '--profile', 'retro-rewind',
+                        '--translation-output-metadata', $baseMetadata, '--code-pul', $retroCodePul
+                    ) 'Checking whether the base translation covers the new Code.pul' `
+                        -TimeoutSeconds $translatorTimeoutSeconds
+                } catch {
+                    Write-Host "MKWCBUILD: $($_.Exception.Message)"
+                    $modAware = $false
+                }
+                if (-not $modAware) {
                     Write-MkwBuildStep 'retranslate-base' 'The base translation is stale; retranslating the base game for the new Code.pul'
                     $reuseBase = $false
                 }
