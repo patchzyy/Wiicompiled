@@ -102,12 +102,7 @@ public static class GuestMemoryRangeLowering
             .Any(group => group.Count() >= minimumAccesses))
             return function;
 
-        var cfg = IrCfg.Build(function);
-        var dominators = ComputeDominators(cfg);
-        var reachability = ComputeReachability(cfg);
-        var cyclicBlocks = cfg.Blocks.Keys.Where(label =>
-                cfg.Successors(label).Any(successor => reachability[successor].Contains(label)))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var graph = BlockGraph.Build(function);
 
         var plans = new Dictionary<(int Block, int Instruction), Plan>();
         var resolves = new Dictionary<int, List<PlacedResolve>>();
@@ -129,12 +124,27 @@ public static class GuestMemoryRangeLowering
                 if (definitionSites.Count != 1) continue;
                 definition = definitionSites[0];
                 var defined = definitionSites[0];
-                var definitionBlock = function.Blocks[defined.BlockIndex].Label;
                 if (remaining.Any(candidate =>
-                        !dominators[candidate.AccessBlockLabel(function)].Contains(definitionBlock) ||
+                        !graph.Dominates(defined.BlockIndex, candidate.BlockIndex) ||
                         candidate.BlockIndex == defined.BlockIndex &&
                         candidate.Access.Index <= defined.InstructionIndex))
                     continue;
+            }
+            // The pair predicate is invariant across rounds, so memoize it.
+            var groupIndex = new Dictionary<FunctionAccess, int>(ReferenceEqualityComparer.Instance);
+            foreach (var access in remaining) groupIndex.Add(access, groupIndex.Count);
+            var compatible = remaining.Count <= 4096 ? new sbyte[remaining.Count * remaining.Count] : null;
+            bool Compatible(FunctionAccess anchor, FunctionAccess candidate)
+            {
+                if (compatible is null)
+                    return DominatesAccess(graph, anchor, candidate) &&
+                        !HasInvalidatingBoundaryOnPath(graph, invalidators, anchor, candidate);
+                var slot = groupIndex[anchor] * groupIndex.Count + groupIndex[candidate];
+                if (compatible[slot] != 0) return compatible[slot] > 0;
+                var value = DominatesAccess(graph, anchor, candidate) &&
+                    !HasInvalidatingBoundaryOnPath(graph, invalidators, anchor, candidate);
+                compatible[slot] = value ? (sbyte)1 : (sbyte)-1;
+                return value;
             }
             while (remaining.Count >= minimumAccesses)
             {
@@ -142,11 +152,7 @@ public static class GuestMemoryRangeLowering
                 FunctionAccess[] bestMembers = [];
                 foreach (var anchor in remaining)
                 {
-                    var members = remaining.Where(candidate =>
-                            DominatesAccess(function, dominators, anchor, candidate) &&
-                            !HasInvalidatingBoundaryOnPath(
-                                function, reachability, cyclicBlocks,
-                                invalidators, anchor, candidate))
+                    var members = remaining.Where(candidate => Compatible(anchor, candidate))
                         .OrderBy(candidate => candidate.Access.Index)
                         .ToList();
                     // Keep a bounded affine window around the real anchor. A
@@ -248,15 +254,13 @@ public static class GuestMemoryRangeLowering
     }
 
     private static bool DominatesAccess(
-        IrFunction function,
-        IReadOnlyDictionary<string, HashSet<string>> dominators,
+        BlockGraph graph,
         FunctionAccess anchor,
         FunctionAccess consumer)
     {
         if (anchor.BlockIndex == consumer.BlockIndex)
             return anchor.Access.Index <= consumer.Access.Index;
-        return dominators[consumer.AccessBlockLabel(function)].Contains(
-            anchor.AccessBlockLabel(function));
+        return graph.Dominates(anchor.BlockIndex, consumer.BlockIndex);
     }
 
     private static bool HasOverlappingOppositeAccess(
@@ -273,27 +277,25 @@ public static class GuestMemoryRangeLowering
     }
 
     private static bool HasInvalidatingBoundaryOnPath(
-        IrFunction function,
-        IReadOnlyDictionary<string, HashSet<string>> reachability,
-        IReadOnlySet<string> cyclicBlocks,
+        BlockGraph graph,
         IReadOnlyList<InstructionSite> invalidators,
         FunctionAccess anchor,
         FunctionAccess consumer)
     {
-        var anchorLabel = anchor.AccessBlockLabel(function);
-        var consumerLabel = consumer.AccessBlockLabel(function);
+        var anchorBlock = anchor.BlockIndex;
+        var consumerBlock = consumer.BlockIndex;
+        var consumerReentered = anchorBlock != consumerBlock && graph.Cyclic[consumerBlock];
         foreach (var invalidator in invalidators)
         {
-            var boundaryLabel = function.Blocks[invalidator.BlockIndex].Label;
-            var afterAnchor = invalidator.BlockIndex == anchor.BlockIndex
+            var boundaryBlock = invalidator.BlockIndex;
+            var afterAnchor = boundaryBlock == anchorBlock
                 ? invalidator.InstructionIndex > anchor.Access.Index
-                : reachability[anchorLabel].Contains(boundaryLabel);
-            var beforeConsumer = invalidator.BlockIndex == consumer.BlockIndex
-                ? invalidator.InstructionIndex < consumer.Access.Index ||
-                  anchor.BlockIndex != consumer.BlockIndex &&
-                  cyclicBlocks.Contains(consumerLabel)
-                : reachability[boundaryLabel].Contains(consumerLabel);
-            if (afterAnchor && beforeConsumer) return true;
+                : graph.Reaches(anchorBlock, boundaryBlock);
+            if (!afterAnchor) continue;
+            var beforeConsumer = boundaryBlock == consumerBlock
+                ? invalidator.InstructionIndex < consumer.Access.Index || consumerReentered
+                : graph.Reaches(boundaryBlock, consumerBlock);
+            if (beforeConsumer) return true;
         }
         return false;
     }
@@ -315,54 +317,117 @@ public static class GuestMemoryRangeLowering
         return result;
     }
 
-    private static Dictionary<string, HashSet<string>> ComputeDominators(IrCfg cfg)
+    /// <summary>Dominator and reachability sets as bitsets over block ordinals.</summary>
+    private sealed class BlockGraph
     {
-        var comparer = StringComparer.OrdinalIgnoreCase;
-        var labels = cfg.Blocks.Keys.ToArray();
-        var all = labels.ToHashSet(comparer);
-        var result = labels.ToDictionary(label => label,
-            label => label.Equals(cfg.Entry, StringComparison.OrdinalIgnoreCase)
-                ? new HashSet<string>([label], comparer)
-                : new HashSet<string>(all, comparer), comparer);
-        bool changed;
-        do
-        {
-            changed = false;
-            foreach (var label in labels)
-            {
-                if (label.Equals(cfg.Entry, StringComparison.OrdinalIgnoreCase)) continue;
-                var predecessors = cfg.Predecessors(label);
-                var next = predecessors.Count == 0
-                    ? new HashSet<string>(comparer)
-                    : new HashSet<string>(result[predecessors[0]], comparer);
-                foreach (var predecessor in predecessors.Skip(1)) next.IntersectWith(result[predecessor]);
-                next.Add(label);
-                if (result[label].SetEquals(next)) continue;
-                result[label] = next;
-                changed = true;
-            }
-        } while (changed);
-        return result;
-    }
+        private readonly ulong[][] _dominators;
+        private readonly ulong[][] _reach;
 
-    private static Dictionary<string, HashSet<string>> ComputeReachability(IrCfg cfg)
-    {
-        var comparer = StringComparer.OrdinalIgnoreCase;
-        var result = new Dictionary<string, HashSet<string>>(comparer);
-        foreach (var start in cfg.Blocks.Keys)
+        private BlockGraph(ulong[][] dominators, ulong[][] reach, bool[] cyclic)
         {
-            var reachable = new HashSet<string>(comparer);
-            var pending = new Stack<string>();
-            pending.Push(start);
-            while (pending.Count != 0)
-            {
-                var current = pending.Pop();
-                if (!reachable.Add(current)) continue;
-                foreach (var successor in cfg.Successors(current)) pending.Push(successor);
-            }
-            result[start] = reachable;
+            _dominators = dominators;
+            _reach = reach;
+            Cyclic = cyclic;
         }
-        return result;
+
+        /// <summary>Blocks that can reach themselves again through a successor.</summary>
+        public bool[] Cyclic { get; }
+
+        public bool Dominates(int dominator, int block) =>
+            (_dominators[block][dominator >> 6] & (1UL << (dominator & 63))) != 0;
+
+        /// <summary>Reflexive: every block reaches itself.</summary>
+        public bool Reaches(int from, int to) =>
+            (_reach[from][to >> 6] & (1UL << (to & 63))) != 0;
+
+        public static BlockGraph Build(IrFunction function)
+        {
+            var cfg = IrCfg.Build(function);
+            var count = function.Blocks.Count;
+            var words = (count + 63) >> 6;
+            var index = new Dictionary<string, int>(count, StringComparer.OrdinalIgnoreCase);
+            for (var i = 0; i < count; i++) index.Add(function.Blocks[i].Label, i);
+            var successors = new int[count][];
+            var predecessors = new int[count][];
+            for (var i = 0; i < count; i++)
+            {
+                var label = function.Blocks[i].Label;
+                successors[i] = cfg.Successors(label).Select(successor => index[successor]).ToArray();
+                predecessors[i] = cfg.Predecessors(label).Select(predecessor => index[predecessor]).ToArray();
+            }
+
+            var reach = new ulong[count][];
+            var pending = new Stack<int>();
+            for (var start = 0; start < count; start++)
+            {
+                var row = new ulong[words];
+                pending.Push(start);
+                while (pending.Count != 0)
+                {
+                    var current = pending.Pop();
+                    ref var word = ref row[current >> 6];
+                    var bit = 1UL << (current & 63);
+                    if ((word & bit) != 0) continue;
+                    word |= bit;
+                    foreach (var successor in successors[current]) pending.Push(successor);
+                }
+                reach[start] = row;
+            }
+
+            var cyclic = new bool[count];
+            for (var i = 0; i < count; i++)
+            {
+                foreach (var successor in successors[i])
+                {
+                    if ((reach[successor][i >> 6] & (1UL << (i & 63))) == 0) continue;
+                    cyclic[i] = true;
+                    break;
+                }
+            }
+
+            var entry = index[cfg.Entry];
+            var dominators = new ulong[count][];
+            for (var i = 0; i < count; i++)
+            {
+                dominators[i] = new ulong[words];
+                if (i == entry)
+                {
+                    dominators[i][i >> 6] = 1UL << (i & 63);
+                    continue;
+                }
+                Array.Fill(dominators[i], ulong.MaxValue);
+                if ((count & 63) != 0) dominators[i][words - 1] = (1UL << (count & 63)) - 1;
+            }
+            var next = new ulong[words];
+            bool changed;
+            do
+            {
+                changed = false;
+                for (var i = 0; i < count; i++)
+                {
+                    if (i == entry) continue;
+                    var preds = predecessors[i];
+                    if (preds.Length == 0)
+                    {
+                        Array.Clear(next);
+                    }
+                    else
+                    {
+                        Array.Copy(dominators[preds[0]], next, words);
+                        for (var p = 1; p < preds.Length; p++)
+                        {
+                            var other = dominators[preds[p]];
+                            for (var w = 0; w < words; w++) next[w] &= other[w];
+                        }
+                    }
+                    next[i >> 6] |= 1UL << (i & 63);
+                    if (next.AsSpan().SequenceEqual(dominators[i])) continue;
+                    next.AsSpan().CopyTo(dominators[i]);
+                    changed = true;
+                }
+            } while (changed);
+            return new BlockGraph(dominators, reach, cyclic);
+        }
     }
 
     private static IrInstruction ToResolved(IrInstruction instruction, Access access, Plan plan)

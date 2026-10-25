@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
+using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Translator.Core.Analysis;
@@ -72,6 +73,9 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         /// <summary>Reusable backing list for <see cref="FrameTaint"/>; phase A is never reentrant.</summary>
         public readonly List<bool> FrameTaintBuffer = new();
 
+        /// <summary>Address per <see cref="FrameTaint"/> entry, innermost last.</summary>
+        public readonly List<uint> FrameAddresses = new();
+
         /// <summary>Addresses already known tainted, shared by every phase-A worker of the current Prewarm
         /// call and reset each invocation. Without this memoization an unpublishable address gets
         /// re-analyzed, subtree and all, by every caller that reaches it, which compounds combinatorially
@@ -95,14 +99,21 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
             return false;
         }
 
+        var state = _threadState.Value!;
+        var frameTaint = state.FrameTaint;
+        if (frameTaint is not null && state.FrameAddresses.Count > 0 && state.FrameAddresses[^1] == address)
+        {
+            // Direct self-recursion sees what a sequential run would, even once another thread has published it.
+            abi = GuestFunctionAbi.Empty;
+            return false;
+        }
+
         if (_cache.TryGetValue(address, out abi!))
         {
             return true;
         }
 
-        var state = _threadState.Value!;
         var inProgress = state.InProgress;
-        var frameTaint = state.FrameTaint;
 
         if (frameTaint is not null && state.TaintedAddresses!.ContainsKey(address))
         {
@@ -151,6 +162,7 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
 
         // Prewarm phase A: track taint for this frame and publish only if it stayed clean.
         frameTaint.Add(false);
+        state.FrameAddresses.Add(address);
         var frameIndex = frameTaint.Count - 1;
         bool succeeded;
         bool tainted;
@@ -172,6 +184,7 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         finally
         {
             inProgress.Remove(address);
+            state.FrameAddresses.RemoveAt(frameIndex);
             tainted = frameTaint[frameIndex];
             frameTaint.RemoveAt(frameIndex);
             if (tainted && frameIndex > 0)
@@ -274,6 +287,7 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         var state = _threadState.Value!;
         var frames = state.FrameTaintBuffer;
         frames.Clear();
+        state.FrameAddresses.Clear();
         state.TaintedAddresses = taintedAddresses;
         state.FrameTaint = frames;
         try
@@ -418,82 +432,102 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
     private HashSet<string> InferArgumentRegisters(IrFunction function, IrCfg cfg)
     {
         var comparer = StringComparer.OrdinalIgnoreCase;
-        var blockUses = new Dictionary<string, HashSet<string>>(comparer);
-        var blockDefs = new Dictionary<string, HashSet<string>>(comparer);
-
-        foreach (var block in function.Blocks)
+        // Interned register ids so the liveness fixpoint runs over bitsets.
+        var ids = new Dictionary<string, int>(comparer);
+        var names = new List<string>();
+        int Id(string name)
         {
-            var uses = new HashSet<string>(comparer);
-            var defs = new HashSet<string>(comparer);
+            if (!ids.TryGetValue(name, out var id))
+            {
+                id = names.Count;
+                ids.Add(name, id);
+                names.Add(name);
+            }
+            return id;
+        }
+
+        var blockCount = function.Blocks.Count;
+        var useLists = new List<int>[blockCount];
+        var defLists = new List<int>[blockCount];
+        var labelIndex = new Dictionary<string, int>(blockCount, comparer);
+        for (var b = 0; b < blockCount; b++)
+        {
+            var block = function.Blocks[b];
+            var uses = new List<int>();
+            var defs = new List<int>();
+            var defined = new HashSet<int>();
             foreach (var instruction in block.Instructions)
             {
                 foreach (var use in InstructionRegisterUsesForArgumentInference(instruction))
                 {
-                    if (!defs.Contains(use))
-                    {
-                        uses.Add(use);
-                    }
+                    var id = Id(use);
+                    if (!defined.Contains(id))
+                        uses.Add(id);
                 }
 
                 foreach (var def in InstructionRegisterDefsForArgumentInference(instruction))
                 {
-                    defs.Add(def);
+                    var id = Id(def);
+                    if (defined.Add(id))
+                        defs.Add(id);
                 }
             }
-
-            blockUses[block.Label] = uses;
-            blockDefs[block.Label] = defs;
+            useLists[b] = uses;
+            defLists[b] = defs;
         }
 
-        var liveIn = function.Blocks.ToDictionary(
-            static block => block.Label,
-            _ => new HashSet<string>(comparer),
-            comparer);
-        var liveOut = function.Blocks.ToDictionary(
-            static block => block.Label,
-            _ => new HashSet<string>(comparer),
-            comparer);
+        for (var b = 0; b < blockCount; b++)
+            labelIndex.Add(function.Blocks[b].Label, b);
 
+        var words = Math.Max(1, (names.Count + 63) >> 6);
+        var useBits = new ulong[blockCount * words];
+        var keepBits = new ulong[blockCount * words];
+        Array.Fill(keepBits, ulong.MaxValue);
+        var successors = new int[blockCount][];
+        for (var b = 0; b < blockCount; b++)
+        {
+            foreach (var id in useLists[b]) useBits[b * words + (id >> 6)] |= 1UL << (id & 63);
+            foreach (var id in defLists[b]) keepBits[b * words + (id >> 6)] &= ~(1UL << (id & 63));
+            var targets = new List<int>();
+            foreach (var successor in cfg.Successors(function.Blocks[b].Label))
+                if (labelIndex.TryGetValue(successor, out var index))
+                    targets.Add(index);
+            successors[b] = targets.ToArray();
+        }
+
+        var liveIn = new ulong[blockCount * words];
         var changed = true;
         while (changed)
         {
             changed = false;
-            for (var blockIndex = function.Blocks.Count - 1; blockIndex >= 0; blockIndex--)
+            for (var b = blockCount - 1; b >= 0; b--)
             {
-                var block = function.Blocks[blockIndex];
-                var newOut = new HashSet<string>(comparer);
-                foreach (var successor in cfg.Successors(block.Label))
+                var row = b * words;
+                for (var w = 0; w < words; w++)
                 {
-                    if (liveIn.TryGetValue(successor, out var successorLiveIn))
+                    ulong liveOut = 0;
+                    foreach (var successor in successors[b])
+                        liveOut |= liveIn[successor * words + w];
+                    var value = useBits[row + w] | (liveOut & keepBits[row + w]);
+                    if (value != liveIn[row + w])
                     {
-                        newOut.UnionWith(successorLiveIn);
+                        liveIn[row + w] = value;
+                        changed = true;
                     }
-                }
-
-                var newIn = new HashSet<string>(blockUses[block.Label], comparer);
-                var outMinusDefs = new HashSet<string>(newOut, comparer);
-                outMinusDefs.ExceptWith(blockDefs[block.Label]);
-                newIn.UnionWith(outMinusDefs);
-
-                if (!newOut.SetEquals(liveOut[block.Label]))
-                {
-                    liveOut[block.Label] = newOut;
-                    changed = true;
-                }
-
-                if (!newIn.SetEquals(liveIn[block.Label]))
-                {
-                    liveIn[block.Label] = newIn;
-                    changed = true;
                 }
             }
         }
 
-        return liveIn.TryGetValue(function.EntryLabel, out var entryLive)
-            ? entryLive
-                .Where(IsGprOrFprRegister)
-                .ToHashSet(comparer)
-            : new HashSet<string>(comparer);
+        var result = new HashSet<string>(comparer);
+        if (labelIndex.TryGetValue(function.EntryLabel, out var entry))
+        {
+            for (var id = 0; id < names.Count; id++)
+            {
+                if ((liveIn[entry * words + (id >> 6)] & (1UL << (id & 63))) != 0 && IsGprOrFprRegister(names[id]))
+                    result.Add(names[id]);
+            }
+        }
+        return result;
     }
 
     private IEnumerable<string> InstructionRegisterUsesForArgumentInference(IrInstruction instruction)
@@ -755,45 +789,74 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
     private HashSet<string> InferScalarFloatArguments(IrFunction function, IrCfg cfg)
     {
         var scalarArgs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var comparer = StringComparer.OrdinalIgnoreCase;
-        var inMap = function.Blocks.ToDictionary(
-            static b => b.Label,
-            b => b.Label.Equals(function.EntryLabel, StringComparison.OrdinalIgnoreCase)
-                ? CreateInitialArgumentAliasState()
-                : new Dictionary<string, HashSet<string>>(comparer),
-            comparer);
-        var outMap = function.Blocks.ToDictionary(
-            static b => b.Label,
-            b => b.Label.Equals(function.EntryLabel, StringComparison.OrdinalIgnoreCase)
-                ? CreateInitialArgumentAliasState()
-                : new Dictionary<string, HashSet<string>>(comparer),
-            comparer);
+        var keys = new AliasKeys(function);
+        var blockCount = function.Blocks.Count;
+        var blockIndex = new Dictionary<string, int>(blockCount, StringComparer.OrdinalIgnoreCase);
+        for (var b = 0; b < blockCount; b++)
+            blockIndex[function.Blocks[b].Label] = b;
+        var predecessors = new int[blockCount][];
+        var isEntry = new bool[blockCount];
+        for (var b = 0; b < blockCount; b++)
+        {
+            var block = function.Blocks[b];
+            isEntry[b] = block.Label.Equals(function.EntryLabel, StringComparison.OrdinalIgnoreCase);
+            var list = new List<int>();
+            foreach (var predecessor in cfg.Predecessors(block.Label))
+                if (blockIndex.TryGetValue(predecessor, out var index))
+                    list.Add(index);
+            predecessors[b] = list.ToArray();
+        }
+
+        // Per alias key: -1 when absent, otherwise the mask of ABI float argument sources.
+        var initial = keys.InitialState();
+        var inMap = new int[blockCount][];
+        var outMap = new int[blockCount][];
+        for (var b = 0; b < blockCount; b++)
+        {
+            inMap[b] = isEntry[b] ? (int[])initial.Clone() : keys.EmptyState();
+            outMap[b] = isEntry[b] ? (int[])initial.Clone() : keys.EmptyState();
+        }
 
         var changed = true;
         while (changed)
         {
             changed = false;
-            foreach (var block in function.Blocks)
+            for (var b = 0; b < blockCount; b++)
             {
-                var newIn = block.Label.Equals(function.EntryLabel, StringComparison.OrdinalIgnoreCase)
-                    ? CreateInitialArgumentAliasState()
-                    : UnionPredecessorStates(cfg.Predecessors(block.Label), outMap);
-
-                var newOut = CopyAliasState(newIn);
-                foreach (var ins in block.Instructions)
+                int[] newIn;
+                if (isEntry[b])
                 {
-                    ProcessScalarArgumentInstruction(ins, newOut, scalarArgs);
+                    newIn = (int[])initial.Clone();
+                }
+                else
+                {
+                    newIn = keys.EmptyState();
+                    foreach (var predecessor in predecessors[b])
+                    {
+                        var predState = outMap[predecessor];
+                        for (var key = 0; key < newIn.Length; key++)
+                        {
+                            if (predState[key] < 0) continue;
+                            newIn[key] = newIn[key] < 0 ? predState[key] : newIn[key] | predState[key];
+                        }
+                    }
                 }
 
-                if (!AliasStatesEqual(newIn, inMap[block.Label]))
+                var newOut = (int[])newIn.Clone();
+                foreach (var ins in function.Blocks[b].Instructions)
                 {
-                    inMap[block.Label] = newIn;
+                    ProcessScalarArgumentInstruction(ins, keys, newOut, scalarArgs);
+                }
+
+                if (!newIn.AsSpan().SequenceEqual(inMap[b]))
+                {
+                    inMap[b] = newIn;
                     changed = true;
                 }
 
-                if (!AliasStatesEqual(newOut, outMap[block.Label]))
+                if (!newOut.AsSpan().SequenceEqual(outMap[b]))
                 {
-                    outMap[block.Label] = newOut;
+                    outMap[b] = newOut;
                     changed = true;
                 }
             }
@@ -802,63 +865,153 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         return scalarArgs;
     }
 
+    /// <summary>Interned float register names the scalar-argument alias analysis can track.
+    /// Ids 0..12 are the ABI float argument registers, so a source set is a 13-bit mask.</summary>
+    private sealed class AliasKeys
+    {
+        private readonly Dictionary<string, int> _ids = new(StringComparer.OrdinalIgnoreCase);
+
+        public AliasKeys(IrFunction function)
+        {
+            foreach (var register in AbiFloatArgumentRegisters)
+                _ids.Add(register, _ids.Count);
+            foreach (var block in function.Blocks)
+            {
+                foreach (var instruction in block.Instructions)
+                {
+                    switch (instruction)
+                    {
+                        case IrAssign assign:
+                            AddName(assign.Destination);
+                            AddValue(assign.Value);
+                            break;
+                        case IrBinary binary:
+                            AddValue(binary.Left);
+                            AddValue(binary.Right);
+                            AddName(binary.Destination);
+                            break;
+                        case IrLoad load:
+                            AddName(load.Destination);
+                            break;
+                        case IrStore store:
+                            AddValue(store.Source);
+                            break;
+                        case IrCall call:
+                            foreach (var argument in call.Arguments) AddValue(argument);
+                            AddName(call.Destination);
+                            break;
+                        case IrIndirectCall indirectCall:
+                            foreach (var argument in indirectCall.Arguments) AddValue(argument);
+                            AddName(indirectCall.Destination);
+                            break;
+                        case IrSetCrField setCr:
+                            AddValue(setCr.Left);
+                            AddValue(setCr.Right);
+                            break;
+                        case IrPhi phi:
+                            AddName(phi.Destination);
+                            break;
+                    }
+                }
+            }
+        }
+
+        public int Count => _ids.Count;
+
+        public int[] EmptyState()
+        {
+            var state = new int[_ids.Count];
+            Array.Fill(state, -1);
+            return state;
+        }
+
+        public int[] InitialState()
+        {
+            var state = EmptyState();
+            for (var i = 0; i < AbiFloatArgumentRegisters.Length; i++)
+                state[i] = 1 << i;
+            return state;
+        }
+
+        public bool TryGet(string baseName, out int id) => _ids.TryGetValue(baseName, out id);
+
+        private void AddValue(IrValue? value)
+        {
+            if (value is { Kind: "register", RegisterName: { } name })
+                AddName(name);
+        }
+
+        private void AddName(string? name)
+        {
+            if (string.IsNullOrEmpty(name)) return;
+            var baseName = Base(name);
+            if (IsFloatRegister(baseName))
+                _ids.TryAdd(baseName, _ids.Count);
+        }
+    }
+
     private void ProcessScalarArgumentInstruction(
         IrInstruction ins,
-        Dictionary<string, HashSet<string>> aliases,
+        AliasKeys keys,
+        int[] aliases,
         HashSet<string> scalarArgs)
     {
         switch (ins)
         {
             case IrAssign assign:
-                PropagateFloatAlias(assign.Destination, assign.Value, aliases);
+                PropagateFloatAlias(assign.Destination, assign.Value, keys, aliases);
                 break;
 
             case IrBinary bin:
-                MarkScalarUse(bin.Left, aliases, scalarArgs);
-                MarkScalarUse(bin.Right, aliases, scalarArgs);
-                KillFloatAlias(bin.Destination, aliases);
+                MarkScalarUse(bin.Left, keys, aliases, scalarArgs);
+                MarkScalarUse(bin.Right, keys, aliases, scalarArgs);
+                KillFloatAlias(bin.Destination, keys, aliases);
                 break;
 
             case IrLoad load:
-                KillFloatAlias(load.Destination, aliases);
+                KillFloatAlias(load.Destination, keys, aliases);
                 break;
 
             case IrStore store:
                 if (store.SizeBytes is 4 or 8)
                 {
-                    MarkScalarUse(store.Source, aliases, scalarArgs);
+                    MarkScalarUse(store.Source, keys, aliases, scalarArgs);
                 }
                 break;
 
             case IrCall call:
-                ProcessScalarArgumentCall(call.Target, call.Arguments, aliases, scalarArgs);
-                KillFloatAlias(call.Destination, aliases);
+                ProcessScalarArgumentCall(call.Target, call.Arguments, keys, aliases, scalarArgs);
+                KillFloatAlias(call.Destination, keys, aliases);
                 break;
 
             case IrIndirectCall icall:
                 foreach (var arg in icall.Arguments)
                 {
-                    MarkScalarUse(arg, aliases, scalarArgs);
+                    MarkScalarUse(arg, keys, aliases, scalarArgs);
                 }
-                aliases.Remove("f1");
-                KillFloatAlias(icall.Destination, aliases);
+                aliases[F1AliasKey] = -1;
+                KillFloatAlias(icall.Destination, keys, aliases);
                 break;
 
             case IrSetCrField setCr:
-                MarkScalarUse(setCr.Left, aliases, scalarArgs);
-                MarkScalarUse(setCr.Right, aliases, scalarArgs);
+                MarkScalarUse(setCr.Left, keys, aliases, scalarArgs);
+                MarkScalarUse(setCr.Right, keys, aliases, scalarArgs);
                 break;
 
             case IrPhi phi:
-                KillFloatAlias(phi.Destination, aliases);
+                KillFloatAlias(phi.Destination, keys, aliases);
                 break;
         }
     }
 
+    /// <summary>Alias key of f1, the first ABI float argument register.</summary>
+    private const int F1AliasKey = 0;
+
     private void ProcessScalarArgumentCall(
         string target,
         IReadOnlyList<IrValue> arguments,
-        Dictionary<string, HashSet<string>> aliases,
+        AliasKeys keys,
+        int[] aliases,
         HashSet<string> scalarArgs)
     {
         if (IsGuestCallTarget(target))
@@ -873,14 +1026,14 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
                         arg.RegisterName != null &&
                         abi.HasScalarFloatArgument(Base(arg.RegisterName)))
                     {
-                        MarkScalarUse(arg, aliases, scalarArgs);
+                        MarkScalarUse(arg, keys, aliases, scalarArgs);
                     }
                 }
             }
 
             if (writesFloatReturnRegister)
             {
-                aliases.Remove("f1");
+                aliases[F1AliasKey] = -1;
             }
             return;
         }
@@ -892,7 +1045,7 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
 
         foreach (var arg in arguments)
         {
-            MarkScalarUse(arg, aliases, scalarArgs);
+            MarkScalarUse(arg, keys, aliases, scalarArgs);
         }
     }
 
@@ -1083,7 +1236,8 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
 
     private static void MarkScalarUse(
         IrValue value,
-        IReadOnlyDictionary<string, HashSet<string>> aliases,
+        AliasKeys keys,
+        int[] aliases,
         HashSet<string> scalarArgs)
     {
         if (value.Kind != "register" || value.RegisterName == null)
@@ -1092,24 +1246,22 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         }
 
         var baseName = Base(value.RegisterName);
-        if (!IsFloatRegister(baseName) || !aliases.TryGetValue(baseName, out var sources))
+        if (!IsFloatRegister(baseName) || !keys.TryGet(baseName, out var key) || aliases[key] < 0)
         {
             return;
         }
 
-        foreach (var source in sources)
+        for (var sources = aliases[key]; sources != 0; sources &= sources - 1)
         {
-            if (AbiFloatArgumentSet.Contains(source))
-            {
-                scalarArgs.Add(source);
-            }
+            scalarArgs.Add(AbiFloatArgumentRegisters[BitOperations.TrailingZeroCount(sources)]);
         }
     }
 
     private static void PropagateFloatAlias(
         string destination,
         IrValue value,
-        Dictionary<string, HashSet<string>> aliases)
+        AliasKeys keys,
+        int[] aliases)
     {
         var destBase = Base(destination);
         if (!IsFloatRegister(destBase))
@@ -1117,24 +1269,27 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
             return;
         }
 
+        keys.TryGet(destBase, out var destKey);
         if (value.Kind == "register" &&
             value.RegisterName != null &&
             IsFloatRegister(Base(value.RegisterName)) &&
-            aliases.TryGetValue(Base(value.RegisterName), out var srcAliases))
+            keys.TryGet(Base(value.RegisterName), out var sourceKey) &&
+            aliases[sourceKey] >= 0)
         {
-            aliases[destBase] = new HashSet<string>(srcAliases, StringComparer.OrdinalIgnoreCase);
+            aliases[destKey] = aliases[sourceKey];
         }
         else
         {
-            aliases.Remove(destBase);
+            aliases[destKey] = -1;
         }
     }
 
-    private static void KillFloatAlias(string destination, Dictionary<string, HashSet<string>> aliases)
+    private static void KillFloatAlias(string destination, AliasKeys keys, int[] aliases)
     {
-        if (!string.IsNullOrWhiteSpace(destination) && IsFloatRegister(Base(destination)))
+        if (!string.IsNullOrWhiteSpace(destination) && IsFloatRegister(Base(destination)) &&
+            keys.TryGet(Base(destination), out var key))
         {
-            aliases.Remove(Base(destination));
+            aliases[key] = -1;
         }
     }
 
@@ -1144,70 +1299,6 @@ public sealed class InferredGuestFunctionAbiProvider : IGuestFunctionAbiProvider
         {
             pairedSet.Remove(Base(destination));
         }
-    }
-
-    private static Dictionary<string, HashSet<string>> CreateInitialArgumentAliasState()
-    {
-        return AbiFloatArgumentRegisters.ToDictionary(
-            static r => r,
-            static r => new HashSet<string>(StringComparer.OrdinalIgnoreCase) { r },
-            StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static Dictionary<string, HashSet<string>> UnionPredecessorStates(
-        IReadOnlyList<string> predecessors,
-        IReadOnlyDictionary<string, Dictionary<string, HashSet<string>>> outMap)
-    {
-        var result = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var pred in predecessors)
-        {
-            if (!outMap.TryGetValue(pred, out var predState))
-            {
-                continue;
-            }
-
-            foreach (var (register, sources) in predState)
-            {
-                if (!result.TryGetValue(register, out var destSources))
-                {
-                    destSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    result[register] = destSources;
-                }
-
-                destSources.UnionWith(sources);
-            }
-        }
-
-        return result;
-    }
-
-    private static Dictionary<string, HashSet<string>> CopyAliasState(
-        IReadOnlyDictionary<string, HashSet<string>> state)
-    {
-        return state.ToDictionary(
-            static kv => kv.Key,
-            static kv => new HashSet<string>(kv.Value, StringComparer.OrdinalIgnoreCase),
-            StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static bool AliasStatesEqual(
-        IReadOnlyDictionary<string, HashSet<string>> left,
-        IReadOnlyDictionary<string, HashSet<string>> right)
-    {
-        if (left.Count != right.Count)
-        {
-            return false;
-        }
-
-        foreach (var (key, leftSet) in left)
-        {
-            if (!right.TryGetValue(key, out var rightSet) || !leftSet.SetEquals(rightSet))
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private static bool IsGuestCallTarget(string target)

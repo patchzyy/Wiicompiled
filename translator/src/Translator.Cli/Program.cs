@@ -139,6 +139,15 @@ TranslationOptions WithProjectFrontEndPolicy(
         LeafInliningBlockedTargets = leafInliningBlockedTargets.Value
     };
 string? translateModInputCacheDirectory = null;
+// translate-mod reads the same (large) base metadata from several places.
+var baseMetadataCache = new Dictionary<string, BaseTranslationOutputMetadata>(StringComparer.OrdinalIgnoreCase);
+BaseTranslationOutputMetadata ReadBaseMetadataCached(string path)
+{
+    var fullPath = Path.GetFullPath(path);
+    if (!baseMetadataCache.TryGetValue(fullPath, out var metadata))
+        baseMetadataCache[fullPath] = metadata = BaseTranslationOutputMetadataFile.Read(fullPath);
+    return metadata;
+}
 string? translateModPublishedOutputDirectory = null;
 List<AddressRange>? _executableRanges = null;
 // Callback discovery now runs on the discovery worker pool, so the range cache
@@ -472,10 +481,6 @@ int RunTranslateRecursive(string[] argsTail)
     var pruneStale = HasFlag(argsTail, "--prune-stale");
     var threadsOption = OptionValue(argsTail, "--threads");
     var maxThreads = threadsOption != null ? Math.Max(1, ParseInt(threadsOption)) : Math.Max(1, Environment.ProcessorCount);
-    // Discovery batches: cheap front-end-only work items, so the batch is sized
-    // generously to keep queue overhead off the hot path. Deliberately larger
-    // than the mod emission wave below, which carries whole C++ emissions.
-    var batchSize = Math.Max(64, maxThreads * 8);
     Console.WriteLine($"[translator] Using up to {maxThreads} worker thread(s).");
 
     // Log start time
@@ -493,7 +498,6 @@ int RunTranslateRecursive(string[] argsTail)
         // callees are decoded separately and never appear here). Feeds the
         // fall-through interior-entry detection for the base manifest.
         var translatedFlowCoverage = new Dictionary<uint, uint[]>();
-        var gqrUnknownEntryRoots = new HashSet<uint> { startAddr };
         var translatedFunctionEnds = new Dictionary<uint, uint>();
         // Every map entry is a function start, so the whole boundary set is known
         // before the first decode instead of accumulating as discovery proceeds.
@@ -565,13 +569,15 @@ int RunTranslateRecursive(string[] argsTail)
 
         void ProcessQueue(bool speculative = false)
         {
+            // Each round decodes the whole frontier: the output depends only on the final
+            // boundary set (boundary repair re-decodes stale owners), never on batching.
             while (queue.Count > 0)
             {
-                var batch = new List<(uint Address, int Depth, string Name)>(batchSize);
+                var batch = new List<(uint Address, int Depth, string Name)>(queue.Count);
                 var batchAddresses = new HashSet<uint>();
                 var candidates = QueueBatch.Dequeue(
                     queue,
-                    batchSize,
+                    queue.Count,
                     next => ShouldSkip(next) || !batchAddresses.Add(next.addr));
                 foreach (var next in candidates)
                 {
@@ -598,23 +604,19 @@ int RunTranslateRecursive(string[] argsTail)
             }
         }
 
-        // Batches drain one at a time so a callee of a prior speculative entry arrives with a known
-        // caller/GQR state instead of as another unknown root. Everything here is speculative, so a
-        // "call" decoded from an unreached map entry isn't proven code; treat failures as soft, not fatal.
+        // Everything here is speculative, so a "call" decoded from an unreached map entry
+        // isn't proven code; treat failures as soft, not fatal.
         void ProcessSpeculativeSeeds()
         {
             while (speculativeSeeds.Count > 0)
             {
-                var batch = new List<(uint Address, int Depth, string Name)>(batchSize);
+                var batch = new List<(uint Address, int Depth, string Name)>(speculativeSeeds.Count);
                 var candidates = QueueBatch.Dequeue(
                     speculativeSeeds,
-                    batchSize,
+                    speculativeSeeds.Count,
                     address => translated.Contains(address) || !visited.Add(address));
                 foreach (var address in candidates)
                 {
-                    // Nothing calls this from the translated set, so its entry
-                    // GQR state is unconstrained.
-                    gqrUnknownEntryRoots.Add(address);
                     batch.Add((address, 0, ResolveFunctionName(address, preferred: null, $"func_{address:X8}")));
                 }
 
@@ -652,22 +654,42 @@ int RunTranslateRecursive(string[] argsTail)
         // decoded out of one - is dropped with a counted warning.
         void TranslateBatch(List<(uint Address, int Depth, string Name)> batch, bool speculative = false)
         {
-            var results = new FunctionDiscoveryResult?[batch.Count];
-            IndexedParallel.For(batch.Count, parallelOptions, i => results[i] = Attempt(batch[i], speculative));
+            var metrics = new TranslationMetrics?[batch.Count];
+            var entryPoints = new uint[batch.Count];
+            var discoveryTargets = new uint[batch.Count][];
+            var swallowedSiblingEntries = new uint[batch.Count][];
+            var summaries = new GqrFunctionSummary[batch.Count];
+            var functionEnds = new uint[batch.Count];
+            var flowCoverage = new uint[batch.Count][];
+
+            // Everything kept from a decode is derived in the decode's own pass, so the full
+            // result is never retained; the few results a newly revealed boundary invalidates
+            // are simply decoded again. Commits stay serial and in batch order.
+            void Decode(int i, bool findSwallowedSiblings)
+            {
+                var result = Attempt(batch[i], speculative);
+                metrics[i] = result?.Metrics;
+                if (result is null)
+                {
+                    canonicalIrStore.Remove(batch[i].Address);
+                    return;
+                }
+                entryPoints[i] = result.EntryPoint;
+                if (findSwallowedSiblings)
+                    swallowedSiblingEntries[i] = DiscoverSwallowedSiblingEntries(result).ToArray();
+                discoveryTargets[i] = DiscoverDiscoveryTranslationTargets(result).ToArray();
+                summaries[i] = GqrFunctionSummary.Create(result.Ssa.Function);
+                canonicalIrStore.Put(batch[i].Address, result.Ssa.Function);
+                functionEnds[i] = GetFunctionInstructionEnd(result);
+                flowCoverage[i] = CoalesceInstructionRanges(result);
+            }
+
+            IndexedParallel.For(batch.Count, parallelOptions, i => Decode(i, findSwallowedSiblings: true));
 
             // Re-run only translations that swallowed a newly revealed sibling entry, or direct
-            // branches could bypass a mod overlay registered there. Both scans are pure per-result
-            // so they run on the same worker pool; the dedup filter below keeps first sighting.
-            var discoveryTargets = new uint[results.Length][];
-            var swallowedSiblingEntries = new uint[results.Length][];
-            IndexedParallel.For(results.Length, parallelOptions, i =>
-            {
-                if (results[i] is not { } result) return;
-                discoveryTargets[i] = DiscoverDiscoveryTranslationTargets(result).ToArray();
-                swallowedSiblingEntries[i] = DiscoverSwallowedSiblingEntries(result).ToArray();
-            });
-            var newlyKnownEntries = Enumerable.Range(0, results.Length)
-                .Where(i => results[i] is not null)
+            // branches could bypass a mod overlay registered there. The dedup filter keeps first sighting.
+            var newlyKnownEntries = Enumerable.Range(0, batch.Count)
+                .Where(i => metrics[i] is not null)
                 .SelectMany(i => discoveryTargets[i].Concat(swallowedSiblingEntries[i]))
                 .Where(knownBaseFunctionEntryPoints.Add)
                 .ToHashSet();
@@ -675,47 +697,37 @@ int RunTranslateRecursive(string[] argsTail)
             {
                 // The boundary set is final for this batch once the filter above has run,
                 // so the affected re-translations are independent of one another.
-                var affected = new List<int>();
-                for (var i = 0; i < results.Length; i++)
-                {
-                    if (results[i] is not { } result) continue;
-                    var entry = result.EntryPoint;
-                    if (result.Instructions.Any(instruction =>
-                            instruction.Address != entry && newlyKnownEntries.Contains(instruction.Address)))
-                    {
-                        affected.Add(i);
-                    }
-                }
-
-                IndexedParallel.For(affected.Count, parallelOptions, k =>
-                {
-                    var i = affected[k];
-                    results[i] = Attempt(batch[i], speculative);
-                    if (results[i] is { } result)
-                    {
-                        discoveryTargets[i] = DiscoverDiscoveryTranslationTargets(result).ToArray();
-                    }
-                });
+                var sortedNewEntries = newlyKnownEntries.Order().ToArray();
+                var affected = Enumerable.Range(0, batch.Count)
+                    .Where(i => metrics[i] is not null &&
+                        CoversInteriorInstruction(flowCoverage[i], entryPoints[i], sortedNewEntries))
+                    .ToArray();
+                IndexedParallel.For(affected.Length, parallelOptions, k => Decode(affected[k], findSwallowedSiblings: false));
             }
 
-            // The compact GQR projection is a pure walk of the final SSA graph and the
-            // canonical store serializes its own dictionary, so both move off the serial
-            // commit. Every address in a batch is distinct and untranslated, so the store
-            // sees one Put per key regardless of completion order.
-            var summaries = new GqrFunctionSummary[results.Length];
-            IndexedParallel.For(results.Length, parallelOptions, i =>
-            {
-                if (results[i] is not { } result) return;
-                summaries[i] = GqrFunctionSummary.Create(result.Ssa.Function);
-                canonicalIrStore.Put(batch[i].Address, result.Ssa.Function);
-            });
-
-            // Update state sequentially (thread-safe)
             for (var i = 0; i < batch.Count; i++)
             {
-                if (results[i] is not { } result) continue;
-                CommitResult(batch[i], result, discoveryTargets[i], summaries[i]);
+                if (metrics[i] is not { } functionMetrics) continue;
+                CommitResult(batch[i], functionMetrics, discoveryTargets[i], summaries[i], functionEnds[i], flowCoverage[i]);
             }
+        }
+
+        // True when an instruction of the coalesced [start, end) coverage, other than the
+        // entry, starts at one of the sorted addresses.
+        static bool CoversInteriorInstruction(uint[] coverage, uint entry, uint[] sortedAddresses)
+        {
+            for (var r = 0; r < coverage.Length; r += 2)
+            {
+                var index = Array.BinarySearch(sortedAddresses, coverage[r]);
+                for (index = index >= 0 ? index : ~index;
+                     index < sortedAddresses.Length && sortedAddresses[index] < coverage[r + 1];
+                     index++)
+                {
+                    var address = sortedAddresses[index];
+                    if (address != entry && (address & 3u) == 0) return true;
+                }
+            }
+            return false;
         }
 
         FunctionDiscoveryResult? Attempt((uint Address, int Depth, string Name) work, bool speculative)
@@ -773,16 +785,18 @@ int RunTranslateRecursive(string[] argsTail)
 
         void CommitResult(
             (uint Address, int Depth, string Name) work,
-            FunctionDiscoveryResult result,
+            TranslationMetrics functionMetrics,
             IReadOnlyList<uint> discoveryTargets,
-            GqrFunctionSummary summary)
+            GqrFunctionSummary summary,
+            uint functionEnd,
+            uint[] flowCoverage)
         {
             // File writing moved to parallel section above
-            totals.Add(result.Metrics);
+            totals.Add(functionMetrics);
             count++;
             translated.Add(work.Address);
-            translatedFunctionEnds[work.Address] = GetFunctionInstructionEnd(result);
-            translatedFlowCoverage[work.Address] = CoalesceInstructionRanges(result);
+            translatedFunctionEnds[work.Address] = functionEnd;
+            translatedFlowCoverage[work.Address] = flowCoverage;
 
             foreach (var target in discoveryTargets)
             {
@@ -821,6 +835,7 @@ int RunTranslateRecursive(string[] argsTail)
         // list that existed to paper over the addresses they still missed.
         ProcessQueue();
         var walkReachable = count;
+        var walkTranslated = translated.ToHashSet();
         ProcessSpeculativeSeeds();
         if (functionMap is not null)
         {
@@ -864,26 +879,31 @@ int RunTranslateRecursive(string[] argsTail)
             if (boundaryRepairAddresses.Length != 0)
             {
                 Console.WriteLine($"[translator] Reanalyzing {boundaryRepairAddresses.Length:N0} function(s) affected by later-discovered boundaries...");
-                var repaired = new FunctionDiscoveryResult[boundaryRepairAddresses.Length];
+                var repairedSummaries = new GqrFunctionSummary[boundaryRepairAddresses.Length];
+                var repairedEnds = new uint[boundaryRepairAddresses.Length];
+                var repairedCoverage = new uint[boundaryRepairAddresses.Length][];
                 IndexedParallel.For(boundaryRepairAddresses.Length, parallelOptions, i =>
                 {
                     var address = boundaryRepairAddresses[i];
                     var work = baseWork[address];
-                    repaired[i] = translator.Value.Discover(address, WithProjectFrontEndPolicy(new TranslationOptions(
+                    var repaired = translator.Value.Discover(address, WithProjectFrontEndPolicy(new TranslationOptions(
                         work.Name,
                         MaxInstructions: work.MaxInstructions,
                         MaxBytes: work.MaxBytes,
                         AllowUnsupportedInstructions: work.AllowUnsupported,
                         KnownFunctionEntryPoints: knownBaseFunctionEntryPoints),
                         RequireProject().Translation));
+                    repairedSummaries[i] = GqrFunctionSummary.Create(repaired.Ssa.Function);
+                    canonicalIrStore.Put(address, repaired.Ssa.Function);
+                    repairedEnds[i] = GetFunctionInstructionEnd(repaired);
+                    repairedCoverage[i] = CoalesceInstructionRanges(repaired);
                 });
                 for (var i = 0; i < boundaryRepairAddresses.Length; i++)
                 {
                     var address = boundaryRepairAddresses[i];
-                    baseSummaries[address] = GqrFunctionSummary.Create(repaired[i].Ssa.Function);
-                    canonicalIrStore.Put(address, repaired[i].Ssa.Function);
-                    translatedFunctionEnds[address] = GetFunctionInstructionEnd(repaired[i]);
-                    translatedFlowCoverage[address] = CoalesceInstructionRanges(repaired[i]);
+                    baseSummaries[address] = repairedSummaries[i];
+                    translatedFunctionEnds[address] = repairedEnds[i];
+                    translatedFlowCoverage[address] = repairedCoverage[i];
                 }
             }
 
@@ -906,6 +926,12 @@ int RunTranslateRecursive(string[] argsTail)
             }
 
             Console.WriteLine("[translator] Computing interprocedural GQR constants and callee write summaries...");
+            // Map entries the walk never reached have an unconstrained entry GQR state unless some
+            // translated function calls them directly.
+            var gqrUnknownEntryRoots = GqrInterproceduralAnalysis.SelectUnknownEntryRoots(
+                baseSummaries,
+                [startAddr],
+                (functionMap?.Addresses ?? Array.Empty<uint>()).Where(address => !walkTranslated.Contains(address)));
             var gqrAnalysis = GqrInterproceduralAnalysis.Analyze(
                 baseSummaries,
                 gqrUnknownEntryRoots);
@@ -1183,7 +1209,7 @@ int RunTranslateRecursive(string[] argsTail)
             // Populate the recursive ABI inference cache once, in stable global order, before
             // refinement and parallel emission, so cyclic call graphs don't depend on thread count.
             LogPhase("state-free selection + leaf residency");
-            ReportAbiPrewarm(inferredGuestAbi.Value.Prewarm(emissionAddresses));
+            ReportAbiPrewarm(inferredGuestAbi.Value.Prewarm(emissionAddresses, maxThreads));
             LogPhase("ABI prewarm");
 
             // State-free entries use the transformed leaf's exact live-at-entry
@@ -1404,6 +1430,7 @@ int RunTranslateRecursive(string[] argsTail)
             // source visible. `completionPulse` only wakes the writer; it carries
             // no state of its own.
             var emissionDone = new bool[pendingSources.Length];
+            var unsupportedByIndex = new int[emissionAddresses.Length];
             using var completionPulse = new ManualResetEventSlim(false);
             var emissionAborted = false;
             Task? pendingBundleWrite = null;
@@ -1459,6 +1486,8 @@ int RunTranslateRecursive(string[] argsTail)
                         var options = BuildEmissionOptions(address, stateFreeAbiContracts);
                         if (!canonicalIrStore.TryGet(address, out var canonicalSsa))
                             throw new InvalidOperationException($"Missing canonical SSA for final lowering at 0x{address:X8}.");
+                        unsupportedByIndex[i] = canonicalSsa.Blocks.Sum(block =>
+                            block.Instructions.Count(static instruction => instruction is IrUndefined));
                         var emitted = translator.Value.LowerCanonical(address, canonicalSsa, options);
                         var path = work.Path;
                         if (outputMetadata is not null)
@@ -1517,16 +1546,7 @@ int RunTranslateRecursive(string[] argsTail)
                     : Path.GetRelativePath(
                         Path.GetDirectoryName(Path.GetFullPath(outputMetadataPath!))!,
                         Path.GetFullPath(productionSourceBundlePath)).Replace('\\', '/');
-                var metadataUnsupportedInstructionCount = emissionAddresses.Sum(address =>
-                {
-                    if (!canonicalIrStore.TryGet(address, out var canonicalSsa))
-                    {
-                        throw new InvalidOperationException(
-                            $"Missing canonical SSA while computing translation quality for 0x{address:X8}.");
-                    }
-                    return canonicalSsa.Blocks.Sum(block =>
-                        block.Instructions.Count(static instruction => instruction is IrUndefined));
-                });
+                var metadataUnsupportedInstructionCount = unsupportedByIndex.Sum();
                 completedOutputMetadata = BaseTranslationOutputMetadata.Create(
                     outputMetadata,
                     new TranslationQualityMetadata(
@@ -1701,7 +1721,7 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
     // win (this shipped once as a character-select LinkList.h:573 panic).
     if (File.Exists(baseTranslationOutputMetadataPath) && File.Exists(codePul))
     {
-        var guardedBaseMetadata = BaseTranslationOutputMetadataFile.Read(baseTranslationOutputMetadataPath);
+        var guardedBaseMetadata = ReadBaseMetadataCached(baseTranslationOutputMetadataPath);
         var codePulSha256 = ChecksumUtilities.Sha256HexOfFile(codePul);
         var baseKnowsThisPul = guardedBaseMetadata.ModPatchAwareness is { } awareness &&
             awareness.Any(entry => string.Equals(entry.CodePulSha256, codePulSha256, StringComparison.OrdinalIgnoreCase));
@@ -2079,7 +2099,7 @@ void WriteResolvedDispatchProfile(
         var metadataPath = baseTranslationOutputMetadataPath;
         if (File.Exists(metadataPath))
         {
-            var metadata = BaseTranslationOutputMetadataFile.Read(metadataPath);
+            var metadata = ReadBaseMetadataCached(metadataPath);
             if (!string.IsNullOrWhiteSpace(metadata.SourceBundlePath))
             {
                 var bundlePath = Path.IsPathRooted(metadata.SourceBundlePath)
@@ -2154,7 +2174,7 @@ void WriteResolvedDispatchProfile(
         BaseTranslationOutputMetadata? metadata = null;
         if (File.Exists(baseTranslationOutputMetadataPath))
         {
-            metadata = BaseTranslationOutputMetadataFile.Read(baseTranslationOutputMetadataPath);
+            metadata = ReadBaseMetadataCached(baseTranslationOutputMetadataPath);
         }
         if (metadata is null || metadata.Functions.Any(static function => function.Build is null))
         {
@@ -2326,12 +2346,9 @@ int EmitModCpp(
         : new CompositeGuestFunctionAbiProvider(inferredAbi);
     var modTranslator = new FunctionTranslator(modImage, abiProvider);
     var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = maxThreads };
-    // Mod emission waves: each item is a full translate+emit, and each wave is a
-    // barrier that also drains newly discovered continuations, so it is
-    // deliberately smaller than the discovery batch above - a long wave delays
-    // the discoveries the next wave has to translate.
-    var waveSize = Math.Max(16, maxThreads * 4);
-    Console.WriteLine($"  translating mod C++ with up to {maxThreads} worker thread(s) in waves of {waveSize}");
+    // Each wave drains its whole queue: a wave is a barrier that publishes newly discovered
+    // entries, and draining everything makes the output independent of any wave size.
+    Console.WriteLine($"  translating mod C++ with up to {maxThreads} worker thread(s)");
 
     var cppRoot = Path.Combine(outDir, "cpp");
     if (Directory.Exists(cppRoot))
@@ -2410,7 +2427,7 @@ int EmitModCpp(
         // Some dynamically discovered module/continuation waves bypass
         // ProcessBoundedWaves. Prewarm every parallel emission boundary as a
         // final deterministic guard; phase-prewarmed entries are cheap hits.
-        ReportAbiPrewarm(inferredAbi.Prewarm(wave.Select(static work => work.Address)));
+        ReportAbiPrewarm(inferredAbi.Prewarm(wave.Select(static work => work.Address), maxThreads));
         return ModTranslationWaveRunner.Translate(() => modTranslator, wave, parallelOptions);
     }
 
@@ -2447,7 +2464,7 @@ int EmitModCpp(
         // Populate the recursive ABI cache in a stable global order before any worker emits C++,
         // so shared closure reuse and cyclic call graphs never depend on thread count, wave size,
         // or worker order.
-        ReportAbiPrewarm(inferredAbi.Prewarm(ordered.Select(static work => work.Address)));
+        ReportAbiPrewarm(inferredAbi.Prewarm(ordered.Select(static work => work.Address), maxThreads));
         // Commit callbacks here only append to the discovered-continuation queue that a later
         // phase drains, so nothing in this phase reads back its own commits; wave barriers would
         // only cost idle workers, so it runs as one parallel batch and the runner re-sorts by the
@@ -2592,7 +2609,7 @@ int EmitModCpp(
     {
         while (discoveredContinuationQueue.Count > 0)
         {
-            var wave = QueueBatch.Dequeue(discoveredContinuationQueue, waveSize)
+            var wave = QueueBatch.Dequeue(discoveredContinuationQueue, discoveredContinuationQueue.Count)
                 .Select(CreateContinuationWork)
                 .ToArray();
             CommitWave(TranslateWave(wave), (result, work) =>
@@ -2611,10 +2628,10 @@ int EmitModCpp(
     var emittedModuleStarts = new HashSet<uint>();
     while (moduleQueue.Count > 0)
     {
-        var wave = new List<ModTranslationWork>(waveSize);
+        var wave = new List<ModTranslationWork>(moduleQueue.Count);
         foreach (var start in QueueBatch.Dequeue(
                      moduleQueue,
-                     waveSize,
+                     moduleQueue.Count,
                      start => !emittedModuleStarts.Add(start.Address)))
         {
             var name = ModuleFunctionName(start.Address);
