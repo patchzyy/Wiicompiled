@@ -169,6 +169,7 @@ std::atomic_flag g_abortSignalHandled = ATOMIC_FLAG_INIT;
 std::atomic_bool g_fatalErrorReported{false};
 std::atomic_bool g_fatalPopupShown{false};
 bool g_headless = false;
+bool g_hidden = false;
 std::atomic<int> g_lastExitCode{0};
 std::atomic_bool g_exitCodeSet{false};
 
@@ -775,7 +776,7 @@ void MarkFatalErrorReported() {
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
-    if (g_headless || g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
+    if (g_headless || g_hidden || g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
@@ -1350,8 +1351,8 @@ int RuntimeMain(int argc, char** argv) {
     // `--headless`: with a boot race, run without a window, sound or dialogs.
     g_headless = std::any_of(argv + 1, argv + argc,
                              [](const char* arg) { return std::string_view(arg) == "--headless"; });
-    const bool hidden = std::any_of(argv + 1, argv + argc,
-                            [](const char* arg) { return std::string_view(arg) == "--hidden"; });
+    g_hidden = std::any_of(argv + 1, argv + argc,
+                           [](const char* arg) { return std::string_view(arg) == "--hidden"; });
 
     try {
         for (int i = 1; i < argc; ++i) {
@@ -1361,7 +1362,7 @@ int RuntimeMain(int argc, char** argv) {
                                             "'; the game runtime only accepts --race[=<course id>], --race-cpu, --hidden and --headless, use Config.toml through the installed host.");
             }
         }
-        if ((g_headless || hidden) && !BootRace::Requested()) {
+        if ((g_headless || g_hidden) && !BootRace::Requested()) {
             throw std::invalid_argument("--headless and --hidden need --race[=<course id>] or --race-cpu");
         }
         if (g_headless) {
@@ -1403,7 +1404,7 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.hasWindowPosition = RuntimeConfigFile::WindowPosition(
             auroraConfig.windowPosX, auroraConfig.windowPosY);
         auroraConfig.allowJoystickBackgroundEvents = !g_headless;
-        auroraConfig.startHidden = hidden || g_headless;
+        auroraConfig.startHidden = g_hidden || g_headless;
         auroraConfig.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
         // Dolphin-style custom textures. Aurora indexes <userPath>/texture_replacements
         // once during aurora_initialize, so both knobs only take effect on the next launch.
