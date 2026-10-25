@@ -157,7 +157,8 @@ function Resolve-MkwProjectForAssets([string]$Workspace, [string]$AssetsDirector
 }
 
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Description,
-    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '', [bool]$WaitForProcessTree = $true) {
+    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '', [bool]$WaitForProcessTree = $true,
+    [int]$TimeoutSeconds = 0) {
     <#
     Runs a build tool and turns a non-zero exit code into a described failure. By default,
     Start-Process -Wait waits for the whole process tree, since a .NET single-file bundle host may
@@ -166,6 +167,7 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
     Start-Process doesn't publish $LASTEXITCODE, so this sets it manually for callers that check it.
     -StepId emits the machine-readable form the installer's progress bar consumes (BuildStepIds in
     WiiCompiled.Setup/InstallProgress.cs); the human sentence stays on the same log line.
+    -TimeoutSeconds waits on the process itself and kills its tree when time runs out.
     #>
     if ($StepId) { Write-Host "${LogPrefix}:STEP:${StepId} $Description" }
     else { Write-Host "${LogPrefix}: $Description" }
@@ -174,7 +176,17 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
         # Backslashes directly before the closing quote would otherwise escape it.
         '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
     })
-    if ($WaitForProcessTree) {
+    if ($TimeoutSeconds -gt 0) {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments -NoNewWindow -PassThru
+        # Holding the handle keeps ExitCode readable once the process has exited.
+        $null = $process.Handle
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            # taskkill's stderr would end the script under 'Stop' before the message below.
+            try { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null } catch {}
+            throw "$Description did not finish within $TimeoutSeconds seconds and was stopped."
+        }
+        $exitCode = $process.ExitCode
+    } elseif ($WaitForProcessTree) {
         $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `
             -NoNewWindow -Wait -PassThru
         $exitCode = $process.ExitCode
