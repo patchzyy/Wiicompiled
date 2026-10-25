@@ -28,7 +28,7 @@ jobs:
 
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: '8.0.427'
 
       - name: Cache NuGet packages
         uses: actions/cache@v5
