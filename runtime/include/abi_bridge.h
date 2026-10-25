@@ -157,7 +157,7 @@ public:
 #define MKW_DETAIL_CAT(a, b) a##b
 #define MKW_DETAIL_MAKE_UNIQUE(a, b) MKW_DETAIL_CAT(a, b)
 
-// Three hand-written registration macros, given the PAL address. Generated code never registers
+// Hand-written registration macros, given the PAL address. Generated code never registers
 // per function; every translated function reaches the registry via the bulk
 // BulkTranslatedFunctionRecord tables in the translator's *_registration TUs.
 #define REGISTER_TRANSLATED_FUNCTION(address, fn) \
@@ -168,3 +168,9 @@ public:
 
 #define REGISTER_NATIVE_FUNCTION_AS(address, fn, pretty_name) \
     static AbiTrampoline<decltype(fn)> MKW_DETAIL_MAKE_UNIQUE(_abi_native_trampoline_named_, __COUNTER__)(::GuestRegion::Translate(address), pretty_name, fn, FunctionKind::Native, false, kPpcAllNonvolatileFprMask, 0, 0, &AbiRawCpuThunk<&fn>::Invoke)
+
+// A native that calls through with MKW_GUEST_NEXT, so a mod overlay at its address still runs.
+#define REGISTER_NATIVE_WRAPPER_AS(address, fn, pretty_name) REGISTER_NATIVE_FUNCTION_AS(address, fn, pretty_name)
+
+// A native that deliberately takes over its address from any mod overlay there.
+#define REGISTER_NATIVE_REPLACEMENT_AS(address, fn, pretty_name) REGISTER_NATIVE_FUNCTION_AS(address, fn, pretty_name)

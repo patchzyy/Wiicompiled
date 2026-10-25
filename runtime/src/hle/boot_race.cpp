@@ -162,7 +162,7 @@ REGISTER_NATIVE_FUNCTION_AS(0x805B9344, ArgumentParser_Parse_805b9344, "Argument
 // RacedataScenario::InitScreens; local racers keep no real controller channel.
 extern "C" void RacedataScenario_InitScreens_8052f4e8(CpuContext* ctx) {
     if (!g_cpuDriven) {
-        MKW_GUEST_FUNC(8052F4E8)(ctx);
+        MKW_GUEST_NEXT(8052F4E8)(ctx);
         return;
     }
     const uint32_t players = ctx->gpr[3] + kPlayersOffset;
@@ -170,7 +170,7 @@ extern "C" void RacedataScenario_InitScreens_8052f4e8(CpuContext* ctx) {
     for (uint32_t i = 0; i < kPlayerCount; ++i) {
         channels[i] = Memory::Read8(players + i * kPlayerSize + kPlayerControllerChannelOffset);
     }
-    MKW_GUEST_FUNC(8052F4E8)(ctx);
+    MKW_GUEST_NEXT(8052F4E8)(ctx);
     for (uint32_t i = 0; i < kPlayerCount; ++i) {
         const uint32_t player = players + i * kPlayerSize;
         if (Memory::Read32(player + kPlayerTypeOffset) == kPlayerRealLocal) {
@@ -178,7 +178,7 @@ extern "C" void RacedataScenario_InitScreens_8052f4e8(CpuContext* ctx) {
         }
     }
 }
-REGISTER_NATIVE_FUNCTION_AS(0x8052F4E8, RacedataScenario_InitScreens_8052f4e8, "RacedataScenario_InitScreens_8052f4e8");
+REGISTER_NATIVE_WRAPPER_AS(0x8052F4E8, RacedataScenario_InitScreens_8052f4e8, "RacedataScenario_InitScreens_8052f4e8");
 
 // KartAIController::IsCPU
 extern "C" void KartAIController_IsCPU_8072624c(CpuContext* ctx) {

@@ -14,9 +14,9 @@ namespace Translator.Core;
 public static class RuntimeNativeIndexFile
 {
     public const string Format = "wiicompiled-runtime-native-index";
-    public const int FormatVersion = 1;
+    public const int FormatVersion = 2;
     // Bump whenever the scanner or the ABI/effect analyzers can produce different output for the same sources.
-    public const int ExtractorVersion = 1;
+    public const int ExtractorVersion = 2;
     public const string DefaultFileName = "native-index.json";
 
     private static readonly JsonSerializerOptions Options = new()
@@ -59,13 +59,15 @@ public static class RuntimeNativeIndexFile
                 .ThenBy(static registration => registration.SourceFile, StringComparer.Ordinal)
                 .ThenBy(static registration => registration.IsTranslatedOverride)
                 .ThenBy(static registration => registration.ExcludesBaseTranslation)
+                .ThenBy(static registration => registration.ModOverlay)
                 .Select(static registration => new RegistrationDto
                 {
                     Address = FormatAddress(registration.Address),
                     Symbol = registration.Symbol,
                     SourceFile = registration.SourceFile,
                     IsTranslatedOverride = registration.IsTranslatedOverride,
-                    ExcludesBaseTranslation = registration.ExcludesBaseTranslation
+                    ExcludesBaseTranslation = registration.ExcludesBaseTranslation,
+                    ModOverlay = registration.ModOverlay.ToString()
                 })
                 .ToList(),
             VoidStubAbis = index.VoidStubAbis
@@ -160,7 +162,8 @@ public static class RuntimeNativeIndexFile
                         Present(registration.Symbol, "symbol"),
                         Present(registration.SourceFile, "sourceFile"),
                         registration.IsTranslatedOverride,
-                        registration.ExcludesBaseTranslation))
+                        registration.ExcludesBaseTranslation,
+                        ParseModOverlay(Present(registration.ModOverlay, "modOverlay"))))
                     .ToArray(),
                 Present(document.VoidStubAbis, "voidStubAbis")
                     .Select(static entry => new RuntimeNativeAbiEntry(
@@ -184,6 +187,11 @@ public static class RuntimeNativeIndexFile
     }
 
     private static string FormatAddress(uint address) => $"0x{address:X8}";
+
+    private static NativeModOverlay ParseModOverlay(string text) =>
+        Enum.TryParse<NativeModOverlay>(text, ignoreCase: false, out var value) && Enum.IsDefined(value)
+            ? value
+            : throw new FormatException($"Unknown modOverlay '{text}'.");
 
     private static uint ParseAddress(string text) => GuestTargetParser.ParseHexAddress(text);
 
@@ -244,6 +252,7 @@ public static class RuntimeNativeIndexFile
         public required string SourceFile { get; init; }
         public required bool IsTranslatedOverride { get; init; }
         public required bool ExcludesBaseTranslation { get; init; }
+        public required string ModOverlay { get; init; }
     }
 
     private sealed class AbiDto

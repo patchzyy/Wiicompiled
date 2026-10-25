@@ -426,20 +426,10 @@ const TranslatedFunctionInfo* TranslatedFunctionRegistry::FindByAddressPtrSlow(u
     return nullptr;
 }
 
-GuestFunctions::Entry GuestFunctions::BaseTranslation(uint32_t address) {
-    std::unique_lock<std::mutex> lock(RegistryMutex(), std::defer_lock);
-    if (!RegistryFrozen().load(std::memory_order_acquire)) {
-        lock.lock();
-    }
-    for (const auto& entry : Registry()) {
-        if (entry.address == address && entry.kind == FunctionKind::BaseTranslated && entry.rawCpuInvoker) {
-            return entry.rawCpuInvoker;
-        }
-    }
-    if (lock.owns_lock()) {
-        lock.unlock();
-    }
-    RT_LOG(RT_TAG_RUNTIME) << "ERROR: no base translation registered at 0x" << std::hex << address << std::dec
+namespace {
+
+[[noreturn]] void ReportMissingGuestFunction(uint32_t address) {
+    RT_LOG(RT_TAG_RUNTIME) << "ERROR: no translation registered at 0x" << std::hex << address << std::dec
                            << std::endl;
     std::ostringstream message;
     message << "The runtime calls the translated function at guest address 0x" << std::hex << address
@@ -449,6 +439,43 @@ GuestFunctions::Entry GuestFunctions::BaseTranslation(uint32_t address) {
     ShowRuntimeFatalPopup("Missing translated function", message.str());
     MarkFatalErrorReported();
     std::exit(EXIT_FAILURE);
+}
+
+} // namespace
+
+GuestFunctions::Entry GuestFunctions::BaseTranslation(uint32_t address) {
+    {
+        std::unique_lock<std::mutex> lock(RegistryMutex(), std::defer_lock);
+        if (!RegistryFrozen().load(std::memory_order_acquire)) {
+            lock.lock();
+        }
+        for (const auto& entry : Registry()) {
+            if (entry.address == address && entry.kind == FunctionKind::BaseTranslated && entry.rawCpuInvoker) {
+                return entry.rawCpuInvoker;
+            }
+        }
+    }
+    ReportMissingGuestFunction(address);
+}
+
+GuestFunctions::Entry GuestFunctions::NextTranslation(uint32_t address) {
+    {
+        std::unique_lock<std::mutex> lock(RegistryMutex(), std::defer_lock);
+        if (!RegistryFrozen().load(std::memory_order_acquire)) {
+            lock.lock();
+        }
+        const TranslatedFunctionInfo* best = nullptr;
+        for (const auto& entry : Registry()) {
+            if (entry.address == address && entry.kind != FunctionKind::Native && entry.rawCpuInvoker &&
+                (!best || IsBetterCandidate(entry, *best))) {
+                best = &entry;
+            }
+        }
+        if (best) {
+            return best->rawCpuInvoker;
+        }
+    }
+    ReportMissingGuestFunction(address);
 }
 
 const RawDispatchRecord* TranslatedFunctionRegistry::FindRawByAddressPtrSlow(uint32_t address) {

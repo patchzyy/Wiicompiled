@@ -129,7 +129,7 @@ public sealed class GuestAddressTableTests
         var calls = Directory.EnumerateFiles(Path.Combine(root, "runtime"), "*.*", SearchOption.AllDirectories)
             .Where(path => (path.EndsWith(".cpp", StringComparison.Ordinal) || path.EndsWith(".h", StringComparison.Ordinal)) &&
                            !path.Contains(thirdParty, StringComparison.Ordinal))
-            .SelectMany(static path => Regex.Matches(File.ReadAllText(path), @"MKW_GUEST_FUNC\(\s*([0-9A-Fa-f]{8})\s*\)")
+            .SelectMany(static path => Regex.Matches(File.ReadAllText(path), @"MKW_GUEST_(?:FUNC|NEXT)\(\s*([0-9A-Fa-f]{8})\s*\)")
                 .Select(static match => Convert.ToUInt32(match.Groups[1].Value, 16)))
             .Distinct()
             .ToArray();
@@ -145,7 +145,7 @@ public sealed class GuestAddressTableTests
             foreach (var (region, starts) in entries)
             {
                 var address = table.Map(pal, region);
-                Assert.True(starts.Contains(address), $"MKW_GUEST_FUNC({pal:X8}) is not a {region} function entry (0x{address:X8})");
+                Assert.True(starts.Contains(address), $"MKW_GUEST_FUNC/NEXT({pal:X8}) is not a {region} function entry (0x{address:X8})");
             }
         }
     }

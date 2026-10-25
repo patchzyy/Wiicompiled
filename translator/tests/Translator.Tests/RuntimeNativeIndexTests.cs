@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Translator.Core;
 using Translator.Core.CodeGen;
 using Xunit;
@@ -40,14 +41,24 @@ public sealed class RuntimeNativeIndexTests
                 PPC_NATIVE_OVERRIDE_VOID(80000040, Stub, (void), ());
                 GX_FATAL_STUB(80000050, "Fatal")
                 // REGISTER_NATIVE_FUNCTION(0x80000060, CommentedOut);
+                REGISTER_NATIVE_WRAPPER_AS(0x80000070, Wrapper, "wrapper");
+                REGISTER_NATIVE_REPLACEMENT_AS(0x80000080, Replacement, "replacement");
                 """);
 
             var registrations = RuntimeNativeIndexBuilder.Build(directory).Registrations;
-            Assert.Equal(5, registrations.Length);
+            Assert.Equal(7, registrations.Length);
             Assert.Contains(registrations, static entry =>
-                entry.Address == 0x80000010u && entry.ExcludesBaseTranslation);
+                entry.Address == 0x80000010u && entry.ExcludesBaseTranslation &&
+                entry.ModOverlay == NativeModOverlay.Unspecified);
             Assert.Contains(registrations, static entry =>
-                entry.Address == 0x80000020u && !entry.ExcludesBaseTranslation);
+                entry.Address == 0x80000020u && !entry.ExcludesBaseTranslation &&
+                entry.ModOverlay == NativeModOverlay.Unspecified);
+            Assert.Contains(registrations, static entry =>
+                entry.Address == 0x80000070u && entry.Symbol == "Wrapper" && !entry.ExcludesBaseTranslation &&
+                entry.ModOverlay == NativeModOverlay.Wrapper);
+            Assert.Contains(registrations, static entry =>
+                entry.Address == 0x80000080u && entry.Symbol == "Replacement" && !entry.ExcludesBaseTranslation &&
+                entry.ModOverlay == NativeModOverlay.Replacement);
             Assert.Contains(registrations, static entry =>
                 entry.Address == 0x80000030u && entry.IsTranslatedOverride);
             Assert.Contains(registrations, static entry =>
@@ -108,6 +119,8 @@ public sealed class RuntimeNativeIndexTests
         var sources = Path.Combine(ProjectPathsForTests.FindRepositoryRoot(), "runtime", "src");
         var built = RuntimeNativeIndexBuilder.Build(sources);
         Assert.NotEmpty(built.Registrations);
+        Assert.Contains(built.Registrations, static entry => entry.ModOverlay == NativeModOverlay.Wrapper);
+        Assert.Contains(built.Registrations, static entry => entry.ModOverlay == NativeModOverlay.Replacement);
         Assert.NotEmpty(built.VoidStubAbis);
         Assert.NotEmpty(built.Effects);
 
@@ -123,6 +136,26 @@ public sealed class RuntimeNativeIndexTests
         finally
         {
             File.Delete(path);
+        }
+    }
+
+    // A wrapper that calls through with MKW_GUEST_FUNC would silently drop the mod overlay it promises to run.
+    [Fact]
+    public void RepositoryWrapperNativesCallThroughToTheNextTranslation()
+    {
+        var sources = Path.Combine(ProjectPathsForTests.FindRepositoryRoot(), "runtime", "src");
+        var wrappers = RuntimeNativeIndexBuilder.Build(sources).Registrations
+            .Where(static entry => entry.ModOverlay == NativeModOverlay.Wrapper)
+            .ToArray();
+        Assert.NotEmpty(wrappers);
+        foreach (var wrapper in wrappers)
+        {
+            var source = File.ReadAllText(Path.Combine(sources, wrapper.SourceFile));
+            var pal = $"{wrapper.Address:X8}";
+            Assert.True(Regex.IsMatch(source, $@"MKW_GUEST_NEXT\(\s*{pal}\s*\)", RegexOptions.IgnoreCase),
+                $"{wrapper.Symbol} is a wrapper but never calls MKW_GUEST_NEXT({pal})");
+            Assert.False(Regex.IsMatch(source, $@"MKW_GUEST_FUNC\(\s*{pal}\s*\)", RegexOptions.IgnoreCase),
+                $"{wrapper.Symbol} is a wrapper but calls MKW_GUEST_FUNC({pal})");
         }
     }
 

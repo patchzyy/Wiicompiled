@@ -11,7 +11,19 @@ public sealed record RuntimeNativeRegistration(
     string Symbol,
     string SourceFile,
     bool IsTranslatedOverride,
-    bool ExcludesBaseTranslation);
+    bool ExcludesBaseTranslation,
+    NativeModOverlay ModOverlay = NativeModOverlay.Unspecified);
+
+/// <summary>What happens to a mod overlay at a native's address.</summary>
+public enum NativeModOverlay
+{
+    /// <summary>Plain registration: the overlay is lost, and reported as such.</summary>
+    Unspecified,
+    /// <summary>The native calls through to the overlay (<c>MKW_GUEST_NEXT</c>).</summary>
+    Wrapper,
+    /// <summary>The native deliberately takes over the overlay's address.</summary>
+    Replacement
+}
 
 public sealed record RuntimeNativeAbiEntry(
     uint Address,
@@ -119,7 +131,17 @@ public static class RuntimeNativeIndexBuilder
         {
             var source = sourceFile.Content;
             foreach (Match match in GeneratedMarkers.NativeFunctionRegistrationPattern().Matches(source))
-                Add(match, match.Groups["symbol"].Value, false, !match.Groups["as"].Success);
+            {
+                var modOverlay = match.Groups["modOverlay"];
+                Add(match, match.Groups["symbol"].Value, false,
+                    !match.Groups["as"].Success && !modOverlay.Success,
+                    modOverlay.Value switch
+                    {
+                        "WRAPPER" => NativeModOverlay.Wrapper,
+                        "REPLACEMENT" => NativeModOverlay.Replacement,
+                        _ => NativeModOverlay.Unspecified
+                    });
+            }
             foreach (Match match in GeneratedMarkers.TranslatedFunctionRegistrationPattern().Matches(source))
                 Add(match, match.Groups["symbol"].Value, true, true);
             foreach (Match match in GeneratedMarkers.NativeOverridePattern().Matches(source))
@@ -127,10 +149,11 @@ public static class RuntimeNativeIndexBuilder
             foreach (Match match in GeneratedMarkers.FatalStubPattern().Matches(source))
                 Add(match, $"GX_FATAL_STUB_{match.Groups["address"].Value}", false, true);
 
-            void Add(Match match, string symbol, bool translated, bool excludesBase) =>
+            void Add(Match match, string symbol, bool translated, bool excludesBase,
+                NativeModOverlay modOverlay = NativeModOverlay.Unspecified) =>
                 registrations.Add(new RuntimeNativeRegistration(
                     ParseAddress(match.Groups["address"].Value), symbol, sourceFile.RelativePath,
-                    translated, excludesBase));
+                    translated, excludesBase, modOverlay));
         }
 
         return registrations
@@ -139,7 +162,8 @@ public static class RuntimeNativeIndexBuilder
             .ThenBy(static registration => registration.Symbol, StringComparer.Ordinal)
             .ThenBy(static registration => registration.SourceFile, StringComparer.Ordinal)
             .ThenBy(static registration => registration.IsTranslatedOverride)
-            .ThenBy(static registration => registration.ExcludesBaseTranslation);
+            .ThenBy(static registration => registration.ExcludesBaseTranslation)
+            .ThenBy(static registration => registration.ModOverlay);
     }
 
     private static uint ParseAddress(string value) => GuestTargetParser.ParseHexAddress(value);

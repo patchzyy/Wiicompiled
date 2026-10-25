@@ -2278,12 +2278,21 @@ void WriteResolvedDispatchProfile(
     // functions the runtime must own (hardware, the strap scene). But when the mod's whole point
     // is replacing that function, e.g. Retro Rewind's DVDOpen override at 0x8015E2BC, the overlay
     // is silently dropped. Name every such address so the tradeoff is a choice, not an accident.
+    // Wrapper natives still run the overlay, and replacement natives already made that choice.
+    var nativesKeepingModOverlayDecision = runtimeNativeIndex.Value.Registrations
+        .Where(static registration => registration.ModOverlay != NativeModOverlay.Unspecified)
+        .Select(static registration => (registration.Address, registration.Symbol))
+        .ToHashSet();
     var nativeOverriddenModPatches = groups
         .Where(group =>
-            group.Any(entry => entry.Kind == "rr") &&
-            group.OrderByDescending(entry => entry.Priority)
-                 .ThenByDescending(entry => KindRank(entry.Kind))
-                 .First().Kind == "native")
+        {
+            var winner = group.OrderByDescending(entry => entry.Priority)
+                .ThenByDescending(entry => KindRank(entry.Kind))
+                .First();
+            return group.Any(entry => entry.Kind == "rr") &&
+                   winner.Kind == "native" &&
+                   !nativesKeepingModOverlayDecision.Contains((winner.Address, winner.Symbol));
+        })
         .Select(group => new
         {
             Address = group.Key,
