@@ -160,6 +160,8 @@ if (-not [string]::IsNullOrWhiteSpace($RetroRewindPackageDirectory) -and
     $RetroRewindPackageDirectory = $Workspace + $RetroRewindPackageDirectory.Substring($realWorkspace.Length)
 }
 $translator = Join-Path $Toolkit 'Translator\Translator.Cli.exe'
+# A translator step takes 3-19 s on 16 threads; past this it has hung, and failing lets the clean retry run.
+$translatorTimeoutSeconds = 1800
 $toolchain = Get-MkwBuildSafePath $Toolkit 'toolchain' 'CMake\bin\cmake.exe'
 $cmake = Join-Path $toolchain 'CMake\bin\cmake.exe'
 $ninja = Join-Path $toolchain 'Ninja\ninja.exe'
@@ -313,12 +315,14 @@ try {
                 '--outdir', $functions, '--output-metadata', $baseMetadata,
                 '--production-source-bundle', (Join-Path $generated 'base_translation_sources.bin'),
                 '--no-function-files', '--prune-stale', '--threads', $translatorThreads
-            ) 'Translating the user-owned base game' -StepId 'translate-base'
+            ) 'Translating the user-owned base game' -StepId 'translate-base' `
+                -TimeoutSeconds $translatorTimeoutSeconds
 
             Invoke-Checked $translator @(
                 'emit-base-manifest', '--project', $project, '--out', $baseManifestDir,
                 '--functions-dir', $functions, '--translation-output-metadata', $baseMetadata, '--region', $pins.Region
-            ) 'Creating the local base translation manifest' -StepId 'emit-base-manifest'
+            ) 'Creating the local base translation manifest' -StepId 'emit-base-manifest' `
+                -TimeoutSeconds $translatorTimeoutSeconds
 
             if (-not [string]::IsNullOrWhiteSpace($TranslationFingerprint)) {
                 [ordered]@{ SchemaVersion = 1; TranslationFingerprint = $TranslationFingerprint; DolSha256 = $pins.DolSha256 } |
@@ -348,11 +352,12 @@ try {
                 throw 'Retro Rewind requires either -RetroWfcOfflineDirectory or -SkipRetroWfcPayload.'
             }
             Invoke-Checked $translator $translateModArguments 'Translating the selected Retro Rewind Code.pul' `
-                -StepId 'translate-mod'
+                -StepId 'translate-mod' -TimeoutSeconds $translatorTimeoutSeconds
         }
 
         Invoke-Checked $translator @('generate-data-init', '--project', $project) `
-            'Generating local game data initialization' -StepId 'generate-data-init'
+            'Generating local game data initialization' -StepId 'generate-data-init' `
+            -TimeoutSeconds $translatorTimeoutSeconds
 
         $shardArgs = @(
             'emit-build-shards', '--project', $project, '--base-metadata', $baseMetadata,
@@ -364,7 +369,8 @@ try {
             $shardArgs += @('--resolved-profile', (Join-Path $retroOut 'resolved_dispatch_profile.json'),
                 '--retro-cpp-dir', (Join-Path $retroOut 'cpp'))
         }
-        Invoke-Checked $translator $shardArgs 'Preparing local native build shards' -StepId 'emit-build-shards'
+        Invoke-Checked $translator $shardArgs 'Preparing local native build shards' -StepId 'emit-build-shards' `
+            -TimeoutSeconds $translatorTimeoutSeconds
 
         # The build directory is kept whenever the exact toolchain that filled it is the one
         # installed now and its CMake cache still belongs to this workspace path. Object files are
