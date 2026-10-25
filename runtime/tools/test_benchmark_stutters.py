@@ -1,9 +1,13 @@
 from pathlib import Path
+from contextlib import nullcontext
+import io
+import os
 import subprocess
 import tempfile
 import tomllib
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 import benchmark_stutters
 from benchmark_stutters import (ConfigError, SourceConfig, isolated_config_text, load_source_config,
@@ -157,6 +161,48 @@ class StopProcessTests(unittest.TestCase):
         process.wait.side_effect = subprocess.TimeoutExpired("game", 10)
         with self.assertRaisesRegex(RuntimeError, "did not exit after terminate and kill"):
             stop_process(process, "case")
+
+
+class TraceCompletenessTests(unittest.TestCase):
+    def run_case(self, tail, incomplete):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exe, config, output = root / "game.exe", root / "Config.toml", root / "out"
+            exe.write_bytes(b"")
+            config.write_text("")
+            trace = HEADER + "benchmark_ready,1,0,-1,0,0,0,0\n"
+            trace += "".join(f"present_real,{1 + i * 16_666_667},{i + 1},0,0,0,16666667,0\n"
+                             for i in range(80)) + tail
+            process = mock.Mock(**{"poll.return_value": None})
+            process.wait.side_effect = [subprocess.TimeoutExpired("game", 1), 0]
+
+            def launch(*args, env, **kwargs):
+                Path(env["MKW_FRAME_TRACE"]).write_text(trace)
+                return process
+
+            arguments = ["benchmark", "--exe", str(exe), "--config", str(config), "--output", str(output),
+                         "--cpus", "1", "--fps", "0", "--helpers", "0", "--warmup", "0", "--seconds", "1"]
+            platform = SimpleNamespace(name="nt", environ=os.environ, cpu_count=os.cpu_count)
+            expectation = self.assertRaisesRegex(RuntimeError, "incomplete trace") if incomplete else nullcontext()
+            with mock.patch("sys.argv", arguments), mock.patch("sys.stdout", new_callable=io.StringIO), \
+                    mock.patch.object(benchmark_stutters, "os", platform), \
+                    mock.patch.object(benchmark_stutters, "cpu_topology",
+                                      return_value=(mock.Mock(), 1, 1, [1])), \
+                    mock.patch.object(subprocess, "CREATE_NO_WINDOW", 0, create=True), \
+                    mock.patch.object(subprocess, "Popen", side_effect=launch), expectation:
+                benchmark_stutters.main()
+            process.terminate.assert_called_once()
+            self.assertEqual((output / "summary.json").exists(), not incomplete)
+            self.assertEqual((output / "r0-cpu1-fps0-helpers0.json").exists(), not incomplete)
+
+    def test_complete_trace_writes_results(self):
+        self.run_case("", incomplete=False)
+
+    def test_incomplete_traces_do_not_write_results(self):
+        for tail in ("trace_lost,0,0,-1,0,0,0,3\n", "present_real,",
+                     "trace_lost,0,0,-1,0,0,0,3\npresent_real,"):
+            with self.subTest(tail=tail):
+                self.run_case(tail, incomplete=True)
 
 
 if __name__ == "__main__":

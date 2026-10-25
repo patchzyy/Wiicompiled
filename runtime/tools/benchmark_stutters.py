@@ -309,6 +309,8 @@ def main():
             finally:
                 stop_process(process, label)
         result = analyze(trace, args.warmup, fps or 60)
+        if result["lost_trace_samples"] or result["truncated_final_row"]:
+            raise RuntimeError(f"{label}: incomplete trace; see log")
         log_text = (output / f"{label}.log").read_text(encoding="utf-8", errors="replace")
         affinity_counts = {name: int(count) for name, count in re.findall(
             r"\[aurora::thread\] (.+?): (\d+) available CPUs after affinity", log_text)}
