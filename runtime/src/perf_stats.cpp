@@ -1,6 +1,7 @@
 #include "perf_stats.h"
 
 #include "runtime_log.h"
+#include <aurora/aurora.h>
 
 #include <algorithm>
 #include <array>
@@ -24,12 +25,20 @@ struct FrameWindow {
 
 FrameWindow g_window;
 
+bool LogEnabled() noexcept {
+    static const bool enabled = [] {
+        const char* value = std::getenv("MKW_PERF_STATS");
+        return value != nullptr && std::strcmp(value, "0") != 0;
+    }();
+    return enabled;
+}
+
 } // namespace
 
 bool Enabled() noexcept {
     static const bool enabled = [] {
-        const char* value = std::getenv("MKW_PERF_STATS");
-        return value != nullptr && std::strcmp(value, "0") != 0;
+        const char* trace = std::getenv("MKW_FRAME_TRACE");
+        return LogEnabled() || (trace != nullptr && *trace);
     }();
     return enabled;
 }
@@ -48,7 +57,11 @@ void OnFramePresented() noexcept {
         return;
     }
     const auto busy = (now - g_window.last) - wait;
+    aurora_report_producer_timing(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(now - g_window.last).count(),
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wait).count());
     g_window.last = now;
+    if (!LogEnabled()) return;
     g_window.busyMs[g_window.count++] = std::chrono::duration<double, std::milli>(busy).count();
     if (g_window.count < kWindow) {
         return;

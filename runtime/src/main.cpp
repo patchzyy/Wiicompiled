@@ -1350,16 +1350,19 @@ int RuntimeMain(int argc, char** argv) {
     // `--headless`: with a boot race, run without a window, sound or dialogs.
     g_headless = std::any_of(argv + 1, argv + argc,
                              [](const char* arg) { return std::string_view(arg) == "--headless"; });
+    const bool hidden = std::any_of(argv + 1, argv + argc,
+                            [](const char* arg) { return std::string_view(arg) == "--hidden"; });
 
     try {
         for (int i = 1; i < argc; ++i) {
-            if (std::string_view(argv[i]) != "--headless" && !BootRace::ParseArgument(argv[i])) {
+            if (std::string_view(argv[i]) != "--headless" && std::string_view(argv[i]) != "--hidden" &&
+                !BootRace::ParseArgument(argv[i])) {
                 throw std::invalid_argument(std::string("Unknown command-line option '") + argv[i] +
-                                            "'; the game runtime only accepts --race[=<course id>], --race-cpu and --headless, use Config.toml through the installed host.");
+                                            "'; the game runtime only accepts --race[=<course id>], --race-cpu, --hidden and --headless, use Config.toml through the installed host.");
             }
         }
-        if (g_headless && !BootRace::Requested()) {
-            throw std::invalid_argument("--headless needs --race[=<course id>] or --race-cpu");
+        if ((g_headless || hidden) && !BootRace::Requested()) {
+            throw std::invalid_argument("--headless and --hidden need --race[=<course id>] or --race-cpu");
         }
         if (g_headless) {
             AudioBackend::Instance().SetSilenced(true);
@@ -1400,7 +1403,7 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.hasWindowPosition = RuntimeConfigFile::WindowPosition(
             auroraConfig.windowPosX, auroraConfig.windowPosY);
         auroraConfig.allowJoystickBackgroundEvents = !g_headless;
-        auroraConfig.startHidden = g_headless;
+        auroraConfig.startHidden = hidden || g_headless;
         auroraConfig.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
         // Dolphin-style custom textures. Aurora indexes <userPath>/texture_replacements
         // once during aurora_initialize, so both knobs only take effect on the next launch.

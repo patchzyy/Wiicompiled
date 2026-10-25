@@ -5,6 +5,7 @@
 #include "guest_function_imports.h"
 #include "memory.h"
 #include "runtime_log.h"
+#include <aurora/aurora.h>
 
 #include <array>
 #include <charconv>
@@ -184,6 +185,11 @@ REGISTER_NATIVE_WRAPPER_AS(0x8052F4E8, RacedataScenario_InitScreens_8052f4e8, "R
 extern "C" void KartAIController_IsCPU_8072624c(CpuContext* ctx) {
     MKW_GUEST_FUNC(8072624C)(ctx);
     if (g_cpuDriven) {
+        static bool benchmarkReady = false;
+        if (!benchmarkReady) {
+            benchmarkReady = true;
+            aurora_report_benchmark_ready();
+        }
         ctx->gpr[3] = 1;
     }
 }

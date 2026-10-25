@@ -4,6 +4,7 @@
 
 // MKW_PERF_STATS=1: logs the game thread's busy time per presented frame, i.e. wall time minus the
 // time it spends blocked on VI pacing, the GX worker or the audio mixer.
+// MKW_FRAME_TRACE=<csv path> also records those per-frame timings in Aurora's trace.
 namespace PerfStats {
 
 bool Enabled() noexcept;
