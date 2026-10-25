@@ -248,6 +248,15 @@ function Get-MkwDawnRuntimeSha256([string]$DependenciesDirectory) {
     return Get-MkwFileSha256 $runtime
 }
 
+function Get-MkwFilesInOrdinalOrder([IO.FileInfo[]]$Files, [string]$Root) {
+    # By relative path, ordinal: Sort-Object compares by culture, which Windows PowerShell (NLS) and
+    # PowerShell 7 (ICU) order differently, so a fingerprint recorded by one never matched the other.
+    $keys = [string[]]@($Files | ForEach-Object { $_.FullName.Substring($Root.Length + 1).Replace('\', '/') })
+    $sorted = [IO.FileInfo[]]@($Files)
+    [Array]::Sort($keys, $sorted, [StringComparer]::Ordinal)
+    return ,$sorted
+}
+
 function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
     <#
     SHA-256 over runtime/third_party, the vendored sources behind the prebuilt package. The
@@ -259,9 +268,8 @@ function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
     if ([string]::IsNullOrWhiteSpace($ThirdPartyDirectory)) { return '' }
     if (-not (Test-Path -LiteralPath $ThirdPartyDirectory -PathType Container)) { return '' }
     $root = [IO.Path]::GetFullPath($ThirdPartyDirectory).TrimEnd('\')
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
-        Where-Object { -not ($_.FullName.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') }) } |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
+    $files = Get-MkwFilesInOrdinalOrder @(Get-ChildItem -LiteralPath $root -Recurse -File -Force |
+        Where-Object { -not ($_.FullName.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') }) }) $root
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $builder = [Text.StringBuilder]::new()
@@ -293,13 +301,12 @@ function Get-MkwAuroraSourceFingerprint([string]$AuroraDirectory) {
     )
     # Dot-paths (the submodule's .git pointer) are skipped by name, not by the hidden attribute:
     # the payload zip drops that attribute, so the installed side would otherwise hash them.
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File -Force |
+    $files = Get-MkwFilesInOrdinalOrder @(Get-ChildItem -LiteralPath $root -Recurse -File -Force |
         Where-Object {
             $full = $_.FullName
             -not ($excludedPrefixes | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }) -and
             -not ($full.Substring($root.Length + 1) -split '\\' | Where-Object { $_.StartsWith('.') })
-        } |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
+        }) $root
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $builder = [Text.StringBuilder]::new()
