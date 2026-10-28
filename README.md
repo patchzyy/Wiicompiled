@@ -22,7 +22,7 @@ anywhere at runtime.
 
 > [!IMPORTANT]
 > There is no Nintendo code, no assets and no game data anywhere in this project or its releases.
-> You need your own legally dumped copy of the PAL version of the game. Setup only ships the
+> You need your own legally dumped copy of the PAL, NTSC-U, or NTSC-J version of the game. Setup only ships the
 > toolchain, the translation runs on your machine against your disc image, and nothing ever gets
 > uploaded.
 
@@ -103,14 +103,13 @@ Known limitations of the Wii Remote path:
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
 - macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
 - On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
-- A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
+- A clean, unmodified **PAL `RMCP01`**, **NTSC-U `RMCE01`**,or **NTSC-J `RMCJ01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
 > [!NOTE]
 > GPU/CPU minimums are set by driver support and D3D12/Vulkan feature requirements, not by the game's actual demands.
 
-Only the clean PAL revision will work. Anything else (other
-regions, patched executables) is rejected outright.
+Only the clean PAL, NTSC-U, and NTSC-J revisions will work. Anything else (NTSC-K, patched executables) is rejected outright.
 
 > [!NOTE]
 > Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
@@ -196,7 +195,7 @@ don't want to risk it right now, setup has to run a static recompiler over the w
 and then throw a C++ compiler at the result. It's a **one-time cost** on your machine.
 
 **Which game version works?**
-Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
+Clean PAL `RMCP01`, NTSC-U `RMCE01`, and NTSC-J `RMCJ01`. NTSC-K `RMCK01` and modified executables are **rejected**. Translating
 them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
 
 **Can I recompile other GameCube/Wii games with it?**
