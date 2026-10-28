@@ -103,7 +103,7 @@ Known limitations of the Wii Remote path:
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
 - macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
 - On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
-- A clean, unmodified **PAL `RMCP01`**, **NTSC-U `RMCE01`**,or **NTSC-J `RMCJ01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
+- A clean, unmodified **PAL `RMCP01`**, **NTSC-U `RMCE01`**, or **NTSC-J `RMCJ01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
 > [!NOTE]
@@ -117,7 +117,7 @@ Only the clean PAL, NTSC-U, and NTSC-J revisions will work. Anything else (NTSC-
 
 ## Installing
 
-For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`
+For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`, NTSC-U `RMCE01`, or NTSC-J `RMCJ01`
 image under Settings, turn on **WiiCompiled (beta)**, and hit install from the Home page.
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
