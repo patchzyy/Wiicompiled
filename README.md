@@ -127,7 +127,7 @@ launching. The backend itself is deliberately command-line only, Wheel Wizard is
 Download `WiiCompiled-Setup.pkg` from this repository's Releases page and open it. The universal
 package selects the appropriate bundled tools for the host architecture, supporting both Apple Silicon (`arm64`)
 and Intel (`x86_64`) Macs. It installs **WiiCompiled Setup** in Applications; open that app, choose
-your clean PAL `RMCP01`, NTSC-U `RMCE01`, and NTSC-J `RMCJ01` disc image, and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
+your clean PAL `RMCP01`, NTSC-U `RMCE01`, or NTSC-J `RMCJ01` disc image, and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
 or its parent folder.
 
 Setup verifies and extracts the image locally, then translates and compiles the native app on your
