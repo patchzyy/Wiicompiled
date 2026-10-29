@@ -13,7 +13,7 @@ inline constexpr int kMinSensitivity = 1;
 inline constexpr int kMaxSensitivity = 5;
 inline constexpr int kDefaultSensitivity = 3;
 
-// SDL gamepad sensor axes: x right, y out of the face, z toward the player.
+// SDL gamepad sensor axes: x right, y top, z toward the player.
 struct MotionSample {
     bool hasGyro = false;
     bool hasAccel = false;

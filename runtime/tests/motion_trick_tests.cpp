@@ -159,6 +159,22 @@ void TestAccelOnlyController() {
     Check(run.fired.size() == 1 && run.fired[0] == Direction::Up, "accelerometer jolt did not give Up");
 }
 
+void TestGyroPadIgnoresAccel() {
+    Run bump;
+    MotionSample jolt = AtRest();
+    jolt.accel[1] = 40.0f;
+    bump.Feed(jolt, 3);
+    bump.Feed(AtRest(), 60);
+    Check(bump.fired.empty(), "an accelerometer bump on a gyro pad fired a trick");
+
+    Run flick;
+    MotionSample sideways = Gyro(0.0f, 10.0f, 0.0f);
+    sideways.accel[1] = 40.0f;
+    flick.Feed(sideways);
+    Check(flick.fired.size() == 1 && flick.fired[0] == Direction::Left,
+          "a jolt changed the direction of a sideways flick");
+}
+
 void TestNoSensorsNeverFires() {
     Run run;
     MotionSample none;
@@ -197,6 +213,7 @@ int main() {
     TestDirections();
     TestSensitivity();
     TestAccelOnlyController();
+    TestGyroPadIgnoresAccel();
     TestNoSensorsNeverFires();
     TestBadDataIgnored();
     TestReset();

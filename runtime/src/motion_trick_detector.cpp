@@ -13,7 +13,7 @@ constexpr uint64_t kCooldownUs = 400'000;
 
 // Indexed by sensitivity level - 1.
 constexpr std::array<float, kMaxSensitivity> kGyroThresholds = {11.0f, 9.0f, 7.0f, 5.5f, 4.0f};
-constexpr std::array<float, kMaxSensitivity> kAccelThresholds = {30.0f, 25.0f, 20.0f, 16.0f, 12.0f};
+constexpr std::array<float, kMaxSensitivity> kAccelThresholds = {20.0f, 16.0f, 13.0f, 10.0f, 8.0f};
 
 float Length(const float (&v)[3]) {
     return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
@@ -45,10 +45,15 @@ void ShakeDetector::Reset() {
 }
 
 Direction ShakeDetector::Update(const MotionSample& sample, uint64_t nowUs) {
-    const float gyroIntensity = sample.hasGyro ? Length(sample.gyro) / m_gyroThreshold : 0.0f;
-    const float accelIntensity =
-        sample.hasAccel ? std::fabs(Length(sample.accel) - kGravity) / m_accelThreshold : 0.0f;
-    m_intensity = std::max(gyroIntensity, accelIntensity);
+    // The accelerometer only stands in for a missing gyro: on a gyro pad it
+    // mostly picks up bumps, and it carries no direction.
+    if (sample.hasGyro) {
+        m_intensity = Length(sample.gyro) / m_gyroThreshold;
+    } else if (sample.hasAccel) {
+        m_intensity = std::fabs(Length(sample.accel) - kGravity) / m_accelThreshold;
+    } else {
+        m_intensity = 0.0f;
+    }
     if (!std::isfinite(m_intensity)) {
         m_intensity = 0.0f;
         return Direction::None;
@@ -65,7 +70,7 @@ Direction ShakeDetector::Update(const MotionSample& sample, uint64_t nowUs) {
     }
     m_armed = false;
     m_lastFireUs = nowUs;
-    return gyroIntensity >= accelIntensity ? GyroDirection(sample.gyro) : Direction::Up;
+    return sample.hasGyro ? GyroDirection(sample.gyro) : Direction::Up;
 }
 
 } // namespace MotionTrick

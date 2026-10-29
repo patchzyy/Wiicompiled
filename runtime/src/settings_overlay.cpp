@@ -757,9 +757,10 @@ const char* TrickDirectionLabel(MotionTrick::Direction direction) {
 }
 
 void DrawMotionTrickSettings(uint32_t port) {
-    const bool hasMotion = MotionTrick::PortHasMotion(port);
+    const MotionTrick::PortStatus status = MotionTrick::Status(port);
+    const bool hasMotion = MotionTrick::PortHasMotion(port) && !status.sensorsUnavailable;
     bool enabled = MotionTrick::Enabled();
-    ImGui::BeginDisabled(!hasMotion);
+    ImGui::BeginDisabled(!hasMotion && !enabled);
     if (ImGui::Checkbox("Shake to trick", &enabled)) {
         MotionTrick::SetEnabled(enabled);
     }
@@ -791,7 +792,6 @@ void DrawMotionTrickSettings(uint32_t port) {
     }
 
     constexpr float kMeterScale = 1.5f;
-    const MotionTrick::PortStatus status = MotionTrick::Status(port);
     const ImVec2 meterPos = ImGui::GetCursorScreenPos();
     const ImVec2 meterSize(160.0f, ImGui::GetFrameHeight() * 0.6f);
     ImGui::ProgressBar(std::min(status.intensity / kMeterScale, 1.0f), meterSize, "");

@@ -21,10 +21,11 @@ constexpr int kPulseFrames = 4;
 // Sensors report zeros or stale data for a moment after being switched on.
 constexpr int kWarmupFrames = 6;
 constexpr float kIntensityDecay = 0.85f;
-// Real sensors always jitter; identical readings mean something else (Steam,
-// for one) switched the stream off, so ask for it again.
+// Real sensors always jitter; identical readings mean the stream was switched
+// off behind our back, so ask for it again a few times.
 constexpr int kStaleFrames = 30;
 constexpr uint64_t kResyncIntervalUs = 2'000'000;
+constexpr int kMaxResyncs = 3;
 
 struct PortState {
     SDL_JoystickID id = 0;
@@ -33,6 +34,7 @@ struct PortState {
     int warmup = 0;
     MotionSample previous;
     int staleFrames = 0;
+    int resyncs = 0;
     uint64_t lastResyncUs = 0;
     ShakeDetector detector;
     float displayIntensity = 0.0f;
@@ -43,13 +45,17 @@ struct PortState {
 };
 
 std::atomic<bool> g_enabled{RuntimeConfigFile::MotionTrickEnabled(false)};
-std::atomic<int> g_sensitivity{std::clamp(RuntimeConfigFile::MotionTrickSensitivity(kDefaultSensitivity),
-                                          kMinSensitivity, kMaxSensitivity)};
+std::atomic<int> g_sensitivity{RuntimeConfigFile::MotionTrickSensitivity(kDefaultSensitivity)};
 
 std::mutex g_mutex;
 std::array<PortState, PAD_CHANMAX> g_ports;
 
+// A keyboard player keeps their controller assigned, but aurora ignores it.
 SDL_Gamepad* GamepadForPort(uint32_t port) {
+    uint32_t keyCount = 0;
+    if (PADGetKeyButtonBindings(port, &keyCount) != nullptr) {
+        return nullptr;
+    }
     const s32 index = PADGetIndexForPort(port);
     return index < 0 ? nullptr : PADGetSDLGamepadForIndex(static_cast<u32>(index));
 }
@@ -111,15 +117,19 @@ bool ResyncIfStale(SDL_Gamepad* gamepad, PortState& state, const MotionSample& s
     const bool stale = SameReading(sample, state.previous) && SDL_GetKeyboardFocus() != nullptr;
     state.previous = sample;
     state.staleFrames = stale ? state.staleFrames + 1 : 0;
-    if (state.staleFrames < kStaleFrames || now - state.lastResyncUs < kResyncIntervalUs) {
+    if (!stale) {
+        state.resyncs = 0;
+    }
+    if (state.staleFrames < kStaleFrames || state.resyncs >= kMaxResyncs ||
+        now - state.lastResyncUs < kResyncIntervalUs) {
         return false;
     }
     SetSensors(gamepad, state, false);
     SetSensors(gamepad, state, true);
     state.staleFrames = 0;
+    ++state.resyncs;
     state.lastResyncUs = now;
     state.warmup = kWarmupFrames;
-    state.detector.Reset();
     return true;
 }
 
@@ -182,21 +192,18 @@ void Apply(PADStatus* statuses) noexcept {
         }
         if (state.warmup > 0) {
             --state.warmup;
-            continue;
-        }
-
-        const MotionSample sample = ReadSample(gamepad, state);
-        if (ResyncIfStale(gamepad, state, sample, now)) {
-            continue;
-        }
-        state.detector.SetSensitivity(sensitivity);
-        const Direction fired = state.detector.Update(sample, now);
-        state.displayIntensity = std::max(state.detector.Intensity(), state.displayIntensity * kIntensityDecay);
-        if (fired != Direction::None) {
-            state.lastTrick = fired;
-            state.lastTrickUs = now;
-            state.pulse = fired;
-            state.pulseFrames = kPulseFrames;
+        } else if (const MotionSample sample = ReadSample(gamepad, state);
+                   !ResyncIfStale(gamepad, state, sample, now)) {
+            state.detector.SetSensitivity(sensitivity);
+            const Direction fired = state.detector.Update(sample, now);
+            state.displayIntensity =
+                std::max(state.detector.Intensity(), state.displayIntensity * kIntensityDecay);
+            if (fired != Direction::None) {
+                state.lastTrick = fired;
+                state.lastTrickUs = now;
+                state.pulse = fired;
+                state.pulseFrames = kPulseFrames;
+            }
         }
         if (blocked) {
             state.pulseFrames = 0;
@@ -214,7 +221,7 @@ PortStatus Status(uint32_t port) noexcept {
     }
     std::lock_guard<std::mutex> lock(g_mutex);
     const PortState& state = g_ports[port];
-    return {state.displayIntensity, state.lastTrick, state.lastTrickUs};
+    return {state.displayIntensity, state.lastTrick, state.lastTrickUs, state.id != 0 && !state.gyro && !state.accel};
 }
 
 } // namespace MotionTrick

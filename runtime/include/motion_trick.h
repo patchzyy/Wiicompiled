@@ -27,6 +27,7 @@ struct PortStatus {
     float intensity = 0.0f; // decaying peak, 1 being the trigger threshold
     Direction lastTrick = Direction::None;
     uint64_t lastTrickUs = 0;
+    bool sensorsUnavailable = false; // the controller refused to turn its sensors on
 };
 PortStatus Status(uint32_t port) noexcept;
 
