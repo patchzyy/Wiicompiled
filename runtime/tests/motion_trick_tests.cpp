@@ -22,11 +22,9 @@ void Check(bool ok, const std::string& what) {
     }
 }
 
-// Built from bits so -ffast-math cannot assume them away.
-float FromBits(uint32_t bits) {
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
+// Written as raw bits so no float operation under -ffast-math can drop them.
+void SetBits(float& target, uint32_t bits) {
+    std::memcpy(&target, &bits, sizeof(target));
 }
 
 MotionSample Gyro(float pitch, float yaw, float roll) {
@@ -202,10 +200,16 @@ void TestNoSensorsNeverFires() {
 
 void TestBadDataIgnored() {
     Run run;
-    const float nan = FromBits(0x7fc00000u);
-    const float inf = FromBits(0x7f800000u);
-    run.Feed(Gyro(nan, 0.0f, 0.0f), 10);
-    run.Feed(Gyro(inf, 0.0f, 0.0f), 10);
+    for (const uint32_t bits : {0x7fc00000u, 0x7f800000u}) {
+        MotionSample gyro = AtRest();
+        SetBits(gyro.gyro[0], bits);
+        run.Feed(gyro, 10);
+
+        MotionSample accel;
+        accel.hasAccel = true;
+        SetBits(accel.accel[1], bits);
+        run.Feed(accel, 10);
+    }
     Check(run.fired.empty(), "NaN or infinite sensor data fired a trick");
     run.Flick(Gyro(10.0f, 0.0f, 0.0f));
     Check(run.fired.size() == 1, "detector did not recover after NaN data");
