@@ -87,6 +87,9 @@ struct RuntimeUserConfig {
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
     std::optional<bool> rumbleEnabled;
+    // Shake a motion controller to press the D-pad, like shaking a Wii Remote.
+    std::optional<bool> motionTrick;
+    std::optional<int32_t> motionTrickSensitivity;
     std::optional<int32_t> muteHotkey;
     std::map<std::string, std::string> controllerExpressions;
 };
@@ -390,6 +393,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
 
     config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
+    config.motionTrick = FindConfigValue<bool>(document, "controller", "motion_trick");
+    if (const auto value = FindConfigInt(document, "controller", "motion_trick_sensitivity"); value && *value >= 1 && *value <= 5) {
+        config.motionTrickSensitivity = *value;
+    }
     if (auto value = FindConfigInt(document, "audio", "mute_key")) {
         config.muteHotkey = *value;
     }
@@ -699,6 +706,24 @@ inline bool RumbleEnabled(bool fallback = true) {
 inline bool SetRumbleEnabled(bool value) {
     Mutable().rumbleEnabled = value;
     return WriteSetting("controller", "rumble", value ? "true" : "false");
+}
+
+inline bool MotionTrickEnabled(bool fallback = false) {
+    return Get().motionTrick.value_or(fallback);
+}
+
+inline bool SetMotionTrickEnabled(bool value) {
+    Mutable().motionTrick = value;
+    return WriteSetting("controller", "motion_trick", value ? "true" : "false");
+}
+
+inline int32_t MotionTrickSensitivity(int32_t fallback = 3) {
+    return Get().motionTrickSensitivity.value_or(fallback);
+}
+
+inline bool SetMotionTrickSensitivity(int32_t value) {
+    Mutable().motionTrickSensitivity = value;
+    return WriteSetting("controller", "motion_trick_sensitivity", std::to_string(value));
 }
 
 inline int32_t MuteHotkey(int32_t fallback) {

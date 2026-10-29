@@ -5,6 +5,7 @@
 #include "controller_button_names.h"
 #include "controller_mapping_wizard.h"
 #include "input_bindings.h"
+#include "motion_trick.h"
 #include "game_graphics_options.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
@@ -745,6 +746,69 @@ void DrawRumbleSettings() {
     }
 }
 
+const char* TrickDirectionLabel(MotionTrick::Direction direction) {
+    switch (direction) {
+    case MotionTrick::Direction::Up: return "up";
+    case MotionTrick::Direction::Down: return "down";
+    case MotionTrick::Direction::Left: return "left";
+    case MotionTrick::Direction::Right: return "right";
+    default: return "";
+    }
+}
+
+void DrawMotionTrickSettings(uint32_t port) {
+    const bool hasMotion = MotionTrick::PortHasMotion(port);
+    bool enabled = MotionTrick::Enabled();
+    ImGui::BeginDisabled(!hasMotion);
+    if (ImGui::Checkbox("Shake to trick", &enabled)) {
+        MotionTrick::SetEnabled(enabled);
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip(hasMotion
+            ? "Flick the controller to trick off ramps, or to wheelie on a bike, like shaking a Wii Remote.\n"
+              "The flick direction picks the trick. The D-pad keeps working. Applies to every player."
+            : "Steam Input can hide a controller's motion sensor; turn it off for this game to use it here.");
+    }
+    if (!hasMotion) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(no motion sensor)");
+        return;
+    }
+    if (!enabled) {
+        return;
+    }
+
+    ImGui::Indent();
+    int sensitivity = MotionTrick::Sensitivity();
+    ImGui::SetNextItemWidth(160.0f);
+    if (ImGui::SliderInt("Sensitivity##motion", &sensitivity, MotionTrick::kMinSensitivity,
+                         MotionTrick::kMaxSensitivity, "%d", ImGuiSliderFlags_AlwaysClamp)) {
+        MotionTrick::SetSensitivity(sensitivity);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Higher reacts to smaller flicks. Lower it if you trick or wheelie by accident while steering.");
+    }
+
+    constexpr float kMeterScale = 1.5f;
+    const MotionTrick::PortStatus status = MotionTrick::Status(port);
+    const ImVec2 meterPos = ImGui::GetCursorScreenPos();
+    const ImVec2 meterSize(160.0f, ImGui::GetFrameHeight() * 0.6f);
+    ImGui::ProgressBar(std::min(status.intensity / kMeterScale, 1.0f), meterSize, "");
+    const float thresholdX = meterPos.x + meterSize.x / kMeterScale;
+    ImGui::GetWindowDrawList()->AddLine(ImVec2(thresholdX, meterPos.y), ImVec2(thresholdX, meterPos.y + meterSize.y),
+                                        ImGui::GetColorU32(ImGuiCol_Text), 2.0f);
+    ImGui::SameLine();
+    const bool recent = status.lastTrick != MotionTrick::Direction::None &&
+                        MotionTrick::NowUs() - status.lastTrickUs < 700'000;
+    if (recent) {
+        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "Trick! (%s)", TrickDirectionLabel(status.lastTrick));
+    } else {
+        ImGui::TextDisabled("Flick to test");
+    }
+    ImGui::Unindent();
+}
+
 void DrawGamepadMapping(uint32_t port) {
     uint32_t mappingCount = 0;
     PADButtonMapping* mappings = PADGetButtonMappings(port, &mappingCount);
@@ -985,6 +1049,7 @@ void DrawControllerSettings() {
         }
     } else {
         ImGui::TextUnformatted("Ready to play.");
+        DrawMotionTrickSettings(port);
         if (ImGui::CollapsingHeader("Customize buttons")) {
             ImGui::Indent();
             DrawGamepadMapping(port);

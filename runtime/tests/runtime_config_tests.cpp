@@ -65,6 +65,19 @@ int main() {
                          config.widescreen == std::optional<bool>{false} && !config.legacyForceAspect,
                      "legacy force_16_9 overrode force_aspect")) return 1;
     }
+    {
+        std::istringstream input("[controller]\nmotion_trick = true\nmotion_trick_sensitivity = 5\n");
+        const RuntimeUserConfig config = RuntimeConfigFile::ParseConfig(input, "motion.toml");
+        if (!Require(config.motionTrick == std::optional<bool>{true} &&
+                         config.motionTrickSensitivity == std::optional<int32_t>{5},
+                     "shake to trick settings were not loaded")) return 1;
+    }
+    {
+        std::istringstream input("[controller]\nmotion_trick_sensitivity = 9\n");
+        const RuntimeUserConfig config = RuntimeConfigFile::ParseConfig(input, "motion-range.toml");
+        if (!Require(!config.motionTrick && !config.motionTrickSensitivity,
+                     "out of range shake to trick sensitivity was accepted")) return 1;
+    }
     if (!SetsFps("[video]\nshow_fps = false\n", "bare key was not replaced")) return 1;
     if (!SetsFps("[video]\n\"show_fps\" = false\n", "basic-quoted key was not replaced")) return 1;
     if (!SetsFps("[video]\n'show_fps'=false\n", "literal-quoted key was not replaced")) return 1;
