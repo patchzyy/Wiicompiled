@@ -2,7 +2,7 @@
 
 #include <cmath>
 #include <cstdio>
-#include <limits>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -20,6 +20,13 @@ void Check(bool ok, const std::string& what) {
         std::printf("  FAIL: %s\n", what.c_str());
         ++g_failures;
     }
+}
+
+// Built from bits so -ffast-math cannot assume them away.
+float FromBits(uint32_t bits) {
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 MotionSample Gyro(float pitch, float yaw, float roll) {
@@ -195,9 +202,11 @@ void TestNoSensorsNeverFires() {
 
 void TestBadDataIgnored() {
     Run run;
-    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float nan = FromBits(0x7fc00000u);
+    const float inf = FromBits(0x7f800000u);
     run.Feed(Gyro(nan, 0.0f, 0.0f), 10);
-    Check(run.fired.empty(), "NaN sensor data fired a trick");
+    run.Feed(Gyro(inf, 0.0f, 0.0f), 10);
+    Check(run.fired.empty(), "NaN or infinite sensor data fired a trick");
     run.Flick(Gyro(10.0f, 0.0f, 0.0f));
     Check(run.fired.size() == 1, "detector did not recover after NaN data");
 }
