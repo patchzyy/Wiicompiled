@@ -168,9 +168,14 @@ void TestGyroOnlyController() {
     Run run;
     MotionSample flick = Gyro(10.0f, 0.0f, 0.0f);
     flick.hasAccel = false;
+    MotionSample rest = AtRest();
+    rest.hasAccel = false;
     run.Flick(flick);
-    run.Feed(AtRest(), 60);
-    Check(run.fired.size() == 1 && run.fired[0] == Direction::Up, "gyro-only flick did not give Up");
+    run.Feed(rest, 60);
+    run.Flick(flick);
+    run.Feed(rest, 60);
+    Check(run.fired.size() == 2 && run.fired[0] == Direction::Up && run.fired[1] == Direction::Up,
+          "repeated gyro-only flicks did not give two Up tricks");
 }
 
 void TestGyroPadIgnoresAccel() {
@@ -201,14 +206,16 @@ void TestNoSensorsNeverFires() {
 void TestBadDataIgnored() {
     Run run;
     for (const uint32_t bits : {0x7fc00000u, 0x7f800000u}) {
-        MotionSample gyro = AtRest();
-        SetBits(gyro.gyro[0], bits);
-        run.Feed(gyro, 10);
+        for (int axis = 0; axis < 3; ++axis) {
+            MotionSample gyro = AtRest();
+            SetBits(gyro.gyro[axis], bits);
+            run.Feed(gyro, 10);
 
-        MotionSample accel;
-        accel.hasAccel = true;
-        SetBits(accel.accel[1], bits);
-        run.Feed(accel, 10);
+            MotionSample accel;
+            accel.hasAccel = true;
+            SetBits(accel.accel[axis], bits);
+            run.Feed(accel, 10);
+        }
     }
     Check(run.fired.empty(), "NaN or infinite sensor data fired a trick");
     run.Flick(Gyro(10.0f, 0.0f, 0.0f));
