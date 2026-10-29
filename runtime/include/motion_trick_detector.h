@@ -28,7 +28,6 @@ public:
 
     void SetSensitivity(int level);
     Direction Update(const MotionSample& sample, uint64_t nowUs);
-    void Reset();
 
     // Strength of the last sample, 1 being the trigger threshold.
     float Intensity() const { return m_intensity; }

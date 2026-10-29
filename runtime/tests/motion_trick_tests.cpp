@@ -159,6 +159,15 @@ void TestAccelOnlyController() {
     Check(run.fired.size() == 1 && run.fired[0] == Direction::Up, "accelerometer jolt did not give Up");
 }
 
+void TestGyroOnlyController() {
+    Run run;
+    MotionSample flick = Gyro(10.0f, 0.0f, 0.0f);
+    flick.hasAccel = false;
+    run.Flick(flick);
+    run.Feed(AtRest(), 60);
+    Check(run.fired.size() == 1 && run.fired[0] == Direction::Up, "gyro-only flick did not give Up");
+}
+
 void TestGyroPadIgnoresAccel() {
     Run bump;
     MotionSample jolt = AtRest();
@@ -193,14 +202,6 @@ void TestBadDataIgnored() {
     Check(run.fired.size() == 1, "detector did not recover after NaN data");
 }
 
-void TestReset() {
-    Run run;
-    run.Flick(Gyro(10.0f, 0.0f, 0.0f));
-    run.detector.Reset();
-    run.Flick(Gyro(10.0f, 0.0f, 0.0f));
-    Check(run.fired.size() == 2, "Reset did not re-arm the detector");
-}
-
 } // namespace
 
 int main() {
@@ -213,10 +214,10 @@ int main() {
     TestDirections();
     TestSensitivity();
     TestAccelOnlyController();
+    TestGyroOnlyController();
     TestGyroPadIgnoresAccel();
     TestNoSensorsNeverFires();
     TestBadDataIgnored();
-    TestReset();
     if (g_failures != 0) {
         std::printf("%d failure(s)\n", g_failures);
         return 1;

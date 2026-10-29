@@ -38,12 +38,6 @@ void ShakeDetector::SetSensitivity(int level) {
     m_accelThreshold = kAccelThresholds[index];
 }
 
-void ShakeDetector::Reset() {
-    m_intensity = 0.0f;
-    m_armed = true;
-    m_lastFireUs = 0;
-}
-
 Direction ShakeDetector::Update(const MotionSample& sample, uint64_t nowUs) {
     // The accelerometer only stands in for a missing gyro: on a gyro pad it
     // mostly picks up bumps, and it carries no direction.
