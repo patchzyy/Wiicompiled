@@ -132,10 +132,15 @@ public sealed partial class CxxLinearCodeGenerator
             gqrConstantsRequireRuntimeGuard);
         // Call-free proven kernels amortize very small ranges. Ordinary functions
         // use the epoch-safe scalar form and a higher threshold to avoid adding
-        // pointer locals for incidental field pairs.
-        func = GuestMemoryRangeLowering.Lower(
-            func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
-            scalarOnly: !hasProvenKernelEntry);
+        // pointer locals for incidental field pairs. Range resolves and access pairs
+        // are placed by the static CFG, so a body that can be resumed at any
+        // instruction label keeps its plain accesses.
+        if (!HasOutOfBandLocalEntry(func, nonReturningCallTargets, lrContinuationCallTargets))
+        {
+            func = GuestMemoryRangeLowering.Lower(
+                func, minimumAccesses: hasProvenKernelEntry ? 2 : 8, ignoreDisabledPcTraces: true,
+                scalarOnly: !hasProvenKernelEntry);
+        }
         var architecturalFunc = func;
         var guestAbiContract = GuestAbiContractAnalyzer.Analyze(architecturalFunc, guestAbiContracts);
         var cfg = IrCfg.Build(func);
@@ -377,9 +382,18 @@ public sealed partial class CxxLinearCodeGenerator
                     var blockSuppressed = suppressedInstructionMasks.TryGetValue(block.Label, out var suppressedMask)
                         ? suppressedMask
                         : null;
+                    var continuationLabelsByStart = MapContinuationLabelsToInstructionStarts(
+                        block.Instructions, instructionContinuationLabels);
 
                     for (var i = 0; i < nonTerminatorCount; i++)
                     {
+                        if (continuationLabelsByStart is not null &&
+                            continuationLabelsByStart.TryGetValue(i, out var continuationLabel))
+                        {
+                            RecordEmittedLocalLabel(continuationLabel);
+                            body.AppendLine($"{continuationLabel}: ;");
+                        }
+
                         var directCallOrdinal = -1;
                         if (block.Instructions[i] is IrCall ordinalCall)
                         {
@@ -397,12 +411,6 @@ public sealed partial class CxxLinearCodeGenerator
                             continue;
                         }
 
-                        if (block.Instructions[i] is IrTracePpc trace &&
-                            instructionContinuationLabels.TryGetValue(trace.Address, out var continuationLabel))
-                        {
-                            RecordEmittedLocalLabel(continuationLabel);
-                            body.AppendLine($"{continuationLabel}: ;");
-                        }
                         var localFallthroughLr = TryGetLocalFallthroughLr(block.Instructions, i, nonReturningCallTargets, lrContinuationCallTargets);
                         // State-free bodies are cloned after register caching and lose their
                         // direct-call fallbacks, so this initial emission (which must stay a
@@ -711,6 +719,39 @@ public sealed partial class CxxLinearCodeGenerator
     private static string EscapeCxxStringLiteral(string value) =>
         value.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    /// <summary>
+    /// A guest instruction's trace follows its lowered IR, but a resume through LR
+    /// must run that instruction, so its label goes where the instruction's IR starts.
+    /// </summary>
+    private static Dictionary<int, string>? MapContinuationLabelsToInstructionStarts(
+        IReadOnlyList<IrInstruction> instructions,
+        IReadOnlyDictionary<uint, string> continuationLabels)
+    {
+        if (continuationLabels.Count == 0)
+        {
+            return null;
+        }
+
+        Dictionary<int, string>? labelsByStart = null;
+        var start = 0;
+        for (var i = 0; i < instructions.Count; i++)
+        {
+            if (instructions[i] is not IrTracePpc trace)
+            {
+                continue;
+            }
+
+            if (continuationLabels.TryGetValue(trace.Address, out var label))
+            {
+                (labelsByStart ??= new Dictionary<int, string>())[start] = label;
+            }
+
+            start = i + 1;
+        }
+
+        return labelsByStart;
+    }
 
     private static uint? TryGetLocalFallthroughLr(
         IReadOnlyList<IrInstruction> instructions,
