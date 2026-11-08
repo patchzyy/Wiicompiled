@@ -434,6 +434,7 @@ public sealed partial class CxxLinearCodeGenerator
                     var localConstants = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
                     var label = labelNames[block.Label];
                     RecordEmittedLocalLabel(label);
+                    _activeResidency?.BeginBlock(block.Label);
                     body.AppendLine($"{label}:");
                     body.AppendLine("{");
                     var localPaired = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
@@ -523,12 +524,12 @@ public sealed partial class CxxLinearCodeGenerator
                     {
                         case IrUndefined undef:
                             EmitInstruction(block.Label, -1, undef, body, bufferBaseLength, 1, cfg, labelNames, types, signature, localPaired, _guestAbiProvider, knownConstants, localConstants, linkedAddressRemap, nonReturningCallTargets, lrContinuationCallTargets, stackFacts, inlineGuestThunkStackBase: false, localFallthroughLr: null, guestAbiContracts, stateFreeAbiContracts, stateFreeCallSymbols, stateFreeCallSiteVariants, modOverridableCallTargets, shareLrContinuationDispatch, resumeLabelPairedStates);
-                            AppendFlush(body, "    ");
+                            AppendExitFlush(body, "    ");
                             body.AppendLine("    return;");
                             break;
 
                         case IrReturn ret:
-                            AppendFlush(body, "    ");
+                            AppendExitFlush(body, "    ");
                             body.AppendLine("    return;");
                             break;
 
@@ -576,7 +577,7 @@ public sealed partial class CxxLinearCodeGenerator
                             // Unlisted selectors leave this frame through the
                             // dispatcher: publish the locals and never write
                             // them back afterwards.
-                            AppendFlush(body, "        ");
+                            AppendExitFlush(body, "        ");
                             body.AppendLine($"        InvokeIndirectJump({selectorExpr}, ctx);");
                             body.AppendLine("        return;");
                             body.AppendLine("    }");
@@ -597,7 +598,7 @@ public sealed partial class CxxLinearCodeGenerator
                                 // unreachable and must not write them back.
                                 if (term is not IrIndirectJump)
                                 {
-                                    AppendFlush(body, "    ");
+                                    AppendExitFlush(body, "    ");
                                 }
                                 body.AppendLine("    return;");
                             }
@@ -647,7 +648,9 @@ public sealed partial class CxxLinearCodeGenerator
             Environment.NewLine.Length;
         RegisterResidency? residency = null;
         {
-            var recorder = RegisterResidency.CreateRecorder();
+            // A body that can resume through a local LR-continuation label has CFG edges the dirty-register
+            // analysis does not model, so it keeps the write-back-everything-written behaviour.
+            var recorder = RegisterResidency.CreateRecorder(func.EntryLabel, conservative: continuationCallCount > 0);
             EmitFunctionBody(recorder, bodyBufferBaseLength, discardResult: true);
             var discovered = recorder.Snapshot();
             if (!discovered.IsEmpty)
@@ -1170,6 +1173,9 @@ public sealed partial class CxxLinearCodeGenerator
         IReadOnlyDictionary<string, HashSet<string>> pairedIn,
         IReadOnlyDictionary<string, HashSet<string>>? liveIn)
     {
+        // The edge's own register writes (normalization) and its target are what the dirty-register
+        // dataflow needs; every emitted CFG edge goes through here.
+        _activeResidency?.BeginEdge(toLabel);
         pairedOut.TryGetValue(fromLabel, out var fromSet);
         pairedIn.TryGetValue(toLabel, out var toSet);
 
@@ -1208,6 +1214,8 @@ public sealed partial class CxxLinearCodeGenerator
                 ? $"{pad}{regExpr} = PPC_PsFromScalarInline({regExpr});"
                 : $"{pad}{regExpr} = PPC_PsToScalarInline({regExpr});");
         }
+
+        _activeResidency?.EndEdge();
     }
 
     private static int ParseFloatRegisterIndex(string name)
