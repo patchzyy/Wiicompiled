@@ -129,7 +129,12 @@ public sealed class KamekLrContinuationIntegrationTests
         Assert.True(guard > call, $"The hook must dispatch its adjusted return address.\n{source}");
         Assert.Contains($"case 0x{continuation:X8}u:", source[guard..]);
         Assert.Contains($"goto loc_{continuation:X8};", source[guard..]);
-        Assert.Contains($"loc_{continuation:X8}:", source);
+        var label = source.IndexOf($"loc_{continuation:X8}: ;", StringComparison.Ordinal);
+        Assert.True(label >= 0, source);
+        // Resuming must execute the instruction at the continuation address, not skip it.
+        var next = source.IndexOf("loc_", label + 1, StringComparison.Ordinal);
+        var resumed = next < 0 ? source[label..] : source[label..next];
+        Assert.Contains("r3 = (r3 + 2);", resumed);
     }
 
     private static uint[] SkipReturn(int offset) =>
@@ -151,8 +156,9 @@ public sealed class KamekLrContinuationIntegrationTests
         Directory.CreateDirectory(root);
         try
         {
+            // Caller + 24 is the resume address, so it holds a real instruction (addi r3,r3,2).
             uint[] caller = [0x60000000u, 0x38630001u, 0x38630001u, 0x38630001u,
-                0x38630001u, 0x38630001u, 0x60000000u, 0x4E800020u];
+                0x38630001u, 0x38630001u, 0x38630002u, 0x4E800020u];
             var hasSecondCaller = sharedTarget || companionBody is not null;
             var baseWords = Enumerable.Repeat(0x4E800020u, hasSecondCaller ? 24 : 8).ToArray();
             caller.CopyTo(baseWords, 0);
