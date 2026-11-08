@@ -250,6 +250,46 @@ public class GpuFifoBurstCodeGenTests
         Assert.Contains("MemoryInline::FlatWriteFloat64", code, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ResumableBodiesKeepIndividualFifoStores(bool resumable)
+    {
+        // A hook resuming at a later store would otherwise flush burst slots it never wrote.
+        var body = new List<IrInstruction>
+        {
+            new IrAssign("lr", IrValue.Imm(0x80001008)),
+            new IrCall(string.Empty, "0x8179AC3C", Array.Empty<IrValue>()),
+            new IrTracePpc(0x80001004u, "bl", "0x48000001")
+        };
+        for (var index = 0; index < 4; index++)
+        {
+            body.Add(FifoStore("r3", 4));
+            body.Add(new IrTracePpc(0x80001008u + (uint)index * 4, "stw", "0x90000000"));
+        }
+        body.Add(new IrReturn(null));
+        var function = Function("burst_resumable", body.ToArray());
+        var registers = Enumerable.Range(0, 12)
+            .ToDictionary(index => $"r{index}", _ => ValueRepresentation.UInt32);
+        registers["lr"] = ValueRepresentation.UInt32;
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80001000u,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            new RepresentationEnvironment(registers),
+            lrContinuationCallTargets: resumable ? new HashSet<uint> { 0x8179AC3Cu } : new HashSet<uint>());
+
+        if (!resumable)
+        {
+            Assert.Contains("GX_HLE_FIFO_WriteBurst(", code, StringComparison.Ordinal);
+            return;
+        }
+
+        Assert.DoesNotContain("GX_HLE_FIFO_WriteBurst(", code, StringComparison.Ordinal);
+        Assert.Equal(4, CountOccurrences(code, "GX_HLE_FIFO_Write32("));
+    }
+
     private static int CountOccurrences(string text, string value)
     {
         var count = 0;

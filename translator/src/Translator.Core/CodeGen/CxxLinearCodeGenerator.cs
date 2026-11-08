@@ -275,8 +275,10 @@ public sealed partial class CxxLinearCodeGenerator
         var nextBlockLabels = BuildNextBlockLabelMap(func);
         var knownConstants = BuildKnownUIntConstants(func);
         // Burst coalescing is planned once against the final IR so every
-        // emission of this body sees the same runs and the same buffer names.
-        var gpuFifoBurstPlan = BuildGpuFifoBurstPlan(func, knownConstants, enableGpuFifoBurstCoalescing);
+        // emission of this body sees the same runs and the same buffer names. A
+        // resume into the middle of a burst would flush slots it never wrote.
+        var gpuFifoBurstPlan = BuildGpuFifoBurstPlan(
+            func, knownConstants, enableGpuFifoBurstCoalescing && !needsInstructionContinuationLabels);
         // The state-free clone is derived by rewriting this body's text, and it
         // rewrites the ctx-carrying PSQ helper spellings into the explicit-state
         // ones. Hoisting changes those spellings, so leave it off for the bodies
