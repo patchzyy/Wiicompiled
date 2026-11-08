@@ -387,7 +387,9 @@ public sealed partial class CxxLinearCodeGenerator
                         EmitNormalizeGuestCallFloatReturn(call.Target, sb, pad, localPaired, guestAbiProvider);
                         break;
                     }
-                    var boundarySync = usesStateFreeCall || argumentNormalization.Length != 0
+                    // A resume through LR can run code outside this callee's
+                    // contract, including another function reading ctx.
+                    var boundarySync = usesStateFreeCall || argumentNormalization.Length != 0 || resumesThroughLinkRegister
                         ? ResidencyBoundarySync.Full
                         : ResolveDirectCallBoundarySync(addr, guestAbiContracts, modOverridableCallTargets);
                     if (!boundarySync.IsFull &&
