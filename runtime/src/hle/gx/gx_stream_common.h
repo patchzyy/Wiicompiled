@@ -361,19 +361,26 @@ struct AuroraVtxPublishOptions {
     int fmtLoopLast;
 };
 
+// One GXSetVtxDescv and one GXSetVtxAttrFmtv, which leave aurora's registers and dirty bits exactly
+// as the per-attribute GXSetVtxDesc / GXSetVtxAttrFmt calls in the same order did.
 inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options) {
+    GXVtxDescList descs[27];
+    size_t descCount = 0;
     for (int attr = 0; attr < 26; ++attr) {
         if (!options.includeNbt && attr == GX_VA_NBT) {
             continue;
         }
-        const GXAttr gxAttr = static_cast<GXAttr>(attr);
         GXAttrType type = g_hleGxState.vtxDesc[attr];
         if (type == GX_INDEX8 || type == GX_INDEX16) {
             type = GX_DIRECT;
         }
-        GXSetVtxDesc(gxAttr, type);
+        descs[descCount++] = GXVtxDescList{static_cast<GXAttr>(attr), type};
     }
+    descs[descCount] = GXVtxDescList{GX_VA_NULL, GX_NONE};
+    GXSetVtxDescv(descs);
 
+    GXVtxAttrFmtList fmts[27];
+    size_t fmtCount = 0;
     for (int attr = options.fmtLoopFirst; attr <= options.fmtLoopLast; ++attr) {
         if (!options.includeNbt && attr == GX_VA_NBT) {
             continue;
@@ -383,7 +390,11 @@ inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& o
             continue;
         }
         const auto& f = g_hleGxState.vtxAttrFmt[fmt][attr];
-        GXSetVtxAttrFmt(fmt, gxAttr, f.cnt, f.type, f.frac);
+        fmts[fmtCount++] = GXVtxAttrFmtList{gxAttr, f.cnt, f.type, f.frac};
+    }
+    if (fmtCount != 0) {
+        fmts[fmtCount] = GXVtxAttrFmtList{GX_VA_NULL, GX_POS_XYZ, GX_F32, 0};
+        GXSetVtxAttrFmtv(fmt, fmts);
     }
 }
 
