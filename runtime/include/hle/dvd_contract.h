@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -294,14 +295,57 @@ inline bool ReadExact(const std::filesystem::path& hostPath,
                       HostReadFailure& failure) {
     failure = HostReadFailure::None;
 
-    std::ifstream file(hostPath, std::ios::binary);
-    if (!file.is_open()) {
-        failure = HostReadFailure::MissingFile;
-        return false;
+    // DVD callbacks run on the guest thread, often reading the same stream
+    // file many times per second. Reuse a bounded set of handles without
+    // sharing seek positions with another host thread.
+    struct OpenFile {
+        std::filesystem::path path;
+        std::ifstream stream;
+        std::streamoff size = 0;
+        std::filesystem::file_time_type modified{};
+        uint64_t lastUse = 0;
+    };
+    static thread_local std::vector<OpenFile> openFiles;
+    static thread_local uint64_t useCount = 0;
+    constexpr size_t kMaxOpenFiles = 8;
+
+    auto found = std::find_if(openFiles.begin(), openFiles.end(),
+                              [&](const OpenFile& entry) { return entry.path == hostPath; });
+    if (found != openFiles.end()) {
+        std::error_code ec;
+        const auto modified = std::filesystem::last_write_time(hostPath, ec);
+        if (ec || modified != found->modified) {
+            openFiles.erase(found);
+            found = openFiles.end();
+        }
     }
 
-    file.seekg(0, std::ios::end);
-    const std::streamoff fileSize = file.tellg();
+    if (found == openFiles.end()) {
+        std::ifstream file(hostPath, std::ios::binary);
+        if (!file.is_open()) {
+            failure = HostReadFailure::MissingFile;
+            return false;
+        }
+        file.seekg(0, std::ios::end);
+        const std::streamoff size = file.tellg();
+        if (size < 0) {
+            failure = HostReadFailure::BadOffset;
+            return false;
+        }
+        std::error_code ec;
+        const auto modified = std::filesystem::last_write_time(hostPath, ec);
+        if (openFiles.size() == kMaxOpenFiles) {
+            const auto oldest = std::min_element(openFiles.begin(), openFiles.end(),
+                [](const OpenFile& a, const OpenFile& b) { return a.lastUse < b.lastUse; });
+            openFiles.erase(oldest);
+        }
+        openFiles.push_back({hostPath, std::move(file), size,
+                             ec ? std::filesystem::file_time_type{} : modified, 0});
+        found = std::prev(openFiles.end());
+    }
+    found->lastUse = ++useCount;
+
+    const std::streamoff fileSize = found->size;
     if (fileSize < 0 ||
         offset > static_cast<uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
         offset >= static_cast<uint64_t>(fileSize)) {
@@ -316,17 +360,20 @@ inline bool ReadExact(const std::filesystem::path& hostPath,
     }
 
     std::vector<uint8_t> staged(length);
-    file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!file) {
+    found->stream.clear();
+    found->stream.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+    if (!found->stream) {
         failure = HostReadFailure::BadOffset;
+        openFiles.erase(found);
         return false;
     }
 
     if (length != 0) {
-        file.read(reinterpret_cast<char*>(staged.data()),
-                  static_cast<std::streamsize>(length));
-        if (file.gcount() != static_cast<std::streamsize>(length)) {
+        found->stream.read(reinterpret_cast<char*>(staged.data()),
+                           static_cast<std::streamsize>(length));
+        if (found->stream.gcount() != static_cast<std::streamsize>(length)) {
             failure = HostReadFailure::ShortRead;
+            openFiles.erase(found);
             return false;
         }
     }
