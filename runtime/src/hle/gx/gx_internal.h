@@ -154,9 +154,9 @@ struct TexObjSlot : TexObjMeta {
     uint64_t guestShadow[4] = {0, 0, 0, 0};
     bool hasGuestShadow = false;
 
-    // DCStoreRange interval-index bookkeeping: what this slot currently
-    // contributes to g_texObjIntervals, so a pending update that turns out to
-    // be a no-op costs a compare instead of an erase + insert.
+    // DCStoreRange interval-index bookkeeping: the range this slot is listed
+    // under in g_texObjBuckets, so a pending update that turns out to be a
+    // no-op costs a compare instead of an unlist + relist.
     uint32_t indexedDataAddr = 0;
     uint32_t indexedSize = 0;
     bool inIntervalIndex = false;
