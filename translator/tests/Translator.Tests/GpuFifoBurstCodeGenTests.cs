@@ -253,9 +253,10 @@ public class GpuFifoBurstCodeGenTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void ResumableBodiesKeepIndividualFifoStores(bool resumable)
+    public void ResumableBodiesKeepCheckedFifoStores(bool resumable)
     {
-        // A hook resuming at a later store would otherwise flush burst slots it never wrote.
+        // A hook resuming at a later store would otherwise flush burst slots it never wrote,
+        // and a resumed body cannot prove the constant address still holds.
         var body = new List<IrInstruction>
         {
             new IrAssign("lr", IrValue.Imm(0x80001008)),
@@ -286,8 +287,8 @@ public class GpuFifoBurstCodeGenTests
             return;
         }
 
-        Assert.DoesNotContain("GX_HLE_FIFO_WriteBurst(", code, StringComparison.Ordinal);
-        Assert.Equal(4, CountOccurrences(code, "GX_HLE_FIFO_Write32("));
+        Assert.DoesNotContain("GX_HLE_FIFO_Write", code, StringComparison.Ordinal);
+        Assert.Equal(4, CountOccurrences(code, "MemoryInline::FlatWrite32("));
     }
 
     private static int CountOccurrences(string text, string value)
