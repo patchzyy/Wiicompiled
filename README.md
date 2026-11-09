@@ -254,7 +254,7 @@ WiiCompiled is distributed in the hope that it will be useful, but WITHOUT ANY W
 even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
-Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0.
+Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0 or a more permissable license
 
 Not affiliated with, endorsed by, or associated with Nintendo. Mario Kart Wii is a trademark of
 Nintendo. No Nintendo intellectual property is contained in, distributed with, or obtainable
