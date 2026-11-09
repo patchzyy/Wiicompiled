@@ -1333,13 +1333,6 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         const bool mayContainDraw =
             (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(list, nbytes);
         if (!mayContainDraw) {
-            // Register-only lists are remembered too, so the next call skips the walk.
-            if (cached == nullptr && allowScanCache) {
-                const uint64_t contentDigest =
-                    probe.digestValid ? probe.contentDigest : DlContentDigest(list, nbytes);
-                StoreDlScanCache(listAddr, nbytes, scanLayoutHash, contentDigest, probe.writeGeneration,
-                                 false, DlScanCacheEntry{}, {}, nullptr, 0);
-            }
             EnsureAuroraFrameActive();
             GXMarkFrameWork();
             GXCallDisplayList(list, nbytes);

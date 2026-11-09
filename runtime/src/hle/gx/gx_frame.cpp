@@ -1,5 +1,4 @@
 #include "gx_internal.h"
-#include "gx_guest_write.h"
 #include "runtime_log.h"
 
 #include <cstdio>
@@ -27,9 +26,6 @@ void EndDisplayListRecording() {
         Memory::Write32(kDlCountAddr, g_dlRecordState.count);
     } catch (const Memory::AccessViolation&) {
     }
-    // Recording writes the list through ordinary stores, which do not move the write generation the
-    // display-list scan cache trusts; a list re-recorded at the same address must not reuse its old scan.
-    GxGuestWrite::NotifyWrite(g_dlRecordState.base, g_dlRecordState.count);
 }
 
 void WriteDisplayListData(uint32_t val, uint32_t sizeBytes) {
