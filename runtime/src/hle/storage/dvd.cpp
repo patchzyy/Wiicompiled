@@ -103,23 +103,10 @@ extern "C" void DVDInit_8015EA1C();
 extern "C" uint32_t g_dvdFstReservedBase;
 extern "C" uint32_t g_dvdFstReservedSize;
 
-// Copy into guest RAM plus the DMA notification the GX caches need. A fully writable 1 MiB page
-// takes its bytes in one memcpy, since Write8 is a plain store there; any other page keeps Write8.
+// Byte-wise copy into guest RAM plus the DMA notification the GX caches need.
 static void CopyToGuestAsDma(uint32_t dest, const uint8_t* data, size_t size) {
-    size_t done = 0;
-    while (done < size) {
-        const uint32_t address = dest + static_cast<uint32_t>(done);
-        const size_t pageLeft = MemoryInline::kPageSize - (address & MemoryInline::kPageMask);
-        const size_t chunk = std::min(size - done, pageLeft);
-        if (const uintptr_t bias = MemoryInline::g_fullWritablePageBias[address >> MemoryInline::kPageShift];
-            bias != 0) {
-            std::memcpy(reinterpret_cast<uint8_t*>((bias - 1u) + address), data + done, chunk);
-        } else {
-            for (size_t i = 0; i < chunk; ++i) {
-                Memory::Write8(address + static_cast<uint32_t>(i), data[done + i]);
-            }
-        }
-        done += chunk;
+    for (size_t i = 0; i < size; ++i) {
+        Memory::Write8(dest + static_cast<uint32_t>(i), data[i]);
     }
     GxNotifyGuestRamDmaWrite(dest, static_cast<uint32_t>(size));
 }

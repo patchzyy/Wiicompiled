@@ -1,11 +1,8 @@
 #include "gx_internal.h"
 #include "runtime_log.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <limits>
-#include <unordered_map>
-#include <vector>
 
 // --- Texture and TLUT Objects ---
 
@@ -87,16 +84,20 @@ struct TexObjIntervalEntry {
     TexObjSlot* slot = nullptr;
 };
 
-// DCStoreRange invalidation index: every indexed slot is listed in each 64 KiB bucket of guest RAM
-// its texture data overlaps (slot.indexedDataAddr/indexedSize), so a flushed range only looks at
-// the slots in its own buckets. It replaced a vector sorted by data address, which shifted the whole
-// index whenever a texture object moved (memmove was 0.7% of the game thread on a slow Android device, in
-// courses), and walked back over every entry within the largest texture's size of each flush.
-// Mutations queue their slot (an O(1) dedupe flag on the slot) for the next lookup to apply.
-constexpr uint32_t kTexObjBucketShift = 16;
-std::unordered_map<uint32_t, std::vector<TexObjSlot*>> g_texObjBuckets;
+// DCStoreRange invalidation index, sorted by (dataAddr, objAddr). Rebuilding is O(N log N) plus a
+// GXGetTexBufferSize per texobj, so it must not happen once per DCStoreRange: mutations instead
+// queue their slot for a targeted patch. The queue used to be a capacity-limited vector that
+// overflowed under real per-frame GXLoadTexObj volume and silently degraded into a full rebuild
+// every call; the dedupe flag now lives on the slot so queuing is O(1) and uncapped.
+std::vector<TexObjIntervalEntry> g_texObjIntervals;
 std::vector<TexObjSlot*> g_texObjIntervalsPending;
 bool g_texObjIntervalsRebuildAll = true;
+
+// Upper bound on any entry's byte size. The dirty scan walks left from lower_bound(dirtyStart)
+// and needs this to know when no earlier-starting interval can still reach dirtyStart (intervals
+// are sorted by start only, so a larger one could start further back). An overestimate just
+// lengthens the walk, so the patch path only ever raises it and rebuild recomputes it exactly.
+uint32_t g_texObjIntervalMaxSize = 0;
 
 // Address bounds of every registered TLUT payload, so a DCStoreRange over an
 // unrelated buffer can skip the g_TlutObjMeta scan entirely. Recomputed lazily
@@ -238,6 +239,13 @@ bool IsUsableTexObjMeta(const TexObjMeta& meta) {
            IsKnownTexFormat(meta.format);
 }
 
+bool TexObjIntervalLess(const TexObjIntervalEntry& lhs, const TexObjIntervalEntry& rhs) {
+    if (lhs.dataAddr != rhs.dataAddr) {
+        return lhs.dataAddr < rhs.dataAddr;
+    }
+    return lhs.objAddr < rhs.objAddr;
+}
+
 bool TryBuildTexObjIntervalEntry(TexObjSlot& slot, TexObjIntervalEntry& outEntry) {
     if (!IsUsableTexObjMeta(slot)) {
         return false;
@@ -290,60 +298,28 @@ TexObjSlot& FindOrCreateTexObjSlot(uint32_t addr) {
 
 // --- DCStoreRange interval index --------------------------------------------
 
-// The 64 KiB buckets [first, last] that bytes [start, start + size) touch (size > 0).
-inline uint32_t FirstTexObjBucket(uint64_t start) { return static_cast<uint32_t>(start >> kTexObjBucketShift); }
-inline uint32_t LastTexObjBucket(uint64_t start, uint64_t size) {
-    return static_cast<uint32_t>((start + size - 1u) >> kTexObjBucketShift);
-}
-
-void IndexTexObjSlotLocked(TexObjSlot& slot, uint32_t dataAddr, uint32_t size) {
-    const uint32_t last = LastTexObjBucket(dataAddr, size);
-    for (uint64_t bucket = FirstTexObjBucket(dataAddr); bucket <= last; ++bucket) {
-        g_texObjBuckets[static_cast<uint32_t>(bucket)].push_back(&slot);
-    }
-    slot.indexedDataAddr = dataAddr;
-    slot.indexedSize = size;
-    slot.inIntervalIndex = true;
-}
-
-void UnindexTexObjSlotLocked(TexObjSlot& slot) {
-    if (slot.inIntervalIndex) {
-        const uint32_t last = LastTexObjBucket(slot.indexedDataAddr, slot.indexedSize);
-        for (uint64_t bucket = FirstTexObjBucket(slot.indexedDataAddr); bucket <= last; ++bucket) {
-            const auto it = g_texObjBuckets.find(static_cast<uint32_t>(bucket));
-            if (it == g_texObjBuckets.end()) {
-                continue;
-            }
-            auto& list = it->second;
-            const auto pos = std::find(list.begin(), list.end(), &slot);
-            if (pos != list.end()) {
-                *pos = list.back();
-                list.pop_back();
-            }
-        }
-    }
-    slot.indexedDataAddr = 0;
-    slot.indexedSize = 0;
-    slot.inIntervalIndex = false;
-}
-
 void RebuildTexObjIntervalsLocked() {
-    for (auto& [bucket, list] : g_texObjBuckets) {
-        (void)bucket;
-        list.clear();
-    }
+    g_texObjIntervals.clear();
+    g_texObjIntervals.reserve(g_TexObjMeta.size());
+    g_texObjIntervalMaxSize = 0;
     for (auto& entry : g_TexObjMeta) {
         TexObjSlot& slot = entry.second;
         slot.pendingIntervalUpdate = false;
-        slot.inIntervalIndex = false;
         TexObjIntervalEntry interval{};
         if (TryBuildTexObjIntervalEntry(slot, interval)) {
-            IndexTexObjSlotLocked(slot, interval.dataAddr, interval.size);
+            g_texObjIntervalMaxSize = std::max(g_texObjIntervalMaxSize, interval.size);
+            g_texObjIntervals.push_back(interval);
+            slot.indexedDataAddr = interval.dataAddr;
+            slot.indexedSize = interval.size;
+            slot.inIntervalIndex = true;
         } else {
             slot.indexedDataAddr = 0;
             slot.indexedSize = 0;
+            slot.inIntervalIndex = false;
         }
     }
+
+    std::sort(g_texObjIntervals.begin(), g_texObjIntervals.end(), TexObjIntervalLess);
     g_texObjIntervalsRebuildAll = false;
     g_texObjIntervalsPending.clear();
 }
@@ -360,30 +336,94 @@ void QueueTexObjIntervalUpdate(TexObjSlot& slot) {
     g_texObjIntervalsPending.push_back(&slot);
 }
 
-// Metadata writebacks that leave the interval untouched - the overwhelming
-// majority, since GXLoadTexObj stores its metadata back twice per call - cost
-// one GXGetTexBufferSize and two compares; a move touches only its buckets.
-void PatchTexObjIntervalEntryLocked(TexObjSlot& slot) {
+// Returns true when the sorted index actually had to shift elements, which is
+// the only expensive outcome. Metadata writebacks that leave the interval
+// untouched - the overwhelming majority, since GXLoadTexObj stores its metadata
+// back twice per call - cost one GXGetTexBufferSize and two compares.
+bool PatchTexObjIntervalEntryLocked(TexObjSlot& slot) {
     TexObjIntervalEntry fresh{};
     const bool hasFresh = TryBuildTexObjIntervalEntry(slot, fresh);
-    if (slot.inIntervalIndex && hasFresh && slot.indexedDataAddr == fresh.dataAddr &&
-        slot.indexedSize == fresh.size) {
-        return;
+
+    if (slot.inIntervalIndex && hasFresh && slot.indexedDataAddr == fresh.dataAddr) {
+        if (slot.indexedSize == fresh.size) {
+            return false;
+        }
+        // Same sort position, different payload: fix it up in place.
+        const auto it =
+            std::lower_bound(g_texObjIntervals.begin(), g_texObjIntervals.end(), fresh, TexObjIntervalLess);
+        if (it != g_texObjIntervals.end() && it->dataAddr == fresh.dataAddr && it->objAddr == fresh.objAddr) {
+            it->size = fresh.size;
+            it->slot = &slot;
+            slot.indexedSize = fresh.size;
+            g_texObjIntervalMaxSize = std::max(g_texObjIntervalMaxSize, fresh.size);
+            return false;
+        }
+        // Index and slot disagree; fall through and rebuild this entry.
+        slot.inIntervalIndex = false;
     }
-    UnindexTexObjSlotLocked(slot);
-    if (hasFresh) {
-        IndexTexObjSlotLocked(slot, fresh.dataAddr, fresh.size);
+
+    bool moved = false;
+    if (slot.inIntervalIndex) {
+        const TexObjIntervalEntry stale{
+            .dataAddr = slot.indexedDataAddr,
+            .size = 0,
+            .objAddr = slot.objAddr,
+            .slot = &slot,
+        };
+        const auto staleIt =
+            std::lower_bound(g_texObjIntervals.begin(), g_texObjIntervals.end(), stale, TexObjIntervalLess);
+        if (staleIt != g_texObjIntervals.end() && staleIt->dataAddr == stale.dataAddr &&
+            staleIt->objAddr == stale.objAddr) {
+            g_texObjIntervals.erase(staleIt);
+            moved = true;
+        }
+        slot.inIntervalIndex = false;
     }
+
+    slot.indexedDataAddr = 0;
+    slot.indexedSize = 0;
+    if (!hasFresh) {
+        return moved;
+    }
+
+    const auto insertAt =
+        std::lower_bound(g_texObjIntervals.begin(), g_texObjIntervals.end(), fresh, TexObjIntervalLess);
+    g_texObjIntervals.insert(insertAt, fresh);
+    slot.indexedDataAddr = fresh.dataAddr;
+    slot.indexedSize = fresh.size;
+    slot.inIntervalIndex = true;
+    g_texObjIntervalMaxSize = std::max(g_texObjIntervalMaxSize, fresh.size);
+    return true;
 }
+
+// Each real move memmoves half the index on average, so a burst of genuine
+// relocations (a course load re-initialising thousands of texobjs) is still
+// cheaper to absorb with one rebuild.
+constexpr size_t kMaxTexObjIntervalPatchMoves = 64;
 
 void EnsureTexObjIntervalsLocked() {
     if (g_texObjIntervalsRebuildAll) {
         RebuildTexObjIntervalsLocked();
         return;
     }
-    for (TexObjSlot* slot : g_texObjIntervalsPending) {
-        slot->pendingIntervalUpdate = false;
-        PatchTexObjIntervalEntryLocked(*slot);
+    if (g_texObjIntervalsPending.empty()) {
+        return;
+    }
+
+    size_t moves = 0;
+    for (size_t i = 0; i < g_texObjIntervalsPending.size(); ++i) {
+        TexObjSlot& slot = *g_texObjIntervalsPending[i];
+        slot.pendingIntervalUpdate = false;
+        if (PatchTexObjIntervalEntryLocked(slot)) {
+            ++moves;
+        }
+        if (moves >= kMaxTexObjIntervalPatchMoves &&
+            g_texObjIntervalsPending.size() - (i + 1) > kMaxTexObjIntervalPatchMoves) {
+            // RebuildTexObjIntervalsLocked clears every slot's pending flag and
+            // the queue itself, including the entries not visited here.
+            RebuildTexObjIntervalsLocked();
+            return;
+        }
     }
     g_texObjIntervalsPending.clear();
 }
@@ -609,31 +649,33 @@ void MarkTexObjsDirtyForRange(uint32_t addr, uint32_t size) {
     std::lock_guard<std::mutex> guard(g_texObjMutex);
 
     EnsureTexObjIntervalsLocked();
-    // Every slot overlapping the range is in at least one of the range's buckets.
-    const auto markOverlapping = [&](const std::vector<TexObjSlot*>& list) {
-        for (TexObjSlot* slot : list) {
-            const uint64_t texStart = slot->indexedDataAddr;
-            if (texStart < dirtyEnd && texStart + slot->indexedSize > dirtyStart) {
-                slot->needsUpload = true;
-            }
+    const auto lower = std::lower_bound(
+        g_texObjIntervals.begin(), g_texObjIntervals.end(), static_cast<uint32_t>(dirtyStart),
+        [](const TexObjIntervalEntry& entry, uint32_t key) { return entry.dataAddr < key; });
+
+    for (auto it = lower; it != g_texObjIntervals.begin();) {
+        --it;
+        const uint64_t texStart = it->dataAddr;
+        if (texStart + g_texObjIntervalMaxSize <= dirtyStart) {
+            // No entry at or left of this start can reach dirtyStart anymore.
+            break;
         }
-    };
-    const uint32_t first = FirstTexObjBucket(dirtyStart);
-    const uint32_t last = LastTexObjBucket(dirtyStart, size);
-    if (static_cast<uint64_t>(last) - first + 1u > g_texObjBuckets.size()) {
-        // A range wider than the index (a whole-heap flush): visit the buckets there are instead.
-        for (const auto& [bucket, list] : g_texObjBuckets) {
-            if (bucket >= first && bucket <= last) {
-                markOverlapping(list);
-            }
+        const uint64_t texEnd = texStart + it->size;
+        if (texEnd <= dirtyStart) {
+            // This entry falls short, but an earlier-starting, larger one may
+            // still overlap: keep walking until the max-size bound proves
+            // otherwise.
+            continue;
         }
-        return;
+        it->slot->needsUpload = true;
     }
-    for (uint64_t bucket = first; bucket <= last; ++bucket) {
-        const auto it = g_texObjBuckets.find(static_cast<uint32_t>(bucket));
-        if (it != g_texObjBuckets.end()) {
-            markOverlapping(it->second);
+
+    for (auto it = lower; it != g_texObjIntervals.end(); ++it) {
+        const uint64_t texStart = it->dataAddr;
+        if (texStart >= dirtyEnd) {
+            break;
         }
+        it->slot->needsUpload = true;
     }
 }
 
