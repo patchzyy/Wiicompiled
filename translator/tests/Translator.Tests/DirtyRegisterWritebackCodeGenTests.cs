@@ -398,14 +398,14 @@ public sealed class DirtyRegisterWritebackCodeGenTests
     [Fact]
     public void NarrowContractFlushLeavesTheFlushedRegisterCleanWithoutAReload()
     {
-        // The callee only reads r3: the call publishes r3 and does not reload it, so the return must not publish
-        // it a second time. r4 (written, outside the contract) stays dirty across the call.
+        // The callee only reads r31: the call publishes r31 and does not reload it, so the return must not
+        // publish it a second time. r30 (written, outside the contract) stays dirty across the call.
         var function = new IrFunction("dirty_narrow", "entry", new[]
         {
             new IrBasicBlock("entry", new IrInstruction[]
             {
-                Inc("r3"),
-                Inc("r4"),
+                Inc("r31"),
+                Inc("r30"),
                 new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
                 new IrReturn(null)
             })
@@ -418,15 +418,145 @@ public sealed class DirtyRegisterWritebackCodeGenTests
             new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
             guestAbiContracts: new Dictionary<uint, GuestAbiContract>
             {
-                [0x80002000u] = Contract(gprRead: 1u << 3)
+                [0x80002000u] = Contract(gprRead: 1u << 31)
             }).ReplaceLineEndings(Lf);
 
-        Assert.Equal(1, Count(code, "ctx->gpr[3] = r3;"));
-        Assert.Equal(1, Count(code, "ctx->gpr[4] = r4;"));
+        Assert.Equal(1, Count(code, "ctx->gpr[31] = r31;"));
+        Assert.Equal(1, Count(code, "ctx->gpr[30] = r30;"));
         var call = code.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", StringComparison.Ordinal);
         Assert.True(call > 0);
-        Assert.DoesNotContain("ctx->gpr[3] = r3;", code[call..], StringComparison.Ordinal);
-        Assert.Contains("ctx->gpr[4] = r4;", code[call..], StringComparison.Ordinal);
+        Assert.DoesNotContain("ctx->gpr[31] = r31;", code[call..], StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[30] = r30;", code[call..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void VolatileRegisterIsPublishedAgainAfterABoundaryThatDidNotReloadIt()
+    {
+        // The first callee only reads r3, so its flush leaves r3 equal to CpuContext. The second declares
+        // nothing, but a native there can run a guest handler on this context that changes r3; the return
+        // has to republish the resident r3, as it would without dirty tracking.
+        var function = new IrFunction("dirty_volatile_callback", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                Inc("r3"),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrCall(string.Empty, "0x80003000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80001000u,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
+            guestAbiContracts: new Dictionary<uint, GuestAbiContract>
+            {
+                [0x80002000u] = Contract(gprRead: 1u << 3),
+                [0x80003000u] = Contract()
+            }).ReplaceLineEndings(Lf);
+
+        var second = code.IndexOf("InvokeDirectCpu<0x80003000u>(ctx);", StringComparison.Ordinal);
+        Assert.True(second > 0);
+        Assert.Contains("ctx->gpr[3] = r3;", code[second..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void R13ReloadedByAFullBoundaryIsPublishedAgainAfterANarrowOne()
+    {
+        // The alarm pump behind a narrow native resets CpuContext's r13 to the SDA base.
+        var function = new IrFunction("dirty_r13_reload", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                Inc("r13"),
+                new IrCall(string.Empty, "0x80004000", Array.Empty<IrValue>()),
+                new IrCall(string.Empty, "0x80003000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80001000u,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
+            guestAbiContracts: new Dictionary<uint, GuestAbiContract>
+            {
+                [0x80003000u] = Contract()
+            }).ReplaceLineEndings(Lf);
+
+        var narrow = code.IndexOf("InvokeDirectCpu<0x80003000u>(ctx);", StringComparison.Ordinal);
+        Assert.True(narrow > 0);
+        Assert.Contains("r13 = ctx->gpr[13];", code[..narrow], StringComparison.Ordinal);
+        Assert.Contains("ctx->gpr[13] = r13;", code[narrow..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void XerReloadedByAFullBoundaryIsPublishedAgainAfterANarrowOne()
+    {
+        var function = new IrFunction("dirty_xer_reload", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrCall("xer", "PPC_UpdateCarrySub", new[] { IrValue.Register("r3"), IrValue.Register("r4") }),
+                new IrCall(string.Empty, "0x80004000", Array.Empty<IrValue>()),
+                new IrCall(string.Empty, "0x80003000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80001000u,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
+            guestAbiContracts: new Dictionary<uint, GuestAbiContract>
+            {
+                [0x80003000u] = Contract()
+            }).ReplaceLineEndings(Lf);
+
+        // 0x80004000 has no contract: a full boundary that reloads XER.
+        var narrow = code.IndexOf("InvokeDirectCpu<0x80003000u>(ctx);", StringComparison.Ordinal);
+        Assert.True(narrow > 0);
+        Assert.Contains("xer = ctx->xer;", code[..narrow], StringComparison.Ordinal);
+        Assert.Contains("ctx->xer = xer;", code[narrow..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WrittenXerIsPublishedAgainAtEveryBoundaryThatDoesNotReloadIt()
+    {
+        // Neither callee writes XER, so neither call reloads it. A handler run behind such a contract can still
+        // change CpuContext's XER, which is why every boundary republishes the resident one.
+        var function = new IrFunction("dirty_xer", "entry", new[]
+        {
+            new IrBasicBlock("entry", new IrInstruction[]
+            {
+                new IrCall("xer", "PPC_UpdateCarrySub", new[] { IrValue.Register("r3"), IrValue.Register("r4") }),
+                new IrCall(string.Empty, "0x80002000", Array.Empty<IrValue>()),
+                new IrCall(string.Empty, "0x80003000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+
+        var code = new CxxLinearCodeGenerator().Emit(
+            0x80001000u,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification(function.Name, ValueRepresentation.Void),
+            new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>()),
+            guestAbiContracts: new Dictionary<uint, GuestAbiContract>
+            {
+                [0x80002000u] = Contract(),
+                [0x80003000u] = Contract()
+            }).ReplaceLineEndings(Lf);
+
+        var first = code.IndexOf("InvokeDirectCpu<0x80002000u>(ctx);", StringComparison.Ordinal);
+        var second = code.IndexOf("InvokeDirectCpu<0x80003000u>(ctx);", StringComparison.Ordinal);
+        Assert.True(first > 0 && second > first);
+        Assert.Contains("ctx->xer = xer;", code[..first], StringComparison.Ordinal);
+        Assert.Contains("ctx->xer = xer;", code[first..second], StringComparison.Ordinal);
+        Assert.Contains("ctx->xer = xer;", code[second..], StringComparison.Ordinal);
     }
 
     [Fact]

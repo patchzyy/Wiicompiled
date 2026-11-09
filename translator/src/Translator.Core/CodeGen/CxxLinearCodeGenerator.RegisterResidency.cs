@@ -47,6 +47,18 @@ public sealed partial class CxxLinearCodeGenerator
         private const byte CtrBit = 2;
         private const byte XerBit = 4;
 
+        // What a guest callback may leave changed in CpuContext under the PowerPC EABI (r0, r3-r12,
+        // f0-f13, CR, CTR, XER), plus r13, which OS_HLE_ProcessAlarms resets to the SDA base. A runtime
+        // native can run guest handlers on the caller's live context behind a contract that declares no
+        // writes (OS_HLE_ProcessAlarms from GKI_delay / PPCMtdec), so after any boundary these stay dirty
+        // unless it reloaded them; the callbacks preserve the rest.
+        private static readonly DirtySet CallbackClobberable = new()
+        {
+            Gpr = 0x00003FF9u,
+            Fpr = 0x00003FFFu,
+            Flags = CrBit | CtrBit | XerBit
+        };
+
         internal struct DirtySet : IEquatable<DirtySet>
         {
             public uint Gpr;
@@ -451,6 +463,7 @@ public sealed partial class CxxLinearCodeGenerator
             if (sync.ReloadsCr) reloaded.Flags |= CrBit;
             if (sync.ReloadsCtr) reloaded.Flags |= CtrBit;
             if (sync.ReloadsXer) reloaded.Flags |= XerBit;
+            NoteWrite(DirtySet.AndNot(CallbackClobberable, reloaded));
             NoteClean(reloaded);
             if (_recording) return;
             foreach (var gpr in _gprs)
