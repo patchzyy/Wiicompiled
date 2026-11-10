@@ -98,29 +98,7 @@ for tool in "$nodtool" "$translator" "$cmake_bin" "$ninja_bin"; do
 done
 
 mkdir -p "$support_root" "$products"
-source_bundle_version="$workspace_source/.bundle-version"
-workspace_bundle_version="$workspace/.bundle-version"
-needs_workspace_refresh=0
-if [[ ! -f "$workspace/projects/mkwii/recomp.yml" ]]; then
-    needs_workspace_refresh=1
-elif [[ -f "$source_bundle_version" ]] && [[ ! -f "$workspace_bundle_version" || "$(<"$source_bundle_version")" != "$(<"$workspace_bundle_version")" ]]; then
-    needs_workspace_refresh=1
-fi
-
-if (( needs_workspace_refresh )); then
-    printf 'Preparing the local build workspace...\n'
-    if [[ ! -d "$workspace" ]]; then
-        /usr/bin/ditto "$workspace_source" "$workspace"
-    else
-        # Refresh only packaged source inputs. Assets and the staged Retro
-        # Rewind package belong to the user and stay in place; unchanged files
-        # keep their timestamps so the incremental native build survives.
-        # shellcheck source=../build-cache.sh
-        source "$workspace_source/Launcher/build-cache.sh"
-        mkw_sync_tree "$workspace_source" "$workspace" aurora-main projects runtime translator Launcher
-        /usr/bin/ditto "$source_bundle_version" "$workspace_bundle_version"
-    fi
-fi
+"$resources/sync-workspace.command" "$workspace_source" "$workspace"
 
 # The extracted disc decides the release, and with it the region's Retro-WFC payload.
 # shellcheck source=../build-cache.sh

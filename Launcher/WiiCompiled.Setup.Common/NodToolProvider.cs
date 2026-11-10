@@ -56,6 +56,15 @@ public static class NodToolProvider
                 var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for Windows {other}"),
             };
         }
+        if (OperatingSystem.IsMacOS())
+        {
+            return RuntimeInformation.OSArchitecture switch
+            {
+                Architecture.X64 => "nodtool-macos-x86_64",
+                Architecture.Arm64 => "nodtool-macos-arm64",
+                var other => throw new PlatformNotSupportedException($"No prebuilt nodtool release for macOS {other}"),
+            };
+        }
         return RuntimeInformation.OSArchitecture switch
         {
             Architecture.X64 => "nodtool-linux-x86_64",
