@@ -263,6 +263,9 @@ exec "$HERE/usr/bin/wiicompiled-setup" --workspace "$CACHE" \
 APPRUN
 chmod +x "$appdir/AppRun"
 
+# RecompLauncher reads this straight out of the AppImage to set the game up and start it.
+cp "$script_dir/recomplauncher/linux.json" "$appdir/recomplauncher.json"
+
 echo "Writing desktop entry and icon..."
 cat > "$appdir/wiicompiled-setup.desktop" <<'DESKTOP'
 [Desktop Entry]

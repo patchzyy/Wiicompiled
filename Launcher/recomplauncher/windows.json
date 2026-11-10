@@ -1,0 +1,118 @@
+{
+  "$schema": "https://recomplauncher.com/schema/recomplauncher.json",
+  "format": 1,
+  "name": "Mario Kart WiiCompiled",
+  "repo": "patchzyy/Wiicompiled",
+  "game": {
+    "kind": "iso",
+    "label": "Your own disc image of Mario Kart Wii: the PAL (RMCP01), USA (RMCE01) or Japan (RMCJ01) release, a clean dump as .iso, .gcm, .gcz, .ciso, .wbfs, .wia or .rvz."
+  },
+  "prepare": {
+    "program": ["WiiCompiled-Setup.exe"],
+    "args": ["--silent", "--game", "{game}", "--install-dir", "{install}/WiiCompiled/Install", "--portable", "--progress-lines"],
+    "label": "Translating and compiling the game from your disc. This takes a while, and only happens once",
+    "timeout": 10800
+  },
+  "start": {
+    "program": ["WiiCompiled/Install/WiiCompiled-Setup.exe"],
+    "args": ["--launch-base"]
+  },
+  "config": [
+    {
+      "id": "main",
+      "format": "toml",
+      "file": [{ "path": "{install}/WiiCompiled/UserData/Config.toml" }]
+    }
+  ],
+  "saves": ["{install}/WiiCompiled/UserData/NAND"],
+  "folders": {
+    "saves": [{ "path": "{install}/WiiCompiled/UserData/NAND" }],
+    "logs": [{ "path": "{install}/WiiCompiled/UserData/Logs" }]
+  },
+  "settings": [
+    {
+      "id": "display_mode", "label": "Window",
+      "help": "Windowed, borderless fullscreen, or exclusive fullscreen, which asks your screen for the closest mode to the game's frame rate.",
+      "choices": [
+        { "label": "Windowed", "set": { "video/display_mode": "\"windowed\"" } },
+        { "label": "Borderless", "set": { "video/display_mode": "\"borderless\"" } },
+        { "label": "Exclusive", "set": { "video/display_mode": "\"exclusive\"" } }
+      ],
+      "defaults": { "video/display_mode": "\"windowed\"" }
+    },
+    {
+      "id": "resolution", "label": "Resolution",
+      "help": "What the game draws at. Native is the Wii's own. Auto follows the size of the window. Higher is sharper and needs a faster graphics card.",
+      "choices": [
+        { "label": "Auto", "set": { "video/resolution_multiplier": "0.0" } },
+        { "label": "Native", "set": { "video/resolution_multiplier": "1.0" } },
+        { "label": "1.5x", "set": { "video/resolution_multiplier": "1.5" } },
+        { "label": "2x", "set": { "video/resolution_multiplier": "2.0" } },
+        { "label": "3x", "set": { "video/resolution_multiplier": "3.0" } },
+        { "label": "4x", "set": { "video/resolution_multiplier": "4.0" } },
+        { "label": "6x", "set": { "video/resolution_multiplier": "6.0" } },
+        { "label": "8x", "set": { "video/resolution_multiplier": "8.0" } }
+      ],
+      "defaults": { "video/resolution_multiplier": "1.0" }
+    },
+    {
+      "id": "aspect", "label": "Aspect ratio",
+      "help": "16:9 for widescreen screens, 4:3 for the original shape. Takes effect the next time the game starts.",
+      "choices": [
+        { "label": "16:9", "set": { "video/widescreen": "true" } },
+        { "label": "4:3", "set": { "video/widescreen": "false" } }
+      ],
+      "defaults": { "video/widescreen": "true" }
+    },
+    {
+      "id": "interpolation", "label": "Race frame rate",
+      "help": "The game runs at 60 FPS. Interpolation adds frames in between during races for 120 or 144 Hz screens. It is experimental and can show artifacts.",
+      "choices": [
+        { "label": "60 FPS", "set": { "video/frame_interpolation_fps": "0" } },
+        { "label": "120 FPS", "set": { "video/frame_interpolation_fps": "120" } },
+        { "label": "180 FPS", "set": { "video/frame_interpolation_fps": "180" } }
+      ],
+      "defaults": { "video/frame_interpolation_fps": "0" }
+    },
+    {
+      "id": "vsync", "label": "V-Sync",
+      "help": "Waits for the screen's refresh. Turn it on if frame interpolation looks uneven on your screen.",
+      "choices": [
+        { "label": "Off", "set": { "video/vsync": "false" } },
+        { "label": "On", "set": { "video/vsync": "true" } }
+      ],
+      "defaults": { "video/vsync": "false" }
+    },
+    {
+      "id": "fps", "label": "Show FPS",
+      "help": "The frame rate in a corner of the game.",
+      "choices": [
+        { "label": "On", "set": { "video/show_fps": "true" } },
+        { "label": "Off", "set": { "video/show_fps": "false" } }
+      ],
+      "defaults": { "video/show_fps": "true" }
+    },
+    {
+      "id": "mute", "label": "Sound",
+      "help": "Turn all of the game's sound off or on.",
+      "choices": [
+        { "label": "On", "set": { "audio/muted": "false" } },
+        { "label": "Muted", "set": { "audio/muted": "true" } }
+      ],
+      "defaults": { "audio/muted": "false" }
+    },
+    {
+      "id": "ducking", "label": "Music while other audio plays",
+      "help": "Mutes the game's music while another app, like a video or a music player, is playing sound.",
+      "choices": [
+        { "label": "Keep playing", "set": { "audio/attenuate_music_when_media_plays": "false" } },
+        { "label": "Mute music", "set": { "audio/attenuate_music_when_media_plays": "true" } }
+      ],
+      "defaults": { "audio/attenuate_music_when_media_plays": "false" }
+    }
+  ],
+  "actions": [
+    { "id": "saves", "label": "Saves", "help": "Your Mario Kart Wii save data.", "open": "saves" },
+    { "id": "logs", "label": "Logs", "help": "The log of each run, for bug reports.", "open": "logs" }
+  ]
+}
