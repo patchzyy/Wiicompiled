@@ -12,6 +12,7 @@ internal static class ConsoleCommands
         Console.Out.WriteLine();
         Console.Out.WriteLine("Commands:");
         Console.Out.WriteLine("  --silent --game <image> --install-dir <dir> [--retro-dir <folder>] [--portable]");
+        Console.Out.WriteLine("           [--progress-json | --progress-lines]");
         Console.Out.WriteLine("  --verify-inputs --game <image> [--retro-dir <folder>]");
         Console.Out.WriteLine("  --check-products [--install-dir <dir>] [--retro-dir <folder>] [--progress-json]");
         Console.Out.WriteLine("  --repair-products --install-dir <dir> --retro-dir <folder> " +
@@ -106,7 +107,9 @@ internal static class ConsoleCommands
         File.WriteAllText(logPath, $"{ProductInfo.Name} setup {ProductInfo.Version}{Environment.NewLine}");
 
         var ndjson = command.ProgressJson ? new NdjsonInstallReporter(ProductInfo.Version, Log) : null;
-        IInstallReporter reporter = ndjson ?? (IInstallReporter)new ConsoleInstallReporter(Log);
+        IInstallReporter reporter = ndjson ?? (command.ProgressLines
+            ? (IInstallReporter)new LauncherProgressInstallReporter(Log)
+            : new ConsoleInstallReporter(Log));
         var installDirectory = Path.GetFullPath(command.InstallDirectory!);
         try
         {

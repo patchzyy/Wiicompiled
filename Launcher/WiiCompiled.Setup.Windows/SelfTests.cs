@@ -543,6 +543,16 @@ internal static class SelfTests
         if (portable.Mode != AppMode.SilentInstall || !portable.Portable)
             throw new Exception("The portable install contract did not parse.");
 
+        var lines = CommandLine.Parse([
+            "--silent", "--game", "game.iso", "--install-dir", "D:\\Games\\Recomp\\Install",
+            "--portable", "--progress-lines"
+        ]);
+        if (lines.Mode != AppMode.SilentInstall || !lines.ProgressLines || lines.ProgressJson)
+            throw new Exception("The progress-lines install contract did not parse.");
+        Rejects("--progress-lines with --progress-json", "--silent", "--game", "g.iso",
+            "--progress-lines", "--progress-json");
+        Rejects("--progress-lines outside an install", "--check-products", "--progress-lines");
+
         Rejects("--portable without an install directory", "--silent", "--game", "g.iso", "--portable");
         Rejects("--portable outside an install", "--check-products", "--install-dir", "fixed", "--portable");
         // The config verbs are gone: WheelWizard reads and writes Config.toml directly now.
