@@ -5,7 +5,8 @@
   "repo": "patchzyy/Wiicompiled",
   "game": {
     "kind": "iso",
-    "label": "Your own disc image of Mario Kart Wii: the PAL (RMCP01), USA (RMCE01) or Japan (RMCJ01) release, a clean dump as .iso, .gcm, .gcz, .ciso, .wbfs, .wia or .rvz."
+    "label": "Your own disc image of Mario Kart Wii: the PAL (RMCP01), USA (RMCE01) or Japan (RMCJ01) release, a clean dump as .iso, .gcm, .gcz, .ciso, .wbfs, .wia or .rvz.",
+    "check": { "ids": ["RMCP01", "RMCE01", "RMCJ01"] }
   },
   "prepare": {
     "program": ["WiiCompiled-Setup-x86_64.AppImage", "WiiCompiled-Setup-aarch64.AppImage"],
@@ -31,7 +32,7 @@
   },
   "settings": [
     {
-      "id": "display_mode", "label": "Window",
+      "id": "display_mode", "label": "Window", "group": "Video",
       "help": "Windowed, borderless fullscreen, or exclusive fullscreen, which asks your screen for the closest mode to the game's frame rate.",
       "choices": [
         { "label": "Windowed", "set": { "video/display_mode": "\"windowed\"" } },
@@ -41,7 +42,7 @@
       "defaults": { "video/display_mode": "\"windowed\"" }
     },
     {
-      "id": "resolution", "label": "Resolution",
+      "id": "resolution", "label": "Resolution", "group": "Video",
       "help": "What the game draws at. Native is the Wii's own. Auto follows the size of the window. Higher is sharper and needs a faster graphics card.",
       "choices": [
         { "label": "Auto", "set": { "video/resolution_multiplier": "0.0" } },
@@ -56,7 +57,7 @@
       "defaults": { "video/resolution_multiplier": "1.0" }
     },
     {
-      "id": "aspect", "label": "Aspect ratio",
+      "id": "aspect", "label": "Aspect ratio", "group": "Video",
       "help": "16:9 for widescreen screens, 4:3 for the original shape. Takes effect the next time the game starts.",
       "choices": [
         { "label": "16:9", "set": { "video/widescreen": "true" } },
@@ -65,7 +66,7 @@
       "defaults": { "video/widescreen": "true" }
     },
     {
-      "id": "interpolation", "label": "Race frame rate",
+      "id": "interpolation", "label": "Race frame rate", "group": "Video",
       "help": "The game runs at 60 FPS. Interpolation adds frames in between during races for 120 or 144 Hz screens. It is experimental and can show artifacts.",
       "choices": [
         { "label": "60 FPS", "set": { "video/frame_interpolation_fps": "0" } },
@@ -75,7 +76,7 @@
       "defaults": { "video/frame_interpolation_fps": "0" }
     },
     {
-      "id": "vsync", "label": "V-Sync",
+      "id": "vsync", "label": "V-Sync", "group": "Video",
       "help": "Waits for the screen's refresh. Turn it on if frame interpolation looks uneven on your screen.",
       "choices": [
         { "label": "Off", "set": { "video/vsync": "false" } },
@@ -84,7 +85,7 @@
       "defaults": { "video/vsync": "false" }
     },
     {
-      "id": "fps", "label": "Show FPS",
+      "id": "fps", "label": "Show FPS", "group": "Video",
       "help": "The frame rate in a corner of the game.",
       "choices": [
         { "label": "On", "set": { "video/show_fps": "true" } },
@@ -93,7 +94,7 @@
       "defaults": { "video/show_fps": "true" }
     },
     {
-      "id": "mute", "label": "Sound",
+      "id": "mute", "label": "Sound", "group": "Audio",
       "help": "Turn all of the game's sound off or on.",
       "choices": [
         { "label": "On", "set": { "audio/muted": "false" } },
@@ -102,7 +103,7 @@
       "defaults": { "audio/muted": "false" }
     },
     {
-      "id": "ducking", "label": "Music while other audio plays",
+      "id": "ducking", "label": "Music while other audio plays", "group": "Audio",
       "help": "Mutes the game's music while another app, like a video or a music player, is playing sound.",
       "choices": [
         { "label": "Keep playing", "set": { "audio/attenuate_music_when_media_plays": "false" } },
