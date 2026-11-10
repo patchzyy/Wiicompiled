@@ -375,6 +375,9 @@ public sealed partial class CxxLinearCodeGenerator
             $"Resident state-free marshalling requested for 0x{address:X8} without an active residency.");
 
         AppendFlush(sb, pad, ResidencyBoundarySync.StateFreeResidentOuter);
+        // The fast arm's result stores and the slow arm's flush/reload are alternatives: each starts from
+        // the state here and the dirty set afterwards is their join.
+        residency.BeginAlternatives();
         var inner = pad + "    ";
         sb.AppendLine($"{pad}if ({StateFreeAvailabilityCondition(address, stateFreeAbiContracts, stateFreeCallSymbols)}) {{");
         var arguments = StateFreeResidentCallArguments(residency, contract, callSiteLr);
@@ -391,10 +394,12 @@ public sealed partial class CxxLinearCodeGenerator
             sb.AppendLine($"{inner}{symbol}({arguments});");
         }
         sb.AppendLine($"{pad}}} else {{");
+        residency.NextAlternative();
         AppendFlush(sb, inner, ResidencyBoundarySync.Full);
         RecordEmittedDirectCallTarget(address);
         sb.AppendLine($"{inner}InvokeDirectCpu<0x{address:X8}u>(ctx);");
         AppendReload(sb, inner, ResidencyBoundarySync.Full);
+        residency.EndAlternatives();
         sb.AppendLine($"{pad}}}");
     }
 

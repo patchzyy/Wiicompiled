@@ -130,7 +130,6 @@ inline const RawDispatchRecord* FindStaticIndirectDispatchEntry(
 }
 
 void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* table);
-inline std::atomic<const StaticIndirectDispatchTable*> g_publishedStaticIndirectDispatchTable{nullptr};
 
 class StaticIndirectDispatchTableRegistrar {
 public:
@@ -298,8 +297,8 @@ struct IsPureTypedNativeCpuCall<T, std::void_t<decltype(T::kPure)>> : std::bool_
 
 #include "guest_abi/native_cpu_calls.inc"
 
-// Direct-mapped thread-local memo in front of the sorted registry lookup every bctrl performs;
-// a miss just re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect
+// Direct-mapped thread-local memo in front of the registry lookup for targets without a raw
+// dispatch record; a miss just re-runs the lookup. 512 entries (12 KiB) covers the per-frame indirect
 // working set while staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a
 // power of two, the index masks with (size - 1).
 inline constexpr size_t kIndirectDispatchCacheEntries = 512;
@@ -314,13 +313,23 @@ struct IndirectResolvedDispatchMemoEntry {
 inline thread_local IndirectResolvedDispatchMemoEntry
     g_indirectResolvedDispatchMemo[kIndirectDispatchCacheEntries]{};
 
-struct IndirectRawDispatchMemoEntry {
-    bool valid;
+// Every raw dispatch record in one open-addressed table, built by Finalize and shared by all
+// threads. Kept at most half full, so a lookup almost always reads a single slot, and unlike a
+// per-thread memo it never misses into the generated table's page search.
+struct RawDispatchHashSlot {
     uint32_t address;
-    const RawDispatchRecord* record;
+    const RawDispatchRecord* record; // nullptr = empty
 };
-inline thread_local IndirectRawDispatchMemoEntry
-    g_indirectRawDispatchMemo[kIndirectDispatchCacheEntries]{};
+
+struct RawDispatchHashTable {
+    const RawDispatchHashSlot* slots;
+    uint32_t mask;  // slot count - 1
+    uint32_t shift; // 32 - log2(slot count); Fibonacci hashing keeps the product's top bits
+};
+
+MKW_PPC_FORCE_INLINE uint32_t RawDispatchHashIndex(const RawDispatchHashTable& table, uint32_t address) {
+    return ((address >> 2) * 2654435761u) >> table.shift;
+}
 
 class TranslatedFunctionRegistry {
 public:
@@ -345,48 +354,29 @@ public:
         return info;
     }
 
-    // Hot wrapper: only the direct-mapped memo probe stays inline. Inlining the
-    // generated-table binary search alongside it pushed the whole function past
-    // the inliner's budget and out-of-lined the probe itself, which is the part
-    // every bctrl executes.
+    // nullptr before Finalize, like the publication flag this replaced.
     static MKW_PPC_FORCE_INLINE const RawDispatchRecord* FindRawByAddressPtr(uint32_t address) {
-        if (!lookupPublished_.load(std::memory_order_acquire)) {
+        const RawDispatchHashTable* table = rawDispatchTable_.load(std::memory_order_acquire);
+        if (table == nullptr) {
             return nullptr;
         }
-
-        auto& cached = g_indirectRawDispatchMemo[
-            ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
-        if (cached.valid && cached.address == address) {
-            return cached.record;
+        for (uint32_t index = RawDispatchHashIndex(*table, address);; index = (index + 1) & table->mask) {
+            const RawDispatchHashSlot& slot = table->slots[index];
+            if (slot.record == nullptr || slot.address == address) {
+                return slot.record;
+            }
         }
-
-        return FindRawByAddressPtrMiss(address, cached);
     }
 
 private:
-    // Memo miss: resolve against the header-inline generated table first; only dynamically
-    // registered records or a not-yet-published table fall through to the slow path.
-    static MKW_PPC_NO_INLINE MKW_PPC_COLD const RawDispatchRecord* FindRawByAddressPtrMiss(
-        uint32_t address, IndirectRawDispatchMemoEntry& cached) {
-        const RawDispatchRecord* record = nullptr;
-        if (const auto* table =
-                g_publishedStaticIndirectDispatchTable.load(std::memory_order_acquire)) {
-            record = FindStaticIndirectDispatchEntry(table, address);
-        }
-        if (record == nullptr) {
-            record = FindRawByAddressPtrSlow(address);
-        }
-        cached = {true, address, record};
-        return record;
-    }
-
     static const TranslatedFunctionInfo* FindByAddressPtrSlow(uint32_t address);
-    static const RawDispatchRecord* FindRawByAddressPtrSlow(uint32_t address);
+    static void BuildRawDispatchTableLocked();
 
     // Finalize publishes immutable registry, generated-table, and dynamic raw
     // dispatch storage. Header-inlined cache hits are enabled only after that
     // release publication, so a pre-finalization miss can never poison them.
     inline static std::atomic_bool lookupPublished_{false};
+    inline static std::atomic<const RawDispatchHashTable*> rawDispatchTable_{nullptr};
 };
 
 // Cold, profile-owned registration data is emitted in compact table shards.

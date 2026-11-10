@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -20,12 +21,47 @@ std::mutex g_efbCopyDestinationsMutex;
 std::map<uint32_t, uint32_t> g_efbCopyDestinations;
 uint32_t g_largestEfbCopyDestination = 0;
 
+// How many destinations touch each 64 KiB bucket of guest RAM. Nearly every DCStoreRange misses all
+// destinations, and an empty bucket answers that without walking the map.
+constexpr uint32_t kEfbCopyBucketShift = 16;
+std::unordered_map<uint32_t, uint32_t> g_efbCopyBuckets;
+
+void CountEfbCopyBucketsLocked(uint64_t start, uint32_t size, int32_t delta) {
+    const uint64_t last = (start + size - 1u) >> kEfbCopyBucketShift;
+    for (uint64_t bucket = start >> kEfbCopyBucketShift; bucket <= last; ++bucket) {
+        g_efbCopyBuckets[static_cast<uint32_t>(bucket)] += static_cast<uint32_t>(delta);
+    }
+}
+
+bool AnyEfbCopyBucketLocked(uint64_t start, uint32_t size) {
+    const uint64_t first = start >> kEfbCopyBucketShift;
+    const uint64_t last = (start + size - 1u) >> kEfbCopyBucketShift;
+    if (last - first + 1u > g_efbCopyBuckets.size()) {
+        return true; // wider than the index; the map walk answers
+    }
+    for (uint64_t bucket = first; bucket <= last; ++bucket) {
+        const auto it = g_efbCopyBuckets.find(static_cast<uint32_t>(bucket));
+        if (it != g_efbCopyBuckets.end() && it->second != 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void RememberEfbCopyDestination(uint32_t addr, uint32_t size) {
     if (size == 0) {
         return;
     }
     std::lock_guard<std::mutex> guard(g_efbCopyDestinationsMutex);
-    g_efbCopyDestinations[CanonicalizeGxMainRamAddress(addr)] = size;
+    const uint32_t canonical = CanonicalizeGxMainRamAddress(addr);
+    const auto [it, inserted] = g_efbCopyDestinations.try_emplace(canonical, size);
+    if (inserted) {
+        CountEfbCopyBucketsLocked(canonical, size, +1);
+    } else if (it->second != size) {
+        CountEfbCopyBucketsLocked(canonical, it->second, -1);
+        CountEfbCopyBucketsLocked(canonical, size, +1);
+        it->second = size;
+    }
     // A conservative monotonic maximum lets invalidation jump directly to
     // the only map interval that could overlap instead of walking every copy
     // destination on every DCStoreRange.
@@ -44,6 +80,9 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
     std::vector<uint32_t> retired;
     {
         std::lock_guard<std::mutex> guard(g_efbCopyDestinationsMutex);
+        if (!AnyEfbCopyBucketLocked(dirtyStart, size)) {
+            return;
+        }
         const uint64_t earliestCandidate =
             dirtyStart > g_largestEfbCopyDestination ? dirtyStart - g_largestEfbCopyDestination : 0;
         for (auto it = g_efbCopyDestinations.lower_bound(static_cast<uint32_t>(earliestCandidate));
@@ -55,6 +94,7 @@ void InvalidateEfbCopyDestinationsForRange(uint32_t addr, uint32_t size) {
                 continue;
             }
             retired.push_back(it->first);
+            CountEfbCopyBucketsLocked(it->first, it->second, -1);
             it = g_efbCopyDestinations.erase(it);
         }
     }

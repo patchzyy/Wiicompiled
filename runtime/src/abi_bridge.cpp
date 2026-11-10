@@ -307,9 +307,6 @@ void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* tabl
         std::abort();
     }
     registered = table;
-    // Mirror into the header-visible atomic under the same lock, so the
-    // inlined miss path and this owning static can never disagree.
-    g_publishedStaticIndirectDispatchTable.store(table, std::memory_order_release);
 }
 
 void RegisterBulkTranslatedFunctions(const BulkTranslatedFunctionRecord* records, size_t count) {
@@ -398,6 +395,7 @@ void TranslatedFunctionRegistry::Finalize() {
             auto& addressEntries = AddressEntries();
             addressEntries.clear();
             addressEntries.rehash(0);
+            BuildRawDispatchTableLocked();
             RegistryFrozen().store(true, std::memory_order_release);
             lookupPublished_.store(true, std::memory_order_release);
         }
@@ -478,19 +476,39 @@ GuestFunctions::Entry GuestFunctions::NextTranslation(uint32_t address) {
     ReportMissingGuestFunction(address);
 }
 
-const RawDispatchRecord* TranslatedFunctionRegistry::FindRawByAddressPtrSlow(uint32_t address) {
-    if (!RegistryFrozen().load(std::memory_order_acquire)) {
-        return nullptr;
+void TranslatedFunctionRegistry::BuildRawDispatchTableLocked() {
+    const auto* generated = GeneratedIndirectDispatchTable();
+    const auto& dynamic = DynamicRawDispatchEntries();
+    const size_t generatedCount = generated != nullptr ? generated->entryCount : 0;
+    uint32_t bits = 10;
+    while ((size_t{1} << bits) < (generatedCount + dynamic.size()) * 2) {
+        ++bits;
     }
-    if (const auto* generated = FindStaticIndirectDispatchEntry(GeneratedIndirectDispatchTable(), address)) {
-        return generated;
+    static std::vector<RawDispatchHashSlot> slots;
+    static RawDispatchHashTable table;
+    slots.assign(size_t{1} << bits, RawDispatchHashSlot{0, nullptr});
+    table = {slots.data(), (1u << bits) - 1u, 32u - bits};
+    // The first record put at an address wins: the generated table, then the dynamic records in
+    // address order, the precedence the sorted lookups gave.
+    const auto put = [](const RawDispatchRecord& record) {
+        for (uint32_t index = RawDispatchHashIndex(table, record.address);; index = (index + 1) & table.mask) {
+            RawDispatchHashSlot& slot = slots[index];
+            if (slot.record == nullptr) {
+                slot = {record.address, &record};
+                return;
+            }
+            if (slot.address == record.address) {
+                return;
+            }
+        }
+    };
+    for (size_t i = 0; i < generatedCount; ++i) {
+        put(generated->entries[i]);
     }
-    const auto& entries = DynamicRawDispatchEntries();
-    const auto it = std::lower_bound(entries.begin(), entries.end(), address,
-        [](const RawDispatchRecord& entry, uint32_t target) {
-            return entry.address < target;
-        });
-    return it != entries.end() && it->address == address ? &*it : nullptr;
+    for (const auto& record : dynamic) {
+        put(record);
+    }
+    rawDispatchTable_.store(&table, std::memory_order_release);
 }
 
 std::optional<TranslatedFunctionInfo> FindTranslatedFunctionByHostAddress(uintptr_t hostAddr) {

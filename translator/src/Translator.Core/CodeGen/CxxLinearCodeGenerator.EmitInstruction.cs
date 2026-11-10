@@ -560,7 +560,7 @@ public sealed partial class CxxLinearCodeGenerator
                     // Tail dispatch: the callee inherits authoritative context
                     // and this frame never observes registers again, so the
                     // locals must not be written back afterwards.
-                    AppendFlush(sb, pad);
+                    AppendExitFlush(sb, pad);
                     sb.AppendLine($"{pad}InvokeIndirectJump({jumpTarget}, ctx);");
                     sb.AppendLine($"{pad}return;");
                 }

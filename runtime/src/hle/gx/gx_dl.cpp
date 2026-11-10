@@ -1207,6 +1207,27 @@ static void SubmitLytDrawPacket(const uint8_t* packet, uint32_t packetBytes) {
     SyncAppliedVtxStateFromHleReal();
 }
 
+// A span inside one fully mapped 1 MiB page resolves straight from the page bias, the pointer
+// Contains + GuestToHostPtr would give after two table lookups.
+static const uint8_t* ResolveDisplayListArray(uint32_t base, uint32_t span) {
+#if !defined(__APPLE__)
+    // macOS has to keep GuestToHostPtr's canonical alias, which is the GX resource identity there.
+    if (base != 0 && span != 0) {
+        const uint32_t page = base >> MemoryInline::kPageShift;
+        const uint32_t last = base + span - 1u;
+        if (last >= base && (last >> MemoryInline::kPageShift) == page) {
+            if (const uintptr_t bias = MemoryInline::g_fullPageBias[page]; bias != 0) {
+                return reinterpret_cast<const uint8_t*>((bias - 1u) + base);
+            }
+        }
+    }
+#endif
+    if (!Memory::Contains(base, span)) {
+        return nullptr;
+    }
+    return static_cast<const uint8_t*>(GuestToHostPtr(base, span));
+}
+
 static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX_ATTR>& maxIdx,
                                             const std::array<bool, GX_VA_MAX_ATTR>& sawIdx,
                                             GXVtxFmt vtxfmt,
@@ -1232,11 +1253,7 @@ static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX
         }
         const uint32_t span = (count > 0) ? (static_cast<uint32_t>((count - 1u) * arr.stride) + elemSize) : 0u;
         const bool needsPack = arr.stride > 0xffu;
-        if (!Memory::Contains(arr.base, span)) {
-            ok = false;
-            continue;
-        }
-        const uint8_t* hostPtr = static_cast<const uint8_t*>(GuestToHostPtr(arr.base, span));
+        const uint8_t* hostPtr = ResolveDisplayListArray(arr.base, span);
         if (!hostPtr) {
             ok = false;
             continue;
@@ -1273,11 +1290,7 @@ static bool ApplyAuroraIndexedXFArraysForDisplayList(const std::array<uint32_t, 
             continue;
         }
         const uint32_t span = maxXfIdx[attr] * arr.stride + bytes;
-        if (!Memory::Contains(arr.base, span)) {
-            ok = false;
-            continue;
-        }
-        const uint8_t* hostPtr = static_cast<const uint8_t*>(GuestToHostPtr(arr.base, span));
+        const uint8_t* hostPtr = ResolveDisplayListArray(arr.base, span);
         if (!hostPtr) {
             ok = false;
             continue;

@@ -343,9 +343,39 @@ void SubmitAttribute(GXAttr attr, float* comps, const VtxAttrFmt& fmt, const u32
     }
 }
 
+// A word that lands inside an XF load still short of its last word only appends: the general
+// path below would push it and then stop parsing at the same incomplete packet.
+static bool TryAppendIncompleteXfWord(u32 value) {
+    auto& g = g_hleGxState;
+    if (g.inBegin || g.fifoByteCount < 5u ||
+        g.fifoReadOffset + g.fifoByteCount + 4u > g.fifoBytes.size()) {
+        return false;
+    }
+    uint8_t* data = g.fifoBytes.data() + g.fifoReadOffset;
+    if ((data[0] & GX_OPCODE_MASK_CMD) != GX_LOAD_XF_REG_CMD) {
+        return false;
+    }
+    const uint32_t packetBytes = 5u + (static_cast<uint32_t>(ReadBE16(data + 1)) + 1u) * 4u;
+    if (g.fifoByteCount + 4u >= packetBytes) {
+        return false;
+    }
+    BigEndian::Write32(data + g.fifoByteCount, value);
+    g.fifoByteCount += 4u;
+    return true;
+}
+
+static MKW_PPC_NO_INLINE void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes);
+
 // `val` is a raw big-endian bit pattern: the FIFO stream is type-agnostic, and
 // the float entry point converts before it gets here.
 void HleFifoWrite(u32 val, uint32_t sizeBytes) {
+    if ((sizeBytes == 0 || sizeBytes == 4) && !IsDisplayListActive() && TryAppendIncompleteXfWord(val)) {
+        return;
+    }
+    HleFifoWriteGeneral(val, sizeBytes);
+}
+
+static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
     const bool recordOnly = IsDisplayListActive();
     if (recordOnly) {
         WriteDisplayListData(val, sizeBytes);
@@ -727,9 +757,19 @@ static uint32_t ApplyFifoPacketsDirect(const uint8_t* data, uint32_t sizeBytes) 
             const uint16_t countWords = ReadBE16(packet + 1);
             const uint32_t packetBytes = 1u + 4u + (static_cast<uint32_t>(countWords) + 1u) * 4u;
             if (avail < packetBytes) break;
-            GXCallDisplayList(packet, packetBytes);
+            // Aurora parses a run of adjacent XF loads in one call. The run stays inside this
+            // burst, so it keeps its order against the CP/BP writes around it.
+            uint32_t runBytes = packetBytes;
+            while (avail - runBytes >= 5u) {
+                const uint8_t* next = packet + runBytes;
+                if ((next[0] & GX_OPCODE_MASK_CMD) != GX_LOAD_XF_REG_CMD) break;
+                const uint32_t nextBytes = 5u + (static_cast<uint32_t>(ReadBE16(next + 1)) + 1u) * 4u;
+                if (avail - runBytes < nextBytes) break;
+                runBytes += nextBytes;
+            }
+            GXCallDisplayList(packet, runBytes);
             GXMarkFrameWork();
-            offset += packetBytes;
+            offset += runBytes;
             continue;
         }
 
