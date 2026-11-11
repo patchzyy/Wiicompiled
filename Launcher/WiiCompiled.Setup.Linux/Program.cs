@@ -31,7 +31,15 @@ internal static class Program
         var (command, flags) = ParseArgs(args);
         if (command is null) { PrintUsage(); return 1; }
         var progressJson = flags.ContainsKey("progress-json");
-        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter(ProductInfo.Version) : new ConsoleInstallReporter();
+        var progressLines = flags.ContainsKey("progress-lines");
+        if (progressJson && progressLines)
+        {
+            Console.Error.WriteLine("error: Choose only one of --progress-json and --progress-lines.");
+            return 1;
+        }
+        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter(ProductInfo.Version)
+            : progressLines ? (IInstallReporter)new LauncherProgressInstallReporter()
+            : new ConsoleInstallReporter();
 
         try
         {
@@ -361,7 +369,8 @@ internal static class Program
                   {--download-retro-wfc-payload | --skip-retro-wfc-payload}]
                   [--force-clean-build] [--translator-bin PATH] [--disc-tool-bin PATH]
                   [--cc PATH] [--cxx PATH] [--fuse-ld NAME_OR_PATH] [--cmake PATH] [--ninja PATH]
-                  [--native-prebuilt-dir DIR] [--sysroot PATH] [--progress-json] [--workspace DIR]
+                  [--native-prebuilt-dir DIR] [--sysroot PATH] [--workspace DIR]
+                  [--progress-json | --progress-lines]
           uninstall
           launch-base
           launch-retro

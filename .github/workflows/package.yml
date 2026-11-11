@@ -97,6 +97,24 @@ jobs:
           if-no-files-found: error
           archive: false
 
+      # The same setup, zipped with the recomplauncher.json RecompLauncher reads, so it unpacks into
+      # its own folder instead of being run as an installer. WiiCompiled-Setup.exe stays as it is.
+      - name: Zip for RecompLauncher
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'recomplauncher-zip'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item Launcher/dist/WiiCompiled-Setup.exe $stage
+          Copy-Item Launcher/recomplauncher/windows.json (Join-Path $stage 'recomplauncher.json')
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath Launcher/dist/WiiCompiled-Setup-windows-x64.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: WiiCompiled-Setup-windows-x64-zip
+          path: Launcher/dist/WiiCompiled-Setup-windows-x64.zip
+          if-no-files-found: error
+          archive: false
+
   macos-setup-package:
     name: macOS (universal Setup.pkg)
     runs-on: macos-15
@@ -307,7 +325,7 @@ jobs:
           set -euo pipefail
           ls -lR artifacts
           assets=()
-          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg WiiCompiled-Setup-macos.run; do
+          for name in WiiCompiled-Setup.exe WiiCompiled-Setup-windows-x64.zip WiiCompiled-Setup-x86_64.AppImage WiiCompiled-Setup-aarch64.AppImage WiiCompiled-Setup.pkg WiiCompiled-Setup-macos.run; do
             found="$(find artifacts -type f -name "$name" | head -n 1)"
             [ -n "$found" ] && [ -s "$found" ] || { echo "::error::missing release asset $name"; exit 1; }
             assets+=("$found")

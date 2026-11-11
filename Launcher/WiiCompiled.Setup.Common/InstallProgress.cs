@@ -95,6 +95,40 @@ public sealed class NdjsonInstallReporter : IInstallReporter
     }
 }
 
+/// <summary>
+/// The <c>--progress-lines</c> format RecompLauncher reads from a setup step: one
+/// <c>progress &lt;0 to 1&gt; &lt;text&gt;</c> line per update on stdout, diagnostics on stderr. The
+/// outcome is the exit code.
+/// </summary>
+public sealed class LauncherProgressInstallReporter : IInstallReporter
+{
+    private readonly Action<string>? _log;
+    private readonly object _gate = new();
+    private int _lastPercent;
+
+    public LauncherProgressInstallReporter(Action<string>? log = null) => _log = log;
+
+    public void Progress(string stage, string message, int percent)
+    {
+        lock (_gate)
+        {
+            // Monotonic, like the NDJSON reporter: the bar never walks backwards.
+            _lastPercent = Math.Clamp(Math.Max(percent, _lastPercent), 0, 99);
+            var text = message.ReplaceLineEndings(" ").Trim();
+            Console.Out.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                $"progress {_lastPercent / 100.0:0.00} {text}"));
+            Console.Out.Flush();
+        }
+        _log?.Invoke(message);
+    }
+
+    public void Diagnostic(string line)
+    {
+        Console.Error.WriteLine(line);
+        _log?.Invoke(line);
+    }
+}
+
 /// <summary>Plain-text console reporting for a run without <c>--progress-json</c>.</summary>
 public sealed class ConsoleInstallReporter : IInstallReporter
 {

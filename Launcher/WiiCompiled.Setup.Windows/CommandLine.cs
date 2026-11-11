@@ -25,6 +25,7 @@ internal sealed record ModeRules
 {
     public string Flag { get; init; } = "this command";
     public bool AcceptsProgressJson { get; init; }
+    public bool AcceptsProgressLines { get; init; }
     public bool AcceptsGame { get; init; }
     public bool RequiresGame { get; init; }
     public bool AcceptsRetroDirectory { get; init; }
@@ -44,6 +45,7 @@ internal sealed class CommandLine
     public string? InstallDirectory { get; private set; }
     public bool Quiet { get; private set; }
     public bool ProgressJson { get; private set; }
+    public bool ProgressLines { get; private set; }
     public string? PayloadRootPath { get; private set; }
     public bool Portable { get; private set; }
 
@@ -73,6 +75,7 @@ internal sealed class CommandLine
                 case "--payload-root": result.PayloadRootPath = RequireValue(args, ref i); break;
                 case "--quiet": result.Quiet = true; break;
                 case "--progress-json": result.ProgressJson = true; break;
+                case "--progress-lines": result.ProgressLines = true; break;
                 case "--game": result.GamePath = RequireValue(args, ref i); break;
                 case "--retro-dir": result.RetroDirectoryPath = RequireValue(args, ref i); break;
                 case "--download-retro-wfc-payload":
@@ -100,7 +103,7 @@ internal sealed class CommandLine
         [AppMode.SilentInstall] = new ModeRules
         {
             Flag = "--silent",
-            AcceptsProgressJson = true, AcceptsGame = true, RequiresGame = true,
+            AcceptsProgressJson = true, AcceptsProgressLines = true, AcceptsGame = true, RequiresGame = true,
             AcceptsRetroDirectory = true, AcceptsPayloadMode = true,
             AcceptsPortable = true
         },
@@ -149,6 +152,9 @@ internal sealed class CommandLine
         Reject(GamePath is not null && !rules.AcceptsGame, "--game");
         Reject(RetroDirectoryPath is not null && !rules.AcceptsRetroDirectory, "--retro-dir");
         Reject(ProgressJson && !rules.AcceptsProgressJson, "--progress-json");
+        Reject(ProgressLines && !rules.AcceptsProgressLines, "--progress-lines");
+        if (ProgressJson && ProgressLines)
+            throw new ArgumentException("Choose only one of --progress-json and --progress-lines.");
         Reject(PayloadRootPath is not null && !rules.RequiresPayloadRoot, "--payload-root");
         Reject(Portable && !rules.AcceptsPortable, "--portable");
         Reject(RetroWfcPayloadMode != RetroWfcPayloadMode.NotApplicable && !rules.AcceptsPayloadMode,
