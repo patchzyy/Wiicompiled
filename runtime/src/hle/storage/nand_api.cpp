@@ -126,6 +126,10 @@ extern "C" int32_t NANDOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint32_t
     }
 
     const std::filesystem::path hostPath = TranslateNandPath(path);
+    if (hostPath.empty()) {
+        LogNandError("NANDOpen", "FAILED to translate path '%s'", path);
+        return NAND_RESULT_INVALID;
+    }
 
     if (const auto result = NandCheckSystemSaveRead("NANDOpen", hostPath, mode))
         return *result;
@@ -248,10 +252,15 @@ extern "C" int32_t NANDRead_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint32
         return NAND_RESULT_INVALID;
     }
 
-    uint8_t* buffer = (uint8_t*)Memory::GetPointer(bufferPtr);
-    if (!buffer) {
+    if (length == 0) {
+        return 0;
+    }
+    // The host pointer is only valid for the range it was resolved with.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("NANDRead", "invalid buffer 0x%08X length=%u", bufferPtr, length);
         return NAND_RESULT_INVALID;
     }
+    uint8_t* buffer = Memory::GetPointer(bufferPtr, length);
 
     size_t bytesRead = std::fread(buffer, 1, length, handle->file);
     return static_cast<int32_t>(bytesRead);
@@ -268,10 +277,14 @@ extern "C" int32_t NANDWrite_HLE(uint32_t fileInfoPtr, uint32_t bufferPtr, uint3
         return NAND_RESULT_INVALID;
     }
 
-    const uint8_t* buffer = (const uint8_t*)Memory::GetPointer(bufferPtr);
-    if (!buffer) {
+    if (length == 0) {
+        return 0;
+    }
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("NANDWrite", "invalid buffer 0x%08X length=%u", bufferPtr, length);
         return NAND_RESULT_INVALID;
     }
+    const uint8_t* buffer = Memory::GetPointer(bufferPtr, length);
 
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
