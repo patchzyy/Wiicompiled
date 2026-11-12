@@ -394,6 +394,10 @@ extern "C" int32_t NAND_IOS_Open_HLE(uint32_t pathPtr, uint32_t mode) {
     
     // It's a NAND file path
     const std::filesystem::path hostPath = TranslateNandPath(path);
+    if (hostPath.empty()) {
+        LogNandError("IOS_Open", "FAILED to translate path '%s'", path);
+        return ISFS_EINVAL;
+    }
 
     if (const auto result = NandCheckSystemSaveRead("IOS_Open", hostPath, mode, true))
         return *result;
@@ -481,11 +485,12 @@ extern "C" int32_t NAND_IOS_Read_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t l
         return 0;
     }
     
-    uint8_t* buffer = (uint8_t*)Memory::GetPointer(bufferPtr);
-    if (!buffer) {
-        LogNandError("IOS_Read", "invalid buffer ptr 0x%08X", bufferPtr);
+    // The host pointer is only valid for the range it was resolved with.
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Read", "invalid buffer 0x%08X length=%u", bufferPtr, length);
         return ISFS_EINVAL;
     }
+    uint8_t* buffer = Memory::GetPointer(bufferPtr, length);
     
     size_t bytesRead = std::fread(buffer, 1, length, handle->file);
     handle->position += static_cast<uint32_t>(bytesRead);
@@ -505,11 +510,11 @@ extern "C" int32_t NAND_IOS_Write_HLE(uint32_t fd, uint32_t bufferPtr, uint32_t 
         return 0;
     }
     
-    const uint8_t* buffer = (const uint8_t*)Memory::GetPointer(bufferPtr);
-    if (!buffer) {
-        LogNandError("IOS_Write", "invalid buffer ptr 0x%08X", bufferPtr);
+    if (!Memory::Contains(bufferPtr, length)) {
+        LogNandError("IOS_Write", "invalid buffer 0x%08X length=%u", bufferPtr, length);
         return ISFS_EINVAL;
     }
+    const uint8_t* buffer = Memory::GetPointer(bufferPtr, length);
     
     size_t bytesWritten = std::fwrite(buffer, 1, length, handle->file);
     std::fflush(handle->file);
@@ -591,7 +596,10 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr + 6);
                 const std::filesystem::path hostPath = TranslateNandPath(path);
-                
+                if (hostPath.empty()) {
+                    return ISFS_EINVAL;
+                }
+
                 if (CreateDirectoryPath(hostPath)) {
                     return ISFS_OK;
                 }
@@ -625,9 +633,11 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                 
                 // Return fake attributes (owner UID, group ID, permissions)
                 // Format: u32 ownerID, u16 groupID, u8 ownerPerm, u8 groupPerm, u8 otherPerm, u8 attrs
-                uint8_t* outBuf = (uint8_t*)Memory::GetPointer(outBufPtr);
-                if (outBuf && outLen >= 0x4c) {
-                    std::memset(outBuf, 0, outLen);
+                if (outLen >= 0x4c) {
+                    if (!Memory::Contains(outBufPtr, outLen)) {
+                        return ISFS_EINVAL;
+                    }
+                    std::memset(Memory::GetPointer(outBufPtr, outLen), 0, outLen);
                     // Owner UID = 0
                     Memory::Write32(outBufPtr, 0);
                     // Group ID = 0

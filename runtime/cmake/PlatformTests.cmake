@@ -42,6 +42,11 @@ target_include_directories(mkw_nand_save_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/
 target_compile_features(mkw_nand_save_tests PRIVATE cxx_std_17)
 add_test(NAME mkw_nand_save_tests COMMAND mkw_nand_save_tests)
 
+add_executable(mkw_nand_guest_path_tests "${MKW_TEST_RUNTIME_DIR}/tests/nand_guest_path_tests.cpp")
+target_include_directories(mkw_nand_guest_path_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_nand_guest_path_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_nand_guest_path_tests COMMAND mkw_nand_guest_path_tests)
+
 add_executable(mkw_nand_settings_tests "${MKW_TEST_RUNTIME_DIR}/tests/nand_settings_tests.cpp")
 find_package(Threads REQUIRED)
 target_link_libraries(mkw_nand_settings_tests PRIVATE Threads::Threads)

@@ -182,7 +182,14 @@ std::string RuntimeHle::FormatGuestPrintf(const std::string& fmt,
         if (!flags.empty()) pieceBuilder << flags;
         if (width >= 0) pieceBuilder << width;
         if (precision >= 0) pieceBuilder << "." << precision;
-        pieceBuilder << length << spec;
+        // Only the integer conversions keep a length modifier, and only where guest and
+        // host agree on it: the guest's l/z/t are 32-bit, and %ls/%lc would make the host
+        // read the narrow value passed below as wide characters.
+        const bool integerSpec = spec != '\0' && std::strchr("diuxXo", spec) != nullptr;
+        if (integerSpec && (length == "ll" || length == "h" || length == "hh")) {
+            pieceBuilder << length;
+        }
+        pieceBuilder << spec;
         const std::string piece = pieceBuilder.str();
 
         auto appendWithSnprintf = [&](auto value) {
