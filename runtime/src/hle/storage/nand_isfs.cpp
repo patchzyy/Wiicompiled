@@ -596,7 +596,10 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr + 6);
                 const std::filesystem::path hostPath = TranslateNandPath(path);
-                
+                if (hostPath.empty()) {
+                    return ISFS_EINVAL;
+                }
+
                 if (CreateDirectoryPath(hostPath)) {
                     return ISFS_OK;
                 }
@@ -630,7 +633,10 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
                 
                 // Return fake attributes (owner UID, group ID, permissions)
                 // Format: u32 ownerID, u16 groupID, u8 ownerPerm, u8 groupPerm, u8 otherPerm, u8 attrs
-                if (outLen >= 0x4c && Memory::Contains(outBufPtr, outLen)) {
+                if (outLen >= 0x4c) {
+                    if (!Memory::Contains(outBufPtr, outLen)) {
+                        return ISFS_EINVAL;
+                    }
                     std::memset(Memory::GetPointer(outBufPtr, outLen), 0, outLen);
                     // Owner UID = 0
                     Memory::Write32(outBufPtr, 0);

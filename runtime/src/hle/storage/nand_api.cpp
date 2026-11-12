@@ -378,6 +378,9 @@ extern "C" int32_t NANDCreateDir_HLE(uint32_t pathPtr, uint32_t perm, uint32_t a
     }
 
     const std::filesystem::path hostPath = TranslateNandPath(path);
+    if (hostPath.empty()) {
+        return NAND_RESULT_INVALID;
+    }
 
     if (PathExists(hostPath)) {
         if (IsDirectory(hostPath)) {
