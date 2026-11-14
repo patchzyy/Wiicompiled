@@ -37,24 +37,35 @@ workspace="$default_workspace"; profile=base; output_dir=""; base_output_dir=""
 game=""; nodtool=""; retro_root=""; retro_wfc=""; skip_retro_wfc=0; force_clean=0
 parallel=0; cmake_bin=cmake; ninja_bin=ninja; dotnet_bin=dotnet; translator_bin=""
 setup_version=""
+# Same guard as Prepare-NativePrebuilt.sh: a value-taking option must not swallow a missing,
+# empty, or option-like value (issue #274).
+require_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        fail "$1 requires a value"
+    fi
+    if [[ "$2" == --* ]]; then
+        fail "$1 requires a value; \"$2\" looks like another option"
+    fi
+}
+
 while (($#)); do
     case "$1" in
-        --workspace) workspace=${2:-}; shift 2 ;;
-        --profile) profile=${2:-}; shift 2 ;;
-        --output-dir) output_dir=${2:-}; shift 2 ;;
-        --base-output-dir) base_output_dir=${2:-}; shift 2 ;;
-        --game) game=${2:-}; shift 2 ;;
-        --nodtool) nodtool=${2:-}; shift 2 ;;
-        --retro-rewind-package-dir) retro_root=${2:-}; shift 2 ;;
-        --retro-wfc-offline-dir) retro_wfc=${2:-}; shift 2 ;;
+        --workspace) require_value "$@"; workspace=$2; shift 2 ;;
+        --profile) require_value "$@"; profile=$2; shift 2 ;;
+        --output-dir) require_value "$@"; output_dir=$2; shift 2 ;;
+        --base-output-dir) require_value "$@"; base_output_dir=$2; shift 2 ;;
+        --game) require_value "$@"; game=$2; shift 2 ;;
+        --nodtool) require_value "$@"; nodtool=$2; shift 2 ;;
+        --retro-rewind-package-dir) require_value "$@"; retro_root=$2; shift 2 ;;
+        --retro-wfc-offline-dir) require_value "$@"; retro_wfc=$2; shift 2 ;;
         --skip-retro-wfc-payload) skip_retro_wfc=1; shift ;;
         --force-clean-build) force_clean=1; shift ;;
-        --parallel) parallel=${2:-}; shift 2 ;;
-        --cmake) cmake_bin=${2:-}; shift 2 ;;
-        --ninja) ninja_bin=${2:-}; shift 2 ;;
-        --dotnet) dotnet_bin=${2:-}; shift 2 ;;
-        --translator-bin) translator_bin=${2:-}; shift 2 ;;
-        --setup-version) setup_version=${2:-}; shift 2 ;;
+        --parallel) require_value "$@"; parallel=$2; shift 2 ;;
+        --cmake) require_value "$@"; cmake_bin=$2; shift 2 ;;
+        --ninja) require_value "$@"; ninja_bin=$2; shift 2 ;;
+        --dotnet) require_value "$@"; dotnet_bin=$2; shift 2 ;;
+        --translator-bin) require_value "$@"; translator_bin=$2; shift 2 ;;
+        --setup-version) require_value "$@"; setup_version=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac

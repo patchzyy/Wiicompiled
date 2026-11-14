@@ -105,6 +105,62 @@ else
     failed=$((failed + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# The same guard on the other Launcher shell entry points. Only rejection paths are
+# exercised: unlike Prepare-NativePrebuilt.sh these scripts have no parse-only mode, so an
+# accepted command line would start real work. build-appimage.sh is edited but not driven
+# here: its pre-parser ELF architecture probe exits on a non-Linux userspace before the
+# argument parser is reached.
+# ---------------------------------------------------------------------------
+
+# expect_value_reject <script> <option> <description> [value...]
+# Runs "$script" "$option" <value...>. With no value arguments this is the trailing-option
+# case, with --help it is an option-like value, with "" an empty value.
+expect_value_reject() {
+    local script=$1 option=$2 description=$3
+    shift 3
+    local output status
+    output=$("$script" "$option" "$@" 2>&1)
+    status=$?
+    if [[ $status -eq 0 ]]; then
+        echo "FAIL: $description: expected rejection, exited 0"
+        failed=$((failed + 1))
+        return
+    fi
+    if [[ "$output" != *"$option"* || "$output" != *"requires a value"* ]]; then
+        echo "FAIL: $description: error does not name $option with a value complaint:"
+        echo "$output"
+        failed=$((failed + 1))
+        return
+    fi
+    echo "PASS: $description"
+    passed=$((passed + 1))
+}
+
+launcher_dir=$(cd "$(dirname "$script_under_test")" && pwd)
+
+value_options_of() {
+    case $1 in
+        prepare-portable-tools.sh)
+            echo "--arch --destination" ;;
+        local-build.sh)
+            echo "--workspace --profile --output-dir --base-output-dir --retro-rewind-package-dir --retro-wfc-offline-dir --parallel --cc --cxx --fuse-ld --cmake --ninja --dotnet --translator-dll --translator-bin --native-prebuilt-dir --sysroot --setup-version --x86-cpu-profile" ;;
+        local-build-macos.command)
+            echo "--workspace --profile --output-dir --base-output-dir --game --nodtool --retro-rewind-package-dir --retro-wfc-offline-dir --parallel --cmake --ninja --dotnet --translator-bin --setup-version" ;;
+    esac
+}
+
+for script_name in prepare-portable-tools.sh local-build.sh local-build-macos.command; do
+    script=$launcher_dir/$script_name
+    first_option=""
+    for option in $(value_options_of "$script_name"); do
+        [[ -z "$first_option" ]] && first_option=$option
+        expect_value_reject "$script" "$option" "$script_name: $option with an option-like value" --help
+    done
+    expect_value_reject "$script" "$first_option" "$script_name: $first_option with an empty value" ""
+    expect_value_reject "$script" "$first_option" "$script_name: trailing $first_option without a value"
+done
+
 echo
 echo "$passed passed, $failed failed"
 [[ $failed -eq 0 ]]
