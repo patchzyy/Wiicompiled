@@ -8,6 +8,7 @@
 #include "runtime_log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <chrono>
 #include <cstdio>
@@ -495,13 +496,15 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
 
 namespace {
 
-// Wall-clock delta since the previous poll, from whichever pump ran it. All
-// pumps live on the guest thread, so the one thread_local cursor is shared and
-// no interval is ever counted twice or dropped between them.
+// Wall-clock delta since the previous poll, from whichever pump ran it. The pumps do not all
+// run on the guest thread: Aurora's FIFO processor services the frame-wait callback while the
+// guest blocks in a FIFO drain. One process-wide cursor keeps every interval credited once;
+// a per-thread cursor let each thread credit the same stall, and the surplus overflowed the
+// output queue as dropped blocks (crackle at race start, when that wait path is busiest).
 int64_t ConsumeAudioPollDeltaMicros()
 {
     using Clock = std::chrono::steady_clock;
-    static thread_local Clock::time_point lastPoll = Clock::now();
+    static std::atomic<Clock::rep> lastPollTicks{Clock::now().time_since_epoch().count()};
 
     // Cap the catch-up interval after a debugger pause or host stall; backlog drains via
     // kMaxBlocksPerTick per pass. Never return early on a zero delta: two scheduler passes
@@ -509,14 +512,22 @@ int64_t ConsumeAudioPollDeltaMicros()
     constexpr std::chrono::microseconds kMaxPollDelta{100'000};
 
     const Clock::time_point now = Clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastPoll);
-    if (elapsed.count() < 0 || elapsed > kMaxPollDelta) {
-        lastPoll = now;
-        return elapsed.count() < 0 ? 0 : kMaxPollDelta.count();
+    Clock::rep last = lastPollTicks.load(std::memory_order_relaxed);
+    for (;;) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+            now - Clock::time_point(Clock::duration(last)));
+        if (elapsed.count() < 0) {
+            // Another pump already consumed past our timestamp; there is nothing left to credit.
+            return 0;
+        }
+        const bool capped = elapsed > kMaxPollDelta;
+        // Keep the sub-microsecond remainder for the next poll unless the interval was capped.
+        const Clock::rep next = capped ? now.time_since_epoch().count()
+                                       : last + std::chrono::duration_cast<Clock::duration>(elapsed).count();
+        if (lastPollTicks.compare_exchange_weak(last, next, std::memory_order_relaxed)) {
+            return capped ? kMaxPollDelta.count() : elapsed.count();
+        }
     }
-    // Keep the sub-microsecond remainder for the next poll.
-    lastPoll += elapsed;
-    return elapsed.count();
 }
 
 } // namespace
