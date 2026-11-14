@@ -129,6 +129,9 @@ std::array<int32_t, PAD_MAX_CONTROLLERS> g_configuredControllerIndices = [] {
 using ControllerNames::kNativeButtons;
 using ControllerNames::NativeButtonItem;
 constexpr const auto& kControllerButtons = ControllerNames::kGameCubeButtons;
+// Per-port bindings persist as [controller] "<key>_<port + 1>"; keep the config side's port
+// count honest against the pad layer's channel count.
+static_assert(RuntimeConfigFile::kControllerPortCount == PAD_MAX_CONTROLLERS);
 
 // Classic Controller Pro layout, indexed like kControllerButtons: the SNES-style
 // diamond (A right, B bottom, X top, Y left) with digital bumpers driving the GC
@@ -261,11 +264,11 @@ void ApplyConfiguredMappings() {
         if (controllerIndex < 0) {
             continue;
         }
-        // The [controller] bindings are positional and shared by every port, so
-        // they describe whatever pad the user set them up with (usually an Xbox
-        // layout: a = south). A Wii U Pro Controller has a fixed, known layout
-        // (A on the east position) that aurora already maps by name; applying
-        // the shared bindings on top swaps A/B and X/Y.
+        // The [controller] bindings are positional and describe whatever pad the
+        // user set them up with (usually an Xbox layout: a = south), so they are
+        // per-port overrides over a shared fallback. A Wii U Pro Controller has a
+        // fixed, known layout (A on the east position) that aurora already maps
+        // by name; applying configured bindings on top swaps A/B and X/Y.
         if (const char* name = PADGetNameForControllerIndex(static_cast<uint32_t>(controllerIndex));
             name != nullptr && std::string_view(name).find("Wii U Pro") != std::string_view::npos) {
             continue;
@@ -276,7 +279,7 @@ void ApplyConfiguredMappings() {
             continue;
         }
         for (size_t i = 0; i < kControllerButtons.size(); ++i) {
-            const auto& configured = RuntimeConfigFile::ControllerButton(i);
+            const auto& configured = RuntimeConfigFile::PortControllerButton(port, i);
             if (!configured) {
                 continue;
             }
@@ -500,7 +503,8 @@ void CompleteRebind(uint32_t value) {
         std::string config = NativeBindingConfig(primaryValue);
         if (alternateValue != PAD_NATIVE_BUTTON_INVALID) config += ',' + NativeBindingConfig(alternateValue);
         for (size_t i = 0; i < kControllerButtons.size(); ++i)
-            if (kControllerButtons[i].padButton == capture.target) RuntimeConfigFile::SetControllerButton(i, config);
+            if (kControllerButtons[i].padButton == capture.target)
+                RuntimeConfigFile::SetPortControllerButton(capture.port, i, config);
     } else if (capture.kind == RebindKind::MuteHotkey) {
         g_muteHotkey = static_cast<int32_t>(value);
         RuntimeConfigFile::SetMuteHotkey(g_muteHotkey);
@@ -819,13 +823,13 @@ void DrawGamepadMapping(uint32_t port) {
     uint32_t altMappingCount = 0;
     PADButtonMapping* altMappings = PADGetAltButtonMappings(port, &altMappingCount);
 
-    const auto writeBinding = [](size_t index, uint32_t primaryNative, uint32_t altNative) {
+    const auto writeBinding = [port](size_t index, uint32_t primaryNative, uint32_t altNative) {
         std::string value = NativeBindingConfig(primaryNative);
         if (altNative != PAD_NATIVE_BUTTON_INVALID) {
             value += ',';
             value += NativeBindingConfig(altNative);
         }
-        RuntimeConfigFile::SetControllerButton(index, value);
+        RuntimeConfigFile::SetPortControllerButton(port, index, value);
     };
 
     // Which rows show the second-binding button without one being bound yet;
@@ -848,7 +852,7 @@ void DrawGamepadMapping(uint32_t port) {
                     return mapping.padButton == kControllerButtons[i].padButton;
                 });
                 if (it != restored + restoredCount) {
-                    RuntimeConfigFile::SetControllerButton(i, NativeButtonForValue(it->nativeButton).configName);
+                    RuntimeConfigFile::SetPortControllerButton(port, i, NativeButtonForValue(it->nativeButton).configName);
                 }
             }
         }
@@ -862,7 +866,7 @@ void DrawGamepadMapping(uint32_t port) {
                 PADSetButtonMapping(port, PADButtonMapping{native->nativeButton, kControllerButtons[i].padButton});
                 PADSetAltButtonMapping(port,
                                        PADButtonMapping{PAD_NATIVE_BUTTON_INVALID, kControllerButtons[i].padButton});
-                RuntimeConfigFile::SetControllerButton(i, preset[i]);
+                RuntimeConfigFile::SetPortControllerButton(port, i, preset[i]);
             }
         }
         altRowExpanded.fill(false);
@@ -879,6 +883,7 @@ void DrawGamepadMapping(uint32_t port) {
     }
 
     ImGui::TextDisabled("Click a binding, then press the input to use. Triggers: LT/L2, RT/R2.");
+    ImGui::TextDisabled("Bindings are saved for this port; ports never rebound use the shared mapping.");
     const float bindingWidth = ImGui::CalcTextSize("Right shoulder (RB / R1)").x +
                                ImGui::GetFrameHeight() + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float bindingX = ImGui::GetCursorPosX() + ImGui::CalcTextSize("D-pad Right").x +
