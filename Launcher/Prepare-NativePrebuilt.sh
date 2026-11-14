@@ -53,20 +53,36 @@ Usage: Prepare-NativePrebuilt.sh --arch {x86_64|aarch64} [options]
 EOF
 }
 
+# Every value-taking option goes through this before touching $2 or shifting: without it,
+# "--sysroot --disconnected" stored "--disconnected" as the sysroot value and silently left
+# disconnected mode off, and a trailing value-less option died on set -u's unbound-variable error
+# instead of naming the option. Values that genuinely start with "--" are not supported; pass a
+# path that does not collide with option syntax (https://github.com/patchzyy/Wiicompiled/issues/274).
+require_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "Prepare-NativePrebuilt.sh: $1 requires a value" >&2
+        exit 1
+    fi
+    if [[ "$2" == --* ]]; then
+        echo "Prepare-NativePrebuilt.sh: $1 requires a value; \"$2\" looks like another option" >&2
+        exit 1
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch) arch=$2; shift 2 ;;
-        --output-dir) output_dir=$2; shift 2 ;;
-        --stage-dir) stage_dir=$2; shift 2 ;;
+        --arch) require_value "$@"; arch=$2; shift 2 ;;
+        --output-dir) require_value "$@"; output_dir=$2; shift 2 ;;
+        --stage-dir) require_value "$@"; stage_dir=$2; shift 2 ;;
         --keep-stage) keep_stage=1; shift ;;
         --reuse-stage) reuse_stage=1; shift ;;
-        --parallel) parallel=$2; shift 2 ;;
+        --parallel) require_value "$@"; parallel=$2; shift 2 ;;
         --print-fingerprint-only) print_fingerprint_only=1; shift ;;
-        --toolchain-dir) toolchain_dir=$2; shift 2 ;;
-        --ninja-bin) ninja_bin=$2; shift 2 ;;
-        --cmake-bin) cmake_bin=$2; shift 2 ;;
-        --llvm-dir) llvm_dir=$2; shift 2 ;;
-        --sysroot) sysroot=$2; shift 2 ;;
+        --toolchain-dir) require_value "$@"; toolchain_dir=$2; shift 2 ;;
+        --ninja-bin) require_value "$@"; ninja_bin=$2; shift 2 ;;
+        --cmake-bin) require_value "$@"; cmake_bin=$2; shift 2 ;;
+        --llvm-dir) require_value "$@"; llvm_dir=$2; shift 2 ;;
+        --sysroot) require_value "$@"; sysroot=$2; shift 2 ;;
         --disconnected) disconnected=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Prepare-NativePrebuilt.sh: unknown argument: $1" >&2; exit 1 ;;
