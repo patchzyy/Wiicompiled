@@ -5,6 +5,7 @@
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
+#include "nand_guest_path.h"
 #include "runtime_log.h"
 
 // ============================================================================
@@ -121,19 +122,11 @@ bool NandRename(const std::filesystem::path& from, const std::filesystem::path& 
 }
 
 // Guest paths are absolute and already lexically resolved against the NAND root, so
-// they are appended as relative components instead of replacing the root.
+// they are appended as relative components instead of replacing the root. Empty when a
+// component could leave the root (see nand_guest_path.h).
 static std::filesystem::path BuildHostNandPath(const std::string& wiiPathStr) {
-    std::filesystem::path hostPath = GetNandBasePath();
-    size_t cursor = 0;
-    while (cursor < wiiPathStr.size()) {
-        const size_t slash = wiiPathStr.find('/', cursor);
-        const size_t end = slash == std::string::npos ? wiiPathStr.size() : slash;
-        if (end != cursor) {
-            hostPath /= wiiPathStr.substr(cursor, end - cursor);
-        }
-        cursor = end + 1;
-    }
-    return hostPath;
+    auto hostPath = RuntimeNandGuestPath::AppendBelowRoot(GetNandBasePath(), wiiPathStr);
+    return hostPath ? std::move(*hostPath) : std::filesystem::path{};
 }
 
 // Collapses "." and ".." components against the NAND root. Without this, guest paths like
@@ -255,12 +248,15 @@ static bool ResolveRiivolutionSaveHostPath(const std::string& absoluteWiiPath,
         relative = absoluteWiiPath.substr(dataDir.size() + 1);
     }
 
-    std::filesystem::path redirected = redirect.hostDirectory;
-    if (!relative.empty()) {
-        redirected /= std::filesystem::path(relative);
+    // The path belongs to the redirect either way; an unsafe one resolves to nothing
+    // rather than falling back to the NAND root.
+    auto redirected = RuntimeNandGuestPath::AppendBelowRoot(redirect.hostDirectory, relative);
+    if (!redirected) {
+        outHostPath.clear();
+        return true;
     }
 
-    outHostPath = redirected;
+    outHostPath = std::move(*redirected);
     CloneRiivolutionSaveIfNeeded(BuildHostNandPath(absoluteWiiPath), outHostPath, redirect);
     return true;
 }
