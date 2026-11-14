@@ -177,6 +177,7 @@ translator without any game data around.
 
 For everything beyond that, feeding in your own `main.dol`/`StaticR.rel`, running the
 translation, generating the manifest and build graph, and compiling, see [`translator/README.md`](translator/README.md).
+For a map of how the repository's pieces fit together, see [`docs/project-structure.md`](docs/project-structure.md).
 
 For a step-by-step guide on compiling both WiiCompiled and Retro Rewind from source on macOS (Apple Silicon), see the [macOS Build Guide](docs/building-macos.md).
 
