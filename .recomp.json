@@ -1,0 +1,19 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Mario Kart Wii",
+  "wikidata": "Q838707",
+  "system": "Wii",
+  "type": "recomp",
+  "project": "WiiCompiled",
+  "status": "released",
+  "targets": ["Windows", "Linux", "macOS"],
+  "approach": "Static recompilation of the PowerPC binary to native code with the project's own translator; no emulator, interpreter, or JIT at runtime.",
+  "original": [
+    { "region": "Europe", "serial": "RMCP01" },
+    { "region": "USA", "serial": "RMCE01" },
+    { "region": "Japan", "serial": "RMCJ01" }
+  ],
+  "links": [
+    { "label": "Releases", "url": "https://github.com/patchzyy/Wiicompiled/releases" }
+  ]
+}
