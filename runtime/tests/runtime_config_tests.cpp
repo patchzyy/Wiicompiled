@@ -134,5 +134,33 @@ int main() {
                          document->at("video").at("advanced").at("foo").as_integer() == 1,
                      "key was not added to an implicit table")) return 1;
     }
+    {
+        std::istringstream input("[controller]\na_1 = \"south\"\nright_4 = \"east\"\nl_2 = \"west\"\n"
+                                 "a_0 = \"north\"\na_5 = \"north\"\nnotabutton_1 = \"south\"\n"
+                                 "a_x = \"south\"\na_3 = 1\n");
+        const RuntimeUserConfig config = RuntimeConfigFile::ParseConfig(input, "ports.toml");
+        if (!Require(config.controllerPortButtons[0][0] == std::optional<std::string>{"south"} &&
+                         config.controllerPortButtons[3][11] == std::optional<std::string>{"east"} &&
+                         config.controllerPortButtons[1][6] == std::optional<std::string>{"west"},
+                     "valid per-port button overrides were not loaded")) return 1;
+        size_t setCount = 0;
+        for (const auto& portButtons : config.controllerPortButtons)
+            for (const auto& button : portButtons)
+                if (button) ++setCount;
+        if (!Require(setCount == 3, "out-of-range, non-string, or unknown per-port keys were accepted")) return 1;
+    }
+    {
+        std::istringstream input("[controller]\na = \"west\"\na_1 = \"south\"\nb_2 = \"east\"\n");
+        const RuntimeUserConfig config = RuntimeConfigFile::ParseConfig(input, "ports-fallback.toml");
+        if (!Require(config.controllerButtons[0] == std::optional<std::string>{"west"} &&
+                         config.controllerPortButtons[0][0] == std::optional<std::string>{"south"} &&
+                         config.controllerPortButtons[1][1] == std::optional<std::string>{"east"},
+                     "shared and per-port button bindings were not kept apart")) return 1;
+    }
+    if (!Require(RuntimeConfigFile::PortControllerButtonKey(0, 0) == "a_1" &&
+                     RuntimeConfigFile::PortControllerButtonKey(3, 11) == "right_4" &&
+                     RuntimeConfigFile::PortControllerButtonKey(4, 0).empty() &&
+                     RuntimeConfigFile::PortControllerButtonKey(0, 12).empty(),
+                 "per-port button key layout is wrong")) return 1;
     return 0;
 }
