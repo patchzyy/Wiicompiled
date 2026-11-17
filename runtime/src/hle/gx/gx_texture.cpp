@@ -511,6 +511,34 @@ static void LoadTexObjImpl(uint32_t oa, uint32_t tid) {
         return;
     }
     
+    if (TexObjSlot* slot = TryGetValidatedTexObjSlot(oa)) {
+        try {
+            BoundTexInfo newBound{};
+            static_cast<GxTextureBindingContract::SamplerState&>(newBound) = *slot;
+            newBound.objAddr = oa;
+            newBound.dataAddr = CanonicalizeGxMainRamAddress(slot->dataAddr);
+            if (!GxTextureBindingContract::CanSkipHostLoad(
+                    g_boundTexMaps[tid], newBound, false, false, false)) {
+                GXLoadTexObj(slot->host->PublicPtr(), (GXTexMapID)tid);
+            }
+            g_boundTexMaps[tid] = newBound;
+        } catch (const std::exception& ex) {
+            slot->validatedLoad.Invalidate();
+            if (s_hostExceptionLogCount++ < 64) {
+                RT_LOGF(RT_TAG_GX, "GXLoadTexObj rejected reason=host-exception (%s) oa=0x%08X tid=%u\n",
+                        ex.what(), oa, tid);
+            }
+            BindUnloadableTexturePlaceholder(tid);
+        } catch (...) {
+            slot->validatedLoad.Invalidate();
+            if (s_hostExceptionLogCount++ < 64) {
+                RT_LOGF(RT_TAG_GX, "GXLoadTexObj rejected reason=host-exception-unknown oa=0x%08X tid=%u\n", oa, tid);
+            }
+            BindUnloadableTexturePlaceholder(tid);
+        }
+        return;
+    }
+
     // Check if we have metadata for this texture, or try to extract it from guest memory
     TexObjMeta meta;
     if (!TryGetOrExtractTexObjMeta(oa, meta)) {
@@ -661,6 +689,7 @@ static void LoadTexObjImpl(uint32_t oa, uint32_t tid) {
         if (!canSkipHostLoad) {
             GXLoadTexObj(obj, (GXTexMapID)tid);
         }
+        MarkTexObjLoadValidated(oa);
     } catch (const std::exception& ex) {
         if (s_hostExceptionLogCount++ < 64) {
             RT_LOGF(RT_TAG_GX,
@@ -681,24 +710,20 @@ static void LoadTexObjImpl(uint32_t oa, uint32_t tid) {
 }
 
 extern "C" void GX__LoadTexObj_80170f2c(uint32_t oa, uint32_t tid) {
-    if (GxWorker::ShouldDefer()) {
-        // The CPU-side SDK reads the GXTexObj at call time; the texture data itself is read later.
-        std::optional<TexObjBytes> bytes;
-        try {
-            bytes = CaptureTexObjBytes(oa);
-        } catch (...) {
-        }
-        GxWorker::Submit([oa, tid, bytes] {
-            if (bytes) {
-                TexObjSnapshotScope snapshot(oa, *bytes);
-                LoadTexObjImpl(oa, tid);
-            } else {
-                LoadTexObjImpl(oa, tid);
-            }
-        });
-    } else {
-        LoadTexObjImpl(oa, tid);
+    // Inline and deferred loads use the same complete call-time snapshot.
+    std::optional<TexObjBytes> bytes;
+    try {
+        bytes = CaptureTexObjBytes(oa);
+    } catch (...) {
     }
+    GxWorker::Run([oa, tid, bytes] {
+        if (bytes) {
+            TexObjSnapshotScope snapshot(oa, *bytes);
+            LoadTexObjImpl(oa, tid);
+        } else {
+            LoadTexObjImpl(oa, tid);
+        }
+    });
     try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) { Memory::Write32(gd + 0x5FCu, Memory::Read32(gd + 0x5FCu) | 1u); Memory::Write16(gd + 2, 0); } } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(80170f2c, GX__LoadTexObj_80170f2c, (uint32_t oa, uint32_t tid), (oa, tid));

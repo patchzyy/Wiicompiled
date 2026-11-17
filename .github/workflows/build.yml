@@ -119,8 +119,30 @@ jobs:
             mkw_macos_context_abi_tests \
             mkw_macos_host_context_tests \
             mkw_macos_guest_flat_memory_tests \
-            mkw_macos_external_audio_tests
+            mkw_macos_external_audio_tests \
+            mkw_ax_mix_kernels_tests
 
       - name: Test execution substrate
         shell: bash
         run: ctest --test-dir build-macos --output-on-failure
+
+      - name: Check ARM audio kernels with sanitizers
+        shell: bash
+        run: |
+          clang++ -std=c++17 -O2 -fno-fast-math \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -DMKW_AX_MIX_REQUIRE_NEON=1 \
+            -Iruntime/include -Iruntime/src/hle/audio \
+            runtime/tests/ax_mix_kernels_tests.cpp -o build-macos/ax-mix-sanitized
+          build-macos/ax-mix-sanitized
+          build-macos/mkw_ax_mix_kernels_tests --benchmark 20000
+
+      - name: Build and test GX performance paths
+        shell: bash
+        run: |
+          cmake -S runtime -B build-macos -DMKW_BUILD_AURORA_TESTS=ON
+          cmake --build build-macos --parallel 3 --target \
+            gx_fifo_tests shader_module_cache_tests gx_shader_layout_tests \
+            mkw_gx_texture_binding_tests mkw_gx_sync_tests mkw_gx_dl_cache_tests
+          ctest --test-dir build-macos --output-on-failure \
+            -R '^(GXFifoTest|RuntimeDirectDrawTest|ShaderModuleCacheTest|GxShader(Layout|Key|Arena|Mode|State)|mkw_gx_(texture_binding|sync|dl_cache)_tests)'

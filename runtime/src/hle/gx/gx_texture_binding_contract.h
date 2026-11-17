@@ -1,8 +1,30 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 namespace GxTextureBindingContract {
+
+// Independent of the metadata shadow, which getters and setters may refresh.
+struct ValidatedLoad {
+    uint8_t bytes[32]{};
+    bool valid = false;
+
+    void Invalidate() noexcept { valid = false; }
+
+    void Record(const uint8_t* snapshot) noexcept {
+        valid = snapshot != nullptr;
+        if (valid) {
+            std::memcpy(bytes, snapshot, sizeof(bytes));
+        }
+    }
+
+    bool CanReuse(const uint8_t* snapshot, bool needsUpload, bool constructed,
+                  bool isPalette) const noexcept {
+        return valid && snapshot != nullptr && !needsUpload && constructed && !isPalette &&
+               std::memcmp(bytes, snapshot, sizeof(bytes)) == 0;
+    }
+};
 
 // Every piece of GX texture state that can change the bound view/sampler. Shared by `State`
 // (this plus the guest GXTexObj address) and HLE's TexObjMeta (this plus the `userData`/

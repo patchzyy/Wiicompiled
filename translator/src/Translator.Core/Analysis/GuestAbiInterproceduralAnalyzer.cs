@@ -18,7 +18,9 @@ public static class GuestAbiInterproceduralAnalyzer
 {
     public static GuestAbiInterproceduralResult Analyze(
         IReadOnlyDictionary<uint, IrFunction> functions,
-        IReadOnlyDictionary<uint, GuestAbiContract>? externalContracts = null)
+        IReadOnlyDictionary<uint, GuestAbiContract>? externalContracts = null,
+        bool retainBodies = true,
+        int? maxDegreeOfParallelism = null)
     {
         externalContracts ??= new Dictionary<uint, GuestAbiContract>();
         var addresses = functions.Keys.OrderBy(static address => address).ToArray();
@@ -26,12 +28,18 @@ public static class GuestAbiInterproceduralAnalyzer
         // GuestAbiContractAnalyzer.Analyze is pure and the round's contract snapshot is frozen, so
         // per-function analyses within a round can run on any thread. Determinism comes from
         // applying results serially in ascending-ordinal order, matching the old single-threaded loop.
-        var parallelOptions = new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount };
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount
+        };
 
-        // Resolving the IR by ordinal once keeps the caller-supplied dictionary
-        // off every parallel path: only this loop and BuildComponents touch it.
-        var bodies = new IrFunction[addresses.Length];
-        for (var index = 0; index < addresses.Length; ++index) bodies[index] = functions[addresses[index]];
+        // Lazy callers must supply stable bodies and support concurrent reads.
+        var bodies = retainBodies ? new IrFunction[addresses.Length] : null;
+        if (bodies is not null)
+        {
+            for (var index = 0; index < addresses.Length; ++index) bodies[index] = functions[addresses[index]];
+        }
+        IrFunction Body(int index) => bodies is not null ? bodies[index] : functions[addresses[index]];
 
         // Mirror of `contracts` keyed by ordinal.  The fixpoint compares against
         // it from the parallel phase, where the dictionary must stay untouched.
@@ -40,7 +48,7 @@ public static class GuestAbiInterproceduralAnalyzer
             0,
             addresses.Length,
             parallelOptions,
-            index => current[index] = GuestAbiContractAnalyzer.Analyze(bodies[index]));
+            index => current[index] = GuestAbiContractAnalyzer.Analyze(Body(index)));
 
         var contracts = new Dictionary<uint, GuestAbiContract>(addresses.Length);
         for (var index = 0; index < addresses.Length; ++index) contracts.Add(addresses[index], current[index]);
@@ -62,7 +70,7 @@ public static class GuestAbiInterproceduralAnalyzer
             (index, _, scratch) =>
             {
                 scratch.Clear();
-                CollectDirectCallees(bodies[index], ordinals, scratch);
+                CollectDirectCallees(Body(index), ordinals, scratch);
                 directCallees[index] = scratch.ToArray();
                 return scratch;
             },
@@ -95,7 +103,7 @@ public static class GuestAbiInterproceduralAnalyzer
             Parallel.For(0, worklistCount, parallelOptions, position =>
             {
                 var ordinal = worklist[position];
-                var next = GuestAbiContractAnalyzer.Analyze(bodies[ordinal], visible);
+                var next = GuestAbiContractAnalyzer.Analyze(Body(ordinal), visible);
                 roundResults[position] = Equivalent(current[ordinal], next) ? null : next;
             });
 

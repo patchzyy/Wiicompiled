@@ -30,6 +30,7 @@ extern "C" uint32_t GX__Init_8016b850(uint32_t fifoBase, uint32_t fifoSize)
     constexpr uint32_t kGXDataSize = 0x600u;
 
     GXInit(GuestToHostPtr(fifoBase, fifoSize), fifoSize);
+    InvalidateTexObjLoads();
 
     // Initialize GXData structure in guest memory
     try {

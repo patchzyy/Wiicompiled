@@ -1,10 +1,10 @@
 #include "gx_internal.h"
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
+#include "gx_dl_cache.h"
 #include "isa/big_endian.h"
 
 #include <cstdlib>
-#include <unordered_map>
 
 // The display-list scan cache validates a cached scan against the live guest
 // bytes with a 64-bit XXH3 digest (see GxDisplayListScanCache::CanReuse).
@@ -502,10 +502,7 @@ struct DlScanCacheRecord {
     std::vector<uint8_t> flattened{};
 };
 
-struct DlScanCacheState {
-    std::unordered_map<uint64_t, DlScanCacheRecord> entries{};
-    size_t storedCommandBytes = 0;
-};
+using DlScanCacheState = GxDisplayListScanCache::BoundedCache<DlScanCacheRecord>;
 
 static uint64_t HashScanLayoutState() {
     if (!g_hleGxState.vtxLayoutHashDirty) {
@@ -537,7 +534,7 @@ static uint64_t DlScanCacheKey(uint32_t listAddr, uint32_t nbytes, uint64_t layo
 }
 
 static DlScanCacheState& DlScanCache() {
-    static thread_local DlScanCacheState s_cache;
+    static thread_local DlScanCacheState s_cache{kDlScanCacheMaxEntries, kDlScanCacheMaxStoredBytes};
     return s_cache;
 }
 
@@ -560,9 +557,8 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
 
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    const auto it = s_cache.entries.find(key);
-    if (it != s_cache.entries.end()) {
-        auto& record = it->second;
+    if (auto* found = s_cache.Find(key)) {
+        auto& record = *found;
         const auto& entry = record.result;
         const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
                                      entry.nbytes == nbytes && entry.layoutHash == layoutHash;
@@ -586,6 +582,9 @@ static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr,
             }
         }
     }
+    if (probe.record != nullptr) {
+        s_cache.Touch(key);
+    }
     return probe;
 }
 
@@ -600,18 +599,6 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
                              uint32_t flattenedBytes) {
     auto& s_cache = DlScanCache();
     const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    auto old = s_cache.entries.find(key);
-    bool replacing = old != s_cache.entries.end();
-    size_t replacedBytes = replacing ? DlScanCacheRecordBytes(old->second) : 0;
-    const size_t incomingBytes = static_cast<size_t>(flattenedBytes) +
-                                 cpWrites.size() * sizeof(DlCpWrite);
-    if ((!replacing && s_cache.entries.size() >= kDlScanCacheMaxEntries) ||
-        s_cache.storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
-        s_cache.entries.clear();
-        s_cache.storedCommandBytes = 0;
-        replacing = false;
-        replacedBytes = 0;
-    }
     DlScanCacheRecord record{};
     record.result = entry;
     record.mayContainDraw = mayContainDraw;
@@ -626,12 +613,8 @@ static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layout
     if (flattened != nullptr && flattenedBytes != 0) {
         record.flattened.assign(flattened, flattened + flattenedBytes);
     }
-    auto [it, inserted] = s_cache.entries.insert_or_assign(key, std::move(record));
-    (void)inserted;
-    s_cache.storedCommandBytes += DlScanCacheRecordBytes(it->second);
-    if (replacing) {
-        s_cache.storedCommandBytes -= replacedBytes;
-    }
+    const size_t incomingBytes = DlScanCacheRecordBytes(record);
+    s_cache.Insert(key, std::move(record), incomingBytes);
 }
 
 static void BuildScanVertexLayout(GXVtxFmt vtxfmt, std::array<ScanAttrStep, 26>& indexedSteps,

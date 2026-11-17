@@ -520,6 +520,37 @@ void MarkTexObjSyncedLocked(TexObjSlot& slot) noexcept {
 
 } // namespace
 
+TexObjSlot* TryGetValidatedTexObjSlot(uint32_t addr) {
+    TexObjSlot* slot = FindTexObjSlot(addr);
+    if (slot == nullptr) {
+        return nullptr;
+    }
+    if (slot->validatedLoad.CanReuse(TexObjSnapshotFor(addr), slot->needsUpload,
+                                    slot->host && slot->host->storageLive && slot->host->constructed,
+                                    IsPaletteTexFormat(slot->format))) {
+        return slot;
+    }
+    slot->validatedLoad.Invalidate();
+    return nullptr;
+}
+
+void MarkTexObjLoadValidated(uint32_t addr) {
+    TexObjSlot* slot = FindTexObjSlot(addr);
+    if (slot != nullptr && !slot->needsUpload && slot->host && slot->host->constructed &&
+        !IsPaletteTexFormat(slot->format)) {
+        // Only call-time bytes may identify a completed load, never newer producer memory.
+        slot->validatedLoad.Record(TexObjSnapshotFor(addr));
+    }
+}
+
+void InvalidateTexObjLoads() {
+    std::lock_guard<std::mutex> guard(g_texObjMutex);
+    for (auto& [addr, slot] : g_TexObjMeta) {
+        slot.validatedLoad.Invalidate();
+    }
+    g_boundTexMaps = {};
+}
+
 bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
     TexObjSlot* slot = FindTexObjSlot(addr);
     if (slot != nullptr) {
@@ -553,6 +584,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
         const bool extractedUsable = IsUsableTexObjMeta(extracted);
         if (extractedUsable) {
             QueueTexObjIntervalUpdate(*slot);
+            slot->validatedLoad.Invalidate();
             static_cast<TexObjMeta&>(*slot) = extracted;
             MarkTexObjSyncedLocked(*slot);
             outMeta = extracted;
@@ -575,6 +607,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
 // queues the interval-index patch and re-captures the guest shadow before that happens.
 TexObjMeta& GetTexObjMeta(uint32_t addr) {
     TexObjSlot& slot = FindOrCreateTexObjSlot(addr);
+    slot.validatedLoad.Invalidate();
     QueueTexObjIntervalUpdate(slot);
     MarkTexObjSyncedLocked(slot);
     return slot;
@@ -604,6 +637,7 @@ GXTexObj* GetHostTexObj(uint32_t addr) {
 
 GXTexObj* CreateHostTexObj(uint32_t addr) {
     TexObjSlot& slot = FindOrCreateTexObjSlot(addr);
+    slot.validatedLoad.Invalidate();
     // GXInitTexObj/GXInitTexObjCI land here and rewrite the entire guest struct,
     // resetting the LOD/filter words the HLE does not mirror into this cache.
     // The shadow captured before that rewrite mismatches afterwards, so the

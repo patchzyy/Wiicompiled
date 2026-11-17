@@ -110,6 +110,7 @@ int g_displayMode = [] {
     }
     return static_cast<int>(AURORA_DISPLAY_MODE_WINDOWED);
 }();
+int g_shaderMode = RuntimeConfigFile::ShaderMode() == "hybrid" ? 1 : 0;
 bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_vsync = RuntimeConfigFile::Vsync();
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
@@ -1278,11 +1279,16 @@ void DrawGraphicsSettings() {
         aurora_set_disable_copy_filter(g_disableCopyFilter);
         RuntimeConfigFile::SetDisableCopyFilter(g_disableCopyFilter);
     }
+    if (ImGui::Combo("Shaders (restart required)", &g_shaderMode, "Specialized\0Hybrid\0")) {
+        RuntimeConfigFile::SetShaderMode(g_shaderMode == 1 ? "hybrid" : "specialized");
+    }
+    ImGui::BeginDisabled(g_shaderMode == 1);
     if (ImGui::Checkbox("Skip draws while shaders compile", &g_skipUnreadyPipelines)) {
         GX_SYNC_INLINE();
         aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
         RuntimeConfigFile::SetSkipUnreadyPipelines(g_skipUnreadyPipelines);
     }
+    ImGui::EndDisabled();
     if (ImGui::Checkbox("VSync", &g_vsync)) {
         aurora_enable_vsync(g_vsync);
         RuntimeConfigFile::SetVsync(g_vsync);

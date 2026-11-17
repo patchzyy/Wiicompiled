@@ -154,6 +154,8 @@ struct TexObjSlot : TexObjMeta {
     uint64_t guestShadow[4] = {0, 0, 0, 0};
     bool hasGuestShadow = false;
 
+    GxTextureBindingContract::ValidatedLoad validatedLoad;
+
     // DCStoreRange interval-index bookkeeping: what this slot currently
     // contributes to g_texObjIntervals, so a pending update that turns out to
     // be a no-op costs a compare instead of an erase + insert.
@@ -256,6 +258,10 @@ struct HleGxState {
     std::array<uint8_t, 4096> fifoBytes{};
     size_t fifoReadOffset = 0;
     size_t fifoByteCount = 0;
+    uint32_t fifoPendingDrawBytes = 0;
+    uint64_t fifoPendingDrawGeneration = 0;
+    uint32_t fifoDirectBytesRemaining = 0;
+    uint32_t fifoDirectVertexSize = 0;
 
     void ResetVertex();
     void InvalidateVtxLayoutHash() noexcept {
@@ -347,6 +353,10 @@ bool ValidateTlutData(uint32_t objAddr, const TlutObjMeta& meta);
 TexObjMeta& GetTexObjMeta(uint32_t addr);
 TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr);
 bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta);
+// Lookup and publication require g_texObjMutex; reset acquires it itself.
+TexObjSlot* TryGetValidatedTexObjSlot(uint32_t addr);
+void MarkTexObjLoadValidated(uint32_t addr);
+void InvalidateTexObjLoads();
 
 // Guest GXTexObj bytes captured on the game thread; while a scope is active on a thread, texobj
 // decoding for that address reads the captured bytes instead of live guest memory.

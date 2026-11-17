@@ -13,6 +13,7 @@ HleGxState g_hleGxState;
 namespace aurora::gx::fifo {
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes);
+void write_raw_draw_data(const uint8_t* data, uint32_t length);
 }
 
 void HleGxState::ResetVertex() {
@@ -81,6 +82,73 @@ static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     }
 
     return vertexSize != 0;
+}
+
+void GxStream::PrepareImmediateDirectDraw() {
+    auto& g = g_hleGxState;
+    g.fifoDirectBytesRemaining = 0;
+    g.fifoDirectVertexSize = 0;
+    g.fifoPendingDrawGeneration = g.vtxStateGeneration;
+    if (!g.inBegin || g.vertsRemaining > 0xffffu || g.currentVtxFmt >= GX_MAX_VTXFMT) {
+        return;
+    }
+    uint32_t vertexSize = 0;
+    for (int attr = 0; attr < 26; ++attr) {
+        if (g.vtxDesc[attr] == GX_NONE) {
+            continue;
+        }
+        if (g.vtxDesc[attr] != GX_DIRECT || attr == GX_VA_NRM || attr > GX_VA_TEX7) {
+            return;
+        }
+        const auto& fmt = g.vtxAttrFmt[g.currentVtxFmt][attr];
+        if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
+            // Packed colors and RGBX padding are re-encoded by the attribute writer.
+            if (!((fmt.type == GX_RGB8 && fmt.cnt == GX_CLR_RGB) ||
+                  (fmt.type == GX_RGBA8 && fmt.cnt == GX_CLR_RGBA))) {
+                return;
+            }
+        } else if (!IsMatrixIndexAttr(static_cast<GXAttr>(attr))) {
+            if (static_cast<uint32_t>(fmt.type) > GX_F32 || fmt.frac > 31 ||
+                static_cast<uint32_t>(fmt.cnt) > 1u) {
+                return;
+            }
+        }
+        vertexSize += GetDirectAttrByteSizeForFifo(static_cast<GXAttr>(attr), fmt);
+    }
+    g.fifoDirectVertexSize = vertexSize;
+    g.fifoDirectBytesRemaining = vertexSize * g.vertsRemaining;
+}
+
+static uint32_t WriteImmediateDirectBytes(const uint8_t* bytes, uint32_t size) {
+    auto& g = g_hleGxState;
+    if (!g.inBegin || g.fifoDirectBytesRemaining == 0) {
+        return 0;
+    }
+    if (!g.auroraBeginCalled) {
+        if (g.fifoPendingDrawGeneration != g.vtxStateGeneration) {
+            GxStream::PrepareImmediateDirectDraw();
+            if (g.fifoDirectBytesRemaining == 0) {
+                return 0;
+            }
+        }
+        EnsureAuroraFrameActive();
+        ApplyAuroraVtxStateForRawBegin(g.currentVtxFmt);
+        EnsureDefaultGxAlphaCompare();
+        GXBegin(g.currentPrim, g.currentVtxFmt, static_cast<u16>(g.vertsRemaining));
+        g.auroraBeginCalled = true;
+        GXMarkFrameWork();
+    }
+    const uint32_t count = std::min(size, g.fifoDirectBytesRemaining);
+    aurora::gx::fifo::write_raw_draw_data(bytes, count);
+    g.fifoDirectBytesRemaining -= count;
+    g.vertsRemaining = (g.fifoDirectBytesRemaining + g.fifoDirectVertexSize - 1u) / g.fifoDirectVertexSize;
+    if (g.fifoDirectBytesRemaining == 0) {
+        g.inBegin = false;
+        g.auroraBeginCalled = false;
+        g.ResetVertex();
+        GXEnd();
+    }
+    return count;
 }
 
 static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetBytes, GXPrimitive prim,
@@ -369,6 +437,19 @@ static MKW_PPC_NO_INLINE void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes);
 // `val` is a raw big-endian bit pattern: the FIFO stream is type-agnostic, and
 // the float entry point converts before it gets here.
 void HleFifoWrite(u32 val, uint32_t sizeBytes) {
+    if (!IsDisplayListActive() && g_hleGxState.fifoDirectBytesRemaining != 0) {
+        const uint32_t count = sizeBytes == 0 || sizeBytes > 4 ? 4u : sizeBytes;
+        uint8_t bytes[4];
+        BigEndian::Write32(bytes, val);
+        const uint8_t* data = bytes + 4u - count;
+        const uint32_t consumed = WriteImmediateDirectBytes(data, count);
+        if (consumed != 0) {
+            for (uint32_t i = consumed; i < count; ++i) {
+                HleFifoWriteGeneral(data[i], 1);
+            }
+            return;
+        }
+    }
     if ((sizeBytes == 0 || sizeBytes == 4) && !IsDisplayListActive() && TryAppendIncompleteXfWord(val)) {
         return;
     }
@@ -385,6 +466,7 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
     auto resetFifoBuffer = [&]() {
         g_hleGxState.fifoReadOffset = 0;
         g_hleGxState.fifoByteCount = 0;
+        g_hleGxState.fifoPendingDrawBytes = 0;
     };
 
     auto compactFifoBuffer = [&]() {
@@ -440,6 +522,7 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
         }
         g_hleGxState.fifoReadOffset += count;
         g_hleGxState.fifoByteCount -= count;
+        g_hleGxState.fifoPendingDrawBytes = 0;
         if (g_hleGxState.fifoByteCount == 0) {
             g_hleGxState.fifoReadOffset = 0;
         }
@@ -448,9 +531,17 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
     };
 
     pushBytes(val, sizeBytes == 0 ? 4 : sizeBytes);
+    if (g_hleGxState.fifoPendingDrawBytes != 0) {
+        if (g_hleGxState.fifoPendingDrawGeneration == g_hleGxState.vtxStateGeneration &&
+            g_hleGxState.fifoByteCount < g_hleGxState.fifoPendingDrawBytes) {
+            return;
+        }
+        g_hleGxState.fifoPendingDrawBytes = 0;
+    }
 
     // Parse raw FIFO command packets written directly to the gather pipe
     // (e.g. NW4R/G3D paths that do not call the GXBegin wrapper function).
+parseBufferedPackets:
     while (!g_hleGxState.inBegin) {
         if (g_hleGxState.fifoByteCount < 1) {
             break;
@@ -535,8 +626,10 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
                 ? 3u + static_cast<uint32_t>(vtxCount) * rawVertexSize
                 : 0u;
             // A packet that cannot fit the buffer is streamed per vertex instead.
-            if (packetBytes != 0 && packetBytes <= g_hleGxState.fifoBytes.size()) {
+            if (packetBytes != 0 && packetBytes + 3u <= g_hleGxState.fifoBytes.size()) {
                 if (g_hleGxState.fifoByteCount < packetBytes) {
+                    g_hleGxState.fifoPendingDrawBytes = packetBytes;
+                    g_hleGxState.fifoPendingDrawGeneration = g_hleGxState.vtxStateGeneration;
                     break;
                 }
                 if (TrySubmitRawDirectFifoDraw(data, packetBytes, prim, vtxFmt, vtxCount)) {
@@ -695,6 +788,9 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
         }
         break;
     }
+    if (!g_hleGxState.inBegin && g_hleGxState.fifoByteCount != 0) {
+        goto parseBufferedPackets;
+    }
 }
 
 // Must behave exactly like GX_HLE_FIFO_Write32/16/8 run byte by byte. The ring is not
@@ -849,6 +945,15 @@ void GxWorkerReplayFifoBurst(const uint8_t* data, uint32_t sizeBytes) { FifoWrit
 static void FifoWriteBurstImpl(const uint8_t* data, uint32_t sizeBytes) {
     if (IsDisplayListActive() && WriteDisplayListBurst(data, sizeBytes)) {
         return;
+    }
+
+    if (!IsDisplayListActive()) {
+        const uint32_t consumed = WriteImmediateDirectBytes(data, sizeBytes);
+        data += consumed;
+        sizeBytes -= consumed;
+        if (sizeBytes == 0) {
+            return;
+        }
     }
 
     const uint32_t applied = ApplyFifoPacketsDirect(data, sizeBytes);

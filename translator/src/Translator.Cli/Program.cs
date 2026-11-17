@@ -461,6 +461,7 @@ int RunTranslateRecursive(string[] argsTail)
     var outputMetadataPath = OptionValue(argsTail, "--output-metadata");
     var productionSourceBundlePath = OptionValue(argsTail, "--production-source-bundle");
     var emitFunctionFiles = !HasFlag(argsTail, "--no-function-files");
+    var boundedIr = HasFlag(argsTail, "--bounded-ir");
     if (!emitFunctionFiles && string.IsNullOrWhiteSpace(productionSourceBundlePath))
         throw new ArgumentException("--no-function-files requires --production-source-bundle.");
     BaseTranslationOutputMetadata? previousOutputMetadata = null;
@@ -954,14 +955,17 @@ int RunTranslateRecursive(string[] argsTail)
 
             var emissionAddresses = baseSummaries.Keys.OrderBy(address => address).ToArray();
             var localGuestAbiContracts = new Dictionary<uint, GuestAbiContract>(emissionAddresses.Length);
-            var canonicalGuestFunctions = new Dictionary<uint, IrFunction>(emissionAddresses.Length);
+            var bufferedGuestFunctions = boundedIr ? null : new Dictionary<uint, IrFunction>(emissionAddresses.Length);
+            IReadOnlyDictionary<uint, IrFunction> canonicalGuestFunctions = bufferedGuestFunctions is not null
+                ? bufferedGuestFunctions
+                : new CanonicalIrDictionary(canonicalIrStore, emissionAddresses);
             var irInstructionCounts = new Dictionary<uint, int>(emissionAddresses.Length);
             // Each slot is an independent pure decode plus contract analysis, so
             // compute them in parallel into position-indexed arrays and fill the
             // dictionaries afterwards in the original ascending order. Dictionary
             // insertion order is preserved, so every downstream enumeration of
             // these maps is byte-for-byte the same as the serial version.
-            var canonicalByIndex = new IrFunction[emissionAddresses.Length];
+            var canonicalByIndex = boundedIr ? null : new IrFunction[emissionAddresses.Length];
             var localContractByIndex = new GuestAbiContract[emissionAddresses.Length];
             var irInstructionCountByIndex = new int[emissionAddresses.Length];
             IndexedParallel.For(emissionAddresses.Length, parallelOptions, i =>
@@ -969,14 +973,14 @@ int RunTranslateRecursive(string[] argsTail)
                 var address = emissionAddresses[i];
                 if (!canonicalIrStore.TryGet(address, out var canonicalSsa))
                     throw new InvalidOperationException($"Missing canonical SSA while building ABI contract for 0x{address:X8}.");
-                canonicalByIndex[i] = canonicalSsa;
+                if (canonicalByIndex is not null) canonicalByIndex[i] = canonicalSsa;
                 localContractByIndex[i] = GuestAbiContractAnalyzer.Analyze(canonicalSsa);
                 irInstructionCountByIndex[i] = canonicalSsa.Blocks.Sum(block => block.Instructions.Count);
             });
             for (var i = 0; i < emissionAddresses.Length; i++)
             {
                 var address = emissionAddresses[i];
-                canonicalGuestFunctions[address] = canonicalByIndex[i];
+                if (bufferedGuestFunctions is not null) bufferedGuestFunctions[address] = canonicalByIndex![i];
                 localGuestAbiContracts[address] = localContractByIndex[i];
                 irInstructionCounts[address] = irInstructionCountByIndex[i];
             }
@@ -988,7 +992,9 @@ int RunTranslateRecursive(string[] argsTail)
             // rather than retaining every descendant dependency forever.
             var interproceduralGuestAbi = GuestAbiInterproceduralAnalyzer.Analyze(
                 canonicalGuestFunctions,
-                nativeGuestEffects.Contracts);
+                nativeGuestEffects.Contracts,
+                retainBodies: !boundedIr,
+                maxDegreeOfParallelism: boundedIr ? maxThreads : null);
             var guestAbiContracts = interproceduralGuestAbi.Contracts
                 .ToDictionary(static pair => pair.Key, static pair => pair.Value);
             var recursiveComponents = interproceduralGuestAbi.StronglyConnectedComponents
@@ -3697,6 +3703,7 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--production-source-bundle", "path"),
         new("--threads", "N"),
         new("--no-function-files"),
+        new("--bounded-ir"),
         new("--prune-stale")
     }),
     "translate-mod" => (null, new CommandOption[]

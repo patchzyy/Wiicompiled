@@ -329,11 +329,15 @@ static void GxBeginImpl(uint32_t t, uint32_t vf, uint32_t nv) {
     g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=nv!=0; g_hleGxState.auroraBeginCalled=false;
     g_hleGxState.fifoReadOffset = 0;
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
+    g_hleGxState.fifoPendingDrawBytes = 0;
+    GxStream::PrepareImmediateDirectDraw();
 }
 PPC_NATIVE_OVERRIDE_VOID(8016f0f0, GX__Begin_8016f0f0, (uint32_t t, uint32_t vf, uint32_t nv), (t, vf, nv));
 
 extern "C" void GX__End_80044b30() {
-    GX_DEFER_CALL0(GX__End_80044b30); g_hleGxState.inBegin=false; GXEnd(); }
+    GX_DEFER_CALL0(GX__End_80044b30);
+    g_hleGxState.fifoDirectBytesRemaining = 0;
+    g_hleGxState.inBegin=false; GXEnd(); }
 PPC_NATIVE_OVERRIDE_VOID(80044b30, GX__End_80044b30, (), ());
 
 extern "C" void GX__End_80048c30() { GX__End_80044b30(); }

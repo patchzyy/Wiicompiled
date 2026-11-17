@@ -9,6 +9,91 @@ namespace Translator.Tests;
 public sealed class TranslateRecursiveRuntimeConfigTests
 {
     [Fact]
+    public void BoundedIrMatchesBufferedFilesMetadataAndBundleAcrossThreadCounts()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"translator-bounded-ir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            const uint entry = 0x80001000u;
+            File.WriteAllBytes(Path.Combine(root, "main.dol"), SyntheticDolFactory.CreateBytes(entry,
+                sections:
+                [
+                    SyntheticDolFactory.Text(0, entry,
+                        0x38A30001u, // addi r5,r3,1
+                        0x4800001Du, // bl 0x80001020
+                        0x38650001u, // addi r3,r5,1
+                        0x4E800020u),
+                    SyntheticDolFactory.Text(1, entry + 0x20,
+                        0x38C40001u, // addi r6,r4,1
+                        0x4BFFFFDDu, // bl 0x80001000
+                        0x38660001u, // addi r3,r6,1
+                        0x4E800020u)
+                ]));
+            var projectPath = Path.Combine(root, "recomp.yml");
+            File.WriteAllText(projectPath,
+                """
+                schema_version: 1
+                project:
+                  id: bounded-ir-test
+                memory:
+                  sda_base: 0x80002000
+                  sda2_base: 0x80003000
+                inputs:
+                  dol:
+                    path: main.dol
+                translation:
+                  entry_points: [0x80001000, 0x80001020]
+                output:
+                  root: generated
+                """);
+
+            (Dictionary<string, string> Sources, byte[] Metadata, byte[] Bundle) Translate(
+                string name, int threads, bool bounded, bool emitFiles = true)
+            {
+                var output = Path.Combine(root, name);
+                var functions = Path.Combine(output, "functions");
+                var metadata = Path.Combine(output, "metadata.json");
+                var bundle = Path.Combine(output, "sources.bundle");
+                var args = new List<string>
+                {
+                    "translate-recursive", $"0x{entry:X8}", "--project", projectPath,
+                    "--outdir", functions, "--output-metadata", metadata,
+                    "--production-source-bundle", bundle, "--threads", threads.ToString()
+                };
+                if (bounded) args.Add("--bounded-ir");
+                if (!emitFiles) args.Add("--no-function-files");
+                Assert.Equal(0, InvokeCli(args.ToArray()));
+                var sources = Directory.Exists(functions)
+                    ? Directory.GetFiles(functions, "*.cpp").ToDictionary(
+                        static path => Path.GetFileName(path), static path => File.ReadAllText(path))
+                    : new Dictionary<string, string>();
+                return (sources, File.ReadAllBytes(metadata), File.ReadAllBytes(bundle));
+            }
+
+            var buffered = Translate("buffered", 1, bounded: false);
+            Assert.Equal(2, buffered.Sources.Count);
+            foreach (var threads in new[] { 1, 3 })
+            {
+                var lazy = Translate($"lazy-{threads}", threads, bounded: true);
+                Assert.Equal(buffered.Sources.Keys.OrderBy(static name => name),
+                    lazy.Sources.Keys.OrderBy(static name => name));
+                foreach (var pair in buffered.Sources) Assert.Equal(pair.Value, lazy.Sources[pair.Key]);
+                Assert.Equal(buffered.Metadata, lazy.Metadata);
+                Assert.Equal(buffered.Bundle, lazy.Bundle);
+            }
+            var bundleOnly = Translate("bundle-only", 3, bounded: true, emitFiles: false);
+            Assert.Empty(bundleOnly.Sources);
+            Assert.Equal(buffered.Metadata, bundleOnly.Metadata);
+            Assert.Equal(buffered.Bundle, bundleOnly.Bundle);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void UnsupportedOpcodeFailsStrictTranslation()
     {
         var root = Path.Combine(Path.GetTempPath(), $"translator-unsupported-opcode-{Guid.NewGuid():N}");
