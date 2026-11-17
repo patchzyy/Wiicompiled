@@ -96,10 +96,19 @@ jobs:
         shell: bash
         run: |
           cmake --build build-macos --target \
+            mkw_ppc_cr_logical_tests \
             mkw_platform_paths_tests \
             mkw_runtime_config_tests \
+            mkw_memory_access_tests \
             mkw_nand_save_tests \
             mkw_nand_guest_path_tests \
+            mkw_host_file_tests \
+            mkw_u8_archive_tests \
+            mkw_runtime_config_io_tests \
+            mkw_pad_trigger_tests \
+            mkw_fiber_manager_tests \
+            mkw_audio_backend_ownership_tests \
+            mkw_network_receive_tests \
             mkw_nand_settings_tests \
             mkw_sc_serial_tests \
             mkw_input_expr_tests \
