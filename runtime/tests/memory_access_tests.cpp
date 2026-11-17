@@ -214,6 +214,8 @@ void TestDeferredRanges() {
 }
 
 void TestDeferredEndpoint() {
+#if !defined(__APPLE__)
+    // The macOS mapping backend has no deferred-read fault handler.
     if (GuestFlat::RequiresCheckedAccess()) return;
     unsigned calls = 0;
     Require(Memory::RegisterDeferredRead(UINT32_MAX, 1, CountRead, &calls) != 0,
@@ -224,6 +226,7 @@ void TestDeferredEndpoint() {
     Require(MemoryInline::ResolveDeferredReads(UINT32_MAX, 1) && calls == 1,
             "last-byte fault left a pending callback");
     Memory::ClearDeferredReads();
+#endif
 }
 
 struct SingleCase { uint32_t single; uint64_t widened; };
