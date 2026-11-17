@@ -157,6 +157,7 @@ for script_name in prepare-portable-tools.sh local-build.sh local-build-macos.co
         [[ -z "$first_option" ]] && first_option=$option
         expect_value_reject "$script" "$option" "$script_name: $option with an option-like value" --help
     done
+    expect_value_reject "$script" "$first_option" "$script_name: $first_option swallowing -h" -h
     expect_value_reject "$script" "$first_option" "$script_name: $first_option with an empty value" ""
     expect_value_reject "$script" "$first_option" "$script_name: trailing $first_option without a value"
 done

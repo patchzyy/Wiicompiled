@@ -107,7 +107,7 @@ require_value() {
     if [[ $# -lt 2 || -z "$2" ]]; then
         fail "$1 requires a value"
     fi
-    if [[ "$2" == --* ]]; then
+    if [[ "$2" == --* || "$2" == -h ]]; then
         fail "$1 requires a value; \"$2\" looks like another option"
     fi
 }

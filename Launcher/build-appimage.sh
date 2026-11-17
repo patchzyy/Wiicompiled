@@ -81,7 +81,7 @@ require_value() {
         echo "build-appimage.sh: $1 requires a value" >&2
         exit 1
     fi
-    if [[ "$2" == --* ]]; then
+    if [[ "$2" == --* || "$2" == -h ]]; then
         echo "build-appimage.sh: $1 requires a value; \"$2\" looks like another option" >&2
         exit 1
     fi
