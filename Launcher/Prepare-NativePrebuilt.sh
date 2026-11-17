@@ -56,14 +56,14 @@ EOF
 # Every value-taking option goes through this before touching $2 or shifting: without it,
 # "--sysroot --disconnected" stored "--disconnected" as the sysroot value and silently left
 # disconnected mode off, and a trailing value-less option died on set -u's unbound-variable error
-# instead of naming the option. Values that genuinely start with "--" are not supported; pass a
-# path that does not collide with option syntax (https://github.com/patchzyy/Wiicompiled/issues/274).
+# instead of naming the option. Values that genuinely start with "--", or are exactly "-h", are not
+# supported; pass a path that does not collide with option syntax (https://github.com/patchzyy/Wiicompiled/issues/274).
 require_value() {
     if [[ $# -lt 2 || -z "$2" ]]; then
         echo "Prepare-NativePrebuilt.sh: $1 requires a value" >&2
         exit 1
     fi
-    if [[ "$2" == --* ]]; then
+    if [[ "$2" == --* || "$2" == -h ]]; then
         echo "Prepare-NativePrebuilt.sh: $1 requires a value; \"$2\" looks like another option" >&2
         exit 1
     fi

@@ -81,6 +81,7 @@ expect_reject "--sysroot without a value" "--sysroot" --arch x86_64 --sysroot
 # An explicitly empty value is as useless as a missing one.
 expect_reject "--arch with an empty value" "--arch" --arch ""
 expect_reject "--output-dir with an empty value" "--output-dir" --arch x86_64 --output-dir ""
+expect_reject "--sysroot swallowing -h" "--sysroot" --arch x86_64 --sysroot -h
 
 # Valid command lines and flag-only options keep working.
 expect_parse_ok "full valid option set parses" \
