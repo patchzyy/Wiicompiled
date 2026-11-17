@@ -43,6 +43,7 @@ private:
     uint32_t m_sampleRate = 0;
     uint32_t m_channels = 0;
     bool m_initialized = false;
+    bool m_audioSubsystemReady = false;
     float m_masterVolume = 1.0f;
     bool m_muted = false;
     bool m_silenced = false;

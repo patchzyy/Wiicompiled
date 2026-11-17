@@ -64,9 +64,11 @@ void FillTriggersHeldByButtons(PADStatus* statuses) {
             }
         };
         u32 count = 0;
-        scan(PADGetButtonMappings(port, &count), count);
+        PADButtonMapping* mappings = PADGetButtonMappings(port, &count);
+        scan(mappings, count);
         count = 0;
-        scan(PADGetAltButtonMappings(port, &count), count);
+        mappings = PADGetAltButtonMappings(port, &count);
+        scan(mappings, count);
     }
 }
 

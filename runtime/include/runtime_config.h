@@ -12,6 +12,8 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -20,6 +22,7 @@
 #include <vector>
 #include <toml.hpp>
 #include "platform/host_platform.h"
+#include "host_file.h"
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -267,7 +270,13 @@ inline std::filesystem::path ResolveConfigPath() {
     return ApplicationDataDirectory() / kConfigFileName;
 }
 
+inline std::mutex& ConfigWriteMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
 inline void EnsureConfigFile() {
+    std::lock_guard<std::mutex> lock(ConfigWriteMutex());
     const std::filesystem::path path = ResolveConfigPath();
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
@@ -275,10 +284,7 @@ inline void EnsureConfigFile() {
         return;
     }
 
-    std::ofstream output(path);
-    if (!output) {
-        return;
-    }
+    std::ostringstream output;
     output << "# WiiCompiled user configuration\n"
               "# Set paths.dvd_root to an extracted Mario Kart Wii DATA directory.\n\n"
               "[video]\n"
@@ -330,6 +336,7 @@ inline void EnsureConfigFile() {
               "# nand_root = \"D:\\\\WiiNand\"\n"
               "# retro_rewind_root = \"D:\\\\RetroRewind\\\\RetroRewind6\"\n"
               "# overlay_roots = [\"D:\\\\RetroRewind\"]\n";
+    RuntimeHostFile::WriteAtomically(path, output.str(), false);
 }
 
 template <typename T>
@@ -608,29 +615,40 @@ inline std::optional<std::string> UpdateSettingText(const std::string& text, std
 
 // Update one TOML value without discarding unrelated settings or user-specific paths. This is
 // used by the in-game F10 settings bar. An unparseable file is left untouched.
-inline bool WriteSetting(std::string_view section, std::string_view key, std::string_view value) {
-    const auto path = ResolveConfigPath();
-    std::ostringstream existing;
-    if (std::ifstream input(path, std::ios::binary); input) {
-        existing << input.rdbuf();
+template <class Operations = RuntimeHostFile::FileOperations>
+inline bool WriteSettingFile(const std::filesystem::path& path, std::string_view section,
+                             std::string_view key, std::string_view value) {
+    std::lock_guard<std::mutex> lock(ConfigWriteMutex());
+    std::error_code ec;
+    const auto target = RuntimeHostFile::WriteTarget(path, ec);
+    if (ec || target.empty()) return false;
+    std::string existing;
+    std::unique_ptr<FILE, decltype(&std::fclose)> input(RuntimeHostFile::Open(target, "rb"), &std::fclose);
+    if (input) {
+        char buffer[4096];
+        size_t count;
+        while ((count = std::fread(buffer, 1, sizeof(buffer), input.get())) != 0) existing.append(buffer, count);
+        const bool read = std::feof(input.get()) && !std::ferror(input.get());
+        const bool closed = std::fclose(input.release()) == 0;
+        if (!read || !closed) return false;
+    } else if (errno != ENOENT) {
+        return false;
     }
-    const auto updated = UpdateSettingText(existing.str(), section, key, value);
+    const auto updated = UpdateSettingText(existing, section, key, value);
     if (!updated) {
         std::cerr << "[runtime-config] Not updating invalid " << PathToUtf8(path) << std::endl;
         return false;
     }
 
-    std::error_code ec;
-    if (path.has_parent_path()) {
-        std::filesystem::create_directories(path.parent_path(), ec);
-    }
-    std::ofstream output(path, std::ios::trunc);
-    if (!output) {
+    if (!RuntimeHostFile::WriteAtomically<Operations>(target, *updated)) {
         std::cerr << "[runtime-config] Unable to write " << PathToUtf8(path) << std::endl;
         return false;
     }
-    output << *updated;
-    return static_cast<bool>(output);
+    return true;
+}
+
+inline bool WriteSetting(std::string_view section, std::string_view key, std::string_view value) {
+    return WriteSettingFile(ResolveConfigPath(), section, key, value);
 }
 
 inline std::string FormatString(std::string_view value) {

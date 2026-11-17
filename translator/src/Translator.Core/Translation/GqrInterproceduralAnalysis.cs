@@ -338,7 +338,7 @@ public static class GqrInterproceduralAnalysis
                 for (var i = 0; i < blockPredecessors.Length; i++)
                 {
                     var predecessor = blockPredecessors[i];
-                    if (predecessor != blockIndex && outputInitialized[predecessor])
+                    if (outputInitialized[predecessor])
                         predecessors[predecessorCount++] = predecessor;
                 }
                 // An uninitialized predecessor is lattice top, not an empty
@@ -352,6 +352,7 @@ public static class GqrInterproceduralAnalysis
                     for (var slot = 0; slot < GqrCount; slot++)
                         if ((entryMask & (1 << slot)) != 0)
                             state[slot] = entryValues[entryBase + slot];
+                    CompactIntersectWith(output, predecessors, predecessorCount, state);
                 }
                 else
                 {
@@ -697,6 +698,26 @@ public static class GqrInterproceduralAnalysis
             }
             if (keep) destination[pair.Key] = pair.Value;
         }
+    }
+
+    private static void CompactIntersectWith(
+        Dictionary<int, uint>[] output,
+        int[] predecessors,
+        int predecessorCount,
+        Dictionary<int, uint> state)
+    {
+        List<int>? removed = null;
+        foreach (var pair in state)
+        {
+            for (var i = 0; i < predecessorCount; i++)
+            {
+                if (output[predecessors[i]].TryGetValue(pair.Key, out var value) && value == pair.Value) continue;
+                (removed ??= new List<int>()).Add(pair.Key);
+                break;
+            }
+        }
+        if (removed is null) return;
+        foreach (var key in removed) state.Remove(key);
     }
 
     private static bool CompactSame(

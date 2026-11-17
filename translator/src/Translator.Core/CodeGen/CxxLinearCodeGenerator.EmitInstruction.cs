@@ -264,7 +264,9 @@ public sealed partial class CxxLinearCodeGenerator
                     var pairHelper = pair.ElementSizeBytes == 2
                         ? $"MemoryInline::ReadResolvedPair16({pair.Range}, {pair.RangeOffset}u)"
                         : $"MemoryInline::ReadResolvedPair32({pair.Range}, {pair.RangeOffset}u)";
-                    string FastValue(string member, bool isFloat) => isFloat ? $"PpcBitCastToFloatInline(resolved_pair.{member})" : $"resolved_pair.{member}";
+                    string FastValue(string member, bool isFloat) => isFloat
+                        ? $"PpcBitCastToDoubleInline(PpcConvertToDoubleBitsInline(resolved_pair.{member}))"
+                        : $"resolved_pair.{member}";
                     string SlowHelper(bool isFloat) => isFloat ? $"Float{Bits(pair.ElementSizeBytes)}" : Bits(pair.ElementSizeBytes).ToString();
                     var firstMember = pair.Descending ? "second" : "first";
                     var secondMember = pair.Descending ? "first" : "second";

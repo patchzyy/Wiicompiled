@@ -6,7 +6,9 @@
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
 #include "nand_guest_path.h"
+#include "host_file.h"
 #include "runtime_log.h"
+#include "u8_archive.h"
 
 // ============================================================================
 // Configuration
@@ -102,12 +104,7 @@ std::string HostPathText(const std::filesystem::path& path) {
 }
 
 FILE* NandFopen(const std::filesystem::path& path, const char* mode) {
-#ifdef _WIN32
-    const std::wstring wideMode(mode, mode + std::strlen(mode));
-    return _wfopen(path.c_str(), wideMode.c_str());
-#else
-    return std::fopen(path.c_str(), mode);
-#endif
+    return RuntimeHostFile::Open(path, mode);
 }
 
 bool NandRemove(const std::filesystem::path& path) {
@@ -279,12 +276,6 @@ std::filesystem::path TranslateNandPath(const char* wiiPath) {
 // U8 archive helper (used to seed FaceLib resources from the ISO)
 // ============================================================================
 
-struct U8Node {
-    uint32_t typeAndNameOffset;
-    uint32_t dataOffset;
-    uint32_t size;
-};
-
 static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* targetName,
                           std::vector<uint8_t>& outData) {
     std::ifstream file(archivePath, std::ios::binary);
@@ -294,7 +285,7 @@ static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* 
 
     file.seekg(0, std::ios::end);
     const std::streamsize size = file.tellg();
-    if (size < 0x20) {
+    if (size < 0x20 || static_cast<uint64_t>(size) > std::vector<uint8_t>{}.max_size()) {
         return false;
     }
     file.seekg(0, std::ios::beg);
@@ -304,68 +295,7 @@ static bool ExtractFromU8(const std::filesystem::path& archivePath, const char* 
         return false;
     }
 
-    const uint32_t magic = BigEndian::Read32(data.data());
-    if (magic != 0x55AA382Du) { // "U\xAA8-"
-        return false;
-    }
-
-    const uint32_t rootOffset = BigEndian::Read32(data.data() + 0x04);
-    if (rootOffset + 0x0C > data.size()) {
-        return false;
-    }
-
-    const U8Node* root = reinterpret_cast<const U8Node*>(data.data() + rootOffset);
-    const uint32_t nodeCount = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&root->size));
-    const uint32_t nodeTableSize = nodeCount * sizeof(U8Node);
-    const uint32_t stringTableOffset = rootOffset + nodeTableSize;
-    if (stringTableOffset >= data.size()) {
-        return false;
-    }
-
-    struct DirFrame {
-        std::string path;
-        uint32_t endIndex;
-    };
-    std::vector<DirFrame> stack;
-    stack.push_back({"", nodeCount});
-
-    for (uint32_t index = 1; index < nodeCount; ++index) {
-        while (!stack.empty() && index >= stack.back().endIndex) {
-            stack.pop_back();
-        }
-        if (stack.empty()) {
-            break;
-        }
-
-        const U8Node* node = reinterpret_cast<const U8Node*>(data.data() + rootOffset + index * sizeof(U8Node));
-        const uint32_t typeAndName = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->typeAndNameOffset));
-        const uint32_t nameOffset = typeAndName & 0x00FFFFFFu;
-        const bool isDir = (typeAndName >> 24) != 0;
-        if (stringTableOffset + nameOffset >= data.size()) {
-            return false;
-        }
-
-        const char* name = reinterpret_cast<const char*>(data.data() + stringTableOffset + nameOffset);
-        const std::string fullPath = stack.back().path + name;
-
-        if (isDir) {
-            const uint32_t endIndex = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->size));
-            stack.push_back({fullPath + "/", endIndex});
-            continue;
-        }
-
-        if (fullPath == targetName || std::strcmp(name, targetName) == 0) {
-            const uint32_t fileOffset = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->dataOffset));
-            const uint32_t fileSize = BigEndian::Read32(reinterpret_cast<const uint8_t*>(&node->size));
-            if (fileOffset + fileSize > data.size()) {
-                return false;
-            }
-            outData.assign(data.begin() + fileOffset, data.begin() + fileOffset + fileSize);
-            return true;
-        }
-    }
-
-    return false;
+    return RuntimeU8::Extract(data, targetName, outData);
 }
 
 // The only FaceLib resource the game ever seeds; every call site used to pass it

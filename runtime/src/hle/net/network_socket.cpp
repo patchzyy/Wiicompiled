@@ -1,4 +1,5 @@
 #include "network_internal.h"
+#include "gx_guest_write.h"
 
 namespace NetworkHle {
 
@@ -35,6 +36,7 @@ int32_t DeleteWiiSocket(uint32_t fd) {
     // own kept the guest OSThread asleep until the next scheduler pump and then
     // reported -SO_EBADF instead.
     AbortPendingDeferredConnects(fd, -SO_ENOTCONN);
+    AbortPendingDeferredReceives(fd, -SO_ENOTCONN);
     return 0;
 }
 
@@ -73,6 +75,47 @@ static void WriteWiiSockAddr(uint32_t addr, const sockaddr_in& native, uint32_t 
     Memory::Write8(addr + 1, kWiiAfInet);
     Memory::Write16(addr + 2, ntohs(native.sin_port));
     Memory::Write32(addr + 4, ntohl(native.sin_addr.s_addr));
+    GxGuestWrite::NotifyWrite(addr, 8u);
+}
+
+int32_t ReceiveFromNow(uint32_t fd, uint32_t flags, uint32_t dataAddress,
+                       uint32_t dataSize, uint32_t fromAddress, uint32_t fromSize) {
+    WiiSocket* socket = GetWiiSocket(fd);
+    if (!socket) return -SO_EBADF;
+    if (dataSize > static_cast<uint32_t>(INT32_MAX) ||
+        (dataSize && (!dataAddress || !Memory::Contains(dataAddress, dataSize))) ||
+        (fromAddress && (fromSize < 8u || !Memory::Contains(fromAddress, 8u)))) {
+        return -SO_EINVAL;
+    }
+    char empty = 0;
+    char* data = dataSize
+        ? reinterpret_cast<char*>(Memory::GetPointer(dataAddress, dataSize)) : &empty;
+    const bool restoreBlocking = !socket->nativeNonblocking;
+    if (!SetSocketNonBlocking(*socket, true)) {
+        return SocketErrorResult(NativeLastError());
+    }
+    sockaddr_in from{};
+    socklen_t fromLen = sizeof(from);
+    const int ret = recvfrom(socket->native, data, static_cast<int>(dataSize),
+                             static_cast<int>(flags & 0x03u),
+                             fromAddress ? reinterpret_cast<sockaddr*>(&from) : nullptr,
+                             fromAddress ? &fromLen : nullptr);
+    const int nativeError = ret < 0 ? NativeLastError() : 0;
+    if (restoreBlocking && !SetSocketNonBlocking(*socket, false)) {
+        NetFail("recv fd=%u failed to restore host socket mode host=%d", fd, NativeLastError());
+    }
+    if (ret > 0) {
+        GxGuestWrite::NotifyWrite(dataAddress, static_cast<uint32_t>(ret));
+    }
+    if (ret >= 0 && fromAddress) {
+        WriteWiiSockAddr(fromAddress, from, static_cast<uint32_t>(fromLen));
+    }
+    const int32_t result = ret >= 0 ? SocketResult(ret) : SocketErrorResult(nativeError);
+    if (ret < 0 && result != -SO_EAGAIN && result != socket->lastLoggedRecvError) {
+        socket->lastLoggedRecvError = result;
+        NetFail("recv failed fd=%u host=%d wii=%d", fd, nativeError, result);
+    }
+    return result;
 }
 
 static int MapSockOptLevel(uint32_t level) {
@@ -284,6 +327,9 @@ int32_t HandleIpTopIoctl(uint32_t cmd, uint32_t inBuf, uint32_t inLen, uint32_t 
         }
 
         const int32_t result = SocketResult(shutdown(s->native, static_cast<int>(how)), false);
+        if (result == 0 && (how == 0 || how == 2)) {
+            AbortPendingDeferredReceives(wiiFd, 0);
+        }
         if (how == 1 || how == 2) {
             // Dolphin aborts a pending blocking connect with -SO_ENETUNREACH
             // when the write half is shut down.
@@ -481,47 +527,16 @@ int32_t HandleIpTopIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const s
         return result;
     }
     case IOCTLV_SO_RECVFROM: {
-        if (in.empty() || out.empty()) return -SO_EINVAL;
+        if (in.empty() || out.empty() || in[0].size < 8u ||
+            !in[0].address || !Memory::Contains(in[0].address, 8u)) {
+            return -SO_EINVAL;
+        }
         const uint32_t fd = Memory::Read32(in[0].address);
-        WiiSocket* s = GetWiiSocket(fd);
-        if (!s) return -SO_EBADF;
-        const uint32_t rawFlags = Memory::Read32(in[0].address + 4);
-        uint32_t flags = rawFlags & 0x03;
-        const bool forceNonBlock = (rawFlags & 0x04u) != 0;
-        char* data = reinterpret_cast<char*>(Memory::GetPointer(out[0].address, out[0].size));
-        sockaddr_in from{};
-        socklen_t fromLen = sizeof(from);
-        sockaddr* fromPtr = out.size() > 1 && out[1].address && out[1].size >= 8 ? reinterpret_cast<sockaddr*>(&from) : nullptr;
-        int ret = 0;
-
-        ret = recvfrom(s->native, data, static_cast<int>(out[0].size), static_cast<int>(flags), fromPtr,
-                       fromPtr ? &fromLen : nullptr);
-        int nativeErr = ret < 0 ? NativeLastError() : 0;
-        // Nonblocking sockets get -SO_EAGAIN immediately (Dolphin's retry predicate
-        // short-circuits on nonBlock/forceNonBlock, IOS/Network/Socket.cpp:715-718);
-        // waiting here anyway stalled the whole emulation thread on every empty read.
-        constexpr int kStreamRecvWaitMs = 1000;
-        const int streamWaitMs = (forceNonBlock || s->nonblocking) ? 0 : kStreamRecvWaitMs;
-        const bool waited = ret < 0 && !fromPtr && s->type == SOCK_STREAM &&
-            IsWouldBlockError(nativeErr) && WaitForReadable(s->native, streamWaitMs);
-        if (waited) {
-            ret = recvfrom(s->native, data, static_cast<int>(out[0].size), static_cast<int>(flags), nullptr,
-                           nullptr);
-            // WaitForReadable also returns true for POLLERR/POLLHUP, so the retry
-            // is where a reset connection surfaces; the first call's would-block
-            // error must not be reused or the guest retries that socket forever.
-            nativeErr = ret < 0 ? NativeLastError() : 0;
-        }
-
-        if (ret >= 0 && fromPtr) {
-            WriteWiiSockAddr(out[1].address, from, static_cast<uint32_t>(fromLen));
-        }
-        const int32_t result = ret >= 0 ? SocketResult(ret) : SocketErrorResult(nativeErr);
-        if (ret < 0 && result != -SO_EAGAIN && result != s->lastLoggedRecvError) {
-            s->lastLoggedRecvError = result;
-            NetFail("recv failed fd=%u host=%d wii=%d", fd, nativeErr, result);
-        }
-        return result;
+        const uint32_t flags = Memory::Read32(in[0].address + 4u);
+        const bool hasFrom = out.size() > 1 && out[1].address && out[1].size >= 8u;
+        return ReceiveFromNow(fd, flags, out[0].address, out[0].size,
+                              hasFrom ? out[1].address : 0u,
+                              hasFrom ? out[1].size : 0u);
     }
     default:
         return -SO_EINVAL;

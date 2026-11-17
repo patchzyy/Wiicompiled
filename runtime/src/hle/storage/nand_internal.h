@@ -57,6 +57,7 @@ inline uint32_t NandTitleIdLo() { return ::GuestRegion::CurrentFacts().gameCode;
 // - never by inspecting the format string - and both levels print the same way;
 // the split records intent and is the single place to add filtering later.
 void LogNandError(const char* func, const char* fmt, ...);
+void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
 void LogNandWarning(const char* func, const char* fmt, ...);
 
 // An empty optional means continue opening normally; otherwise return the

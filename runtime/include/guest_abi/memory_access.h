@@ -3,6 +3,7 @@
 #include "guest_abi/exec_guard.h"
 #include "guest_abi/flat_memory.h"
 #include "guest_abi/memory.h"
+#include "isa/ppc_isa_float.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -83,7 +84,7 @@ MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD void WriteFloat32Slow(uint32_t addr, double
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD void WriteFloat64Slow(uint32_t addr, double val);
 template <typename T>
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD T ReadResolvedFallback(uint32_t addr);
-MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD float ReadResolvedFallbackFloat32(uint32_t addr);
+MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD double ReadResolvedFallbackFloat32(uint32_t addr);
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD double ReadResolvedFallbackFloat64(uint32_t addr);
 template <typename T>
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD void WriteResolvedFallback(uint32_t addr, T value);
@@ -150,7 +151,7 @@ MKW_MEMORY_FORCE_INLINE bool TryGetPointerFast(uint32_t address, size_t length, 
     }
     const uint32_t offset = address & kPageMask;
     const auto& entry = g_pageTable[page];
-    if (!entry.base || offset + length > entry.limit) {
+    if (!entry.base || offset > entry.limit || length > entry.limit - offset) {
         pointer = nullptr;
         return false;
     }
@@ -197,7 +198,7 @@ MKW_MEMORY_FORCE_INLINE bool TryGetWritablePointerFast(
             // the same executable-write policy as a sparse-table hit.
             const uint32_t offset = address & kPageMask;
             const auto& entry = g_pageTable[coarsePage];
-            if (!entry.base || offset + length > entry.limit)
+            if (!entry.base || offset > entry.limit || length > entry.limit - offset)
                 return false;
             pointer = entry.base + offset;
         }
@@ -489,10 +490,11 @@ MKW_MEMORY_FORCE_INLINE uint32_t ReadResolved32(uint8_t* r, uint32_t o, uint32_t
 // Live via isa/ppc_isa_quantized.h (the psq resolved tier packs two lanes into
 // one 64-bit access); generated code never names it directly.
 MKW_MEMORY_FORCE_INLINE uint64_t ReadResolved64(uint8_t* r, uint32_t o, uint32_t a) { return ReadResolved<uint64_t>(r, o, a, ReadResolvedFallback<uint64_t>); }
-MKW_MEMORY_FORCE_INLINE float ReadResolvedFloat32(uint8_t* r, uint32_t o, uint32_t a) {
+// lfs widens the stored bits without applying the host's arithmetic flush mode.
+MKW_MEMORY_FORCE_INLINE double ReadResolvedFloat32(uint8_t* r, uint32_t o, uint32_t a) {
     uint32_t bits = 0;
     if (!ReadResolvedScalar(r, o, bits)) [[unlikely]] return ReadResolvedFallbackFloat32(a);
-    float value; std::memcpy(&value, &bits, sizeof(value)); return value;
+    return PpcBitCastToDoubleInline(PpcConvertToDoubleBitsInline(bits));
 }
 MKW_MEMORY_FORCE_INLINE double ReadResolvedFloat64(uint8_t* r, uint32_t o, uint32_t a) {
     uint64_t bits = 0;
@@ -563,11 +565,8 @@ MKW_MEMORY_FORCE_INLINE uint32_t FlatRead32(uint32_t address) {
     return FlatLoad<uint32_t>(address);
 }
 
-MKW_MEMORY_FORCE_INLINE float FlatReadFloat32(uint32_t address) {
-    const uint32_t bits = FlatRead32(address);
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
+MKW_MEMORY_FORCE_INLINE double FlatReadFloat32(uint32_t address) {
+    return PpcBitCastToDoubleInline(PpcConvertToDoubleBitsInline(FlatRead32(address)));
 }
 
 MKW_MEMORY_FORCE_INLINE double FlatReadFloat64(uint32_t address) {

@@ -3,6 +3,7 @@
 // Shared state and helpers live in nand_internal.h.
 
 #include "nand_internal.h"
+#include "host_file.h"
 
 #include "discord_presence.h"
 #include "runtime_log.h"
@@ -652,20 +653,21 @@ extern "C" int32_t NAND_IOS_Ioctl_HLE(
             }
             
             case ISFS_IOCTL_CREATEFILE: {
-                if (!inBufPtr || inLen < 0x4c) {
+                if (!inBufPtr || inLen < 0x4c || !Memory::Contains(inBufPtr, 0x4c)) {
                     return ISFS_EINVAL;
                 }
                 const char* path = (const char*)Memory::GetPointer(inBufPtr + 6);
+                if (!std::memchr(path, '\0', 64)) {
+                    return ISFS_EINVAL;
+                }
                 const std::filesystem::path hostPath = TranslateNandPath(path);
+                if (hostPath.empty()) {
+                    return ISFS_EINVAL;
+                }
                 CreateParentDirectories(hostPath);
 
-                // Create empty file
-                FILE* f = NandFopen(hostPath, "wb");
-                if (f) {
-                    std::fclose(f);
-                    return ISFS_OK;
-                }
-                return ISFS_EIO;
+                const int result = RuntimeHostFile::CreateExclusive(hostPath);
+                return result == 0 ? ISFS_OK : result == EEXIST ? ISFS_EEXIST : ISFS_EIO;
             }
             
             case ISFS_IOCTL_GETFILESTATS: {

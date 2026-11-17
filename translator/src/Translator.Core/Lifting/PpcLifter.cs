@@ -717,7 +717,8 @@ public sealed partial class PpcLifter
                 return new[] { new IrBinary(operands[0], IrValue.Register(operands[1]), IrValue.Imm(MaskUimm(ParseImmediate(operands[2]))), "or") };
 
             case "nor" when operands.Count == 3:
-                return new[] { new IrBinary(operands[0], IrValue.Register(operands[1]), IrValue.Register(operands[2]), "nor") };
+            case "nor." when operands.Count == 3:
+                return BinWithCrFlag(Reg(0), IrValue.Register(Reg(1)), IrValue.Register(Reg(2)), "nor", mnemonic.EndsWith('.'));
 
             case "nand" when operands.Count == 3:
                 return new[] { new IrBinary(operands[0], IrValue.Register(operands[1]), IrValue.Register(operands[2]), "nand") };

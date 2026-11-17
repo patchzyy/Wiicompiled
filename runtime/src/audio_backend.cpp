@@ -43,7 +43,7 @@ void AudioBackend::SetSilenced(bool silenced) {
 }
 
 bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channels) {
-    if (m_initialized && m_sampleRate == sampleRate && m_channels == channels) {
+    if (m_stream && m_initialized && m_sampleRate == sampleRate && m_channels == channels) {
         return true;
     }
 
@@ -52,9 +52,17 @@ bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channel
         m_stream = nullptr;
     }
 
-    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-        RT_LOG(RT_TAG_AUDIO) << "SDL_InitSubSystem(SDL_INIT_AUDIO) failed: " << SDL_GetError() << std::endl;
-        return false;
+    m_initialized = false;
+    m_sampleRate = 0;
+    m_channels = 0;
+    m_spec = {};
+
+    if (!m_audioSubsystemReady) {
+        if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+            RT_LOG(RT_TAG_AUDIO) << "SDL_InitSubSystem(SDL_INIT_AUDIO) failed: " << SDL_GetError() << std::endl;
+            return false;
+        }
+        m_audioSubsystemReady = true;
     }
 
     SDL_AudioSpec spec{};
@@ -99,12 +107,14 @@ void AudioBackend::Shutdown() {
         SDL_DestroyAudioStream(m_stream);
         m_stream = nullptr;
     }
-    if (m_initialized) {
+    if (m_audioSubsystemReady) {
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        m_audioSubsystemReady = false;
     }
     m_initialized = false;
     m_sampleRate = 0;
     m_channels = 0;
+    m_spec = {};
     m_reportedDroppedBlock = false;
     m_convertBuffer.clear();
 }
