@@ -74,10 +74,23 @@ esac
 output_dir="$workspace/Launcher/dist"
 appimagetool_override=""
 
+# Same guard as Prepare-NativePrebuilt.sh: a value-taking option must not swallow a missing,
+# empty, or option-like value (issue #274).
+require_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "build-appimage.sh: $1 requires a value" >&2
+        exit 1
+    fi
+    if [[ "$2" == --* || "$2" == -h ]]; then
+        echo "build-appimage.sh: $1 requires a value; \"$2\" looks like another option" >&2
+        exit 1
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --output-dir) output_dir=$2; shift 2 ;;
-        --appimagetool) appimagetool_override=$2; shift 2 ;;
+        --output-dir) require_value "$@"; output_dir=$2; shift 2 ;;
+        --appimagetool) require_value "$@"; appimagetool_override=$2; shift 2 ;;
         -h|--help)
             echo "Usage: build-appimage.sh [--output-dir DIR] [--appimagetool PATH]"
             exit 0

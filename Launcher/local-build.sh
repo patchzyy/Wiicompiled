@@ -101,29 +101,40 @@ Usage: local-build.sh --output-dir DIR [options]
 EOF
 }
 
+# Same guard as Prepare-NativePrebuilt.sh: a value-taking option must not swallow a missing,
+# empty, or option-like value (issue #274).
+require_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        fail "$1 requires a value"
+    fi
+    if [[ "$2" == --* || "$2" == -h ]]; then
+        fail "$1 requires a value; \"$2\" looks like another option"
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --workspace) workspace=$(cd "$2" && pwd); shift 2 ;;
-        --profile) profile=$2; shift 2 ;;
-        --output-dir) output_dir=$2; shift 2 ;;
-        --base-output-dir) base_output_dir=$2; shift 2 ;;
-        --retro-rewind-package-dir) retro_rewind_package_dir=$2; shift 2 ;;
-        --retro-wfc-offline-dir) retro_wfc_offline_dir=$2; shift 2 ;;
+        --workspace) require_value "$@"; workspace=$(cd "$2" && pwd); shift 2 ;;
+        --profile) require_value "$@"; profile=$2; shift 2 ;;
+        --output-dir) require_value "$@"; output_dir=$2; shift 2 ;;
+        --base-output-dir) require_value "$@"; base_output_dir=$2; shift 2 ;;
+        --retro-rewind-package-dir) require_value "$@"; retro_rewind_package_dir=$2; shift 2 ;;
+        --retro-wfc-offline-dir) require_value "$@"; retro_wfc_offline_dir=$2; shift 2 ;;
         --skip-retro-wfc-payload) skip_retro_wfc_payload=1; shift ;;
         --force-clean-build) force_clean_build=1; shift ;;
-        --parallel) parallel_override=$2; shift 2 ;;
-        --cc) cc_override=$2; shift 2 ;;
-        --cxx) cxx_override=$2; shift 2 ;;
-        --fuse-ld) fuse_ld_override=$2; shift 2 ;;
-        --cmake) cmake_override=$2; shift 2 ;;
-        --ninja) ninja_override=$2; shift 2 ;;
-        --dotnet) dotnet_override=$2; shift 2 ;;
-        --translator-dll) translator_dll_override=$2; shift 2 ;;
-        --translator-bin) translator_bin_override=$2; shift 2 ;;
-        --native-prebuilt-dir) native_prebuilt_dir=$2; shift 2 ;;
-        --sysroot) sysroot=$2; shift 2 ;;
-        --setup-version) setup_version=$2; shift 2 ;;
-        --x86-cpu-profile) x86_cpu_profile=$2; shift 2 ;;
+        --parallel) require_value "$@"; parallel_override=$2; shift 2 ;;
+        --cc) require_value "$@"; cc_override=$2; shift 2 ;;
+        --cxx) require_value "$@"; cxx_override=$2; shift 2 ;;
+        --fuse-ld) require_value "$@"; fuse_ld_override=$2; shift 2 ;;
+        --cmake) require_value "$@"; cmake_override=$2; shift 2 ;;
+        --ninja) require_value "$@"; ninja_override=$2; shift 2 ;;
+        --dotnet) require_value "$@"; dotnet_override=$2; shift 2 ;;
+        --translator-dll) require_value "$@"; translator_dll_override=$2; shift 2 ;;
+        --translator-bin) require_value "$@"; translator_bin_override=$2; shift 2 ;;
+        --native-prebuilt-dir) require_value "$@"; native_prebuilt_dir=$2; shift 2 ;;
+        --sysroot) require_value "$@"; sysroot=$2; shift 2 ;;
+        --setup-version) require_value "$@"; setup_version=$2; shift 2 ;;
+        --x86-cpu-profile) require_value "$@"; x86_cpu_profile=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown argument: $1" ;;
     esac
