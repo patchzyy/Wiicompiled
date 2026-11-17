@@ -1,4 +1,48 @@
+#ifdef __APPLE__
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <cstdint>
+#include <cstdio>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace {
+bool g_injectSync = false;
+int g_fullSyncError = 0;
+int g_syncError = 0;
+unsigned g_fullSyncCalls = 0;
+unsigned g_syncCalls = 0;
+
+int TestFcntl(int descriptor, int command) {
+    if (!g_injectSync) return ::fcntl(descriptor, command);
+    if (command != F_FULLFSYNC) { errno = EINVAL; return -1; }
+    ++g_fullSyncCalls;
+    errno = g_fullSyncError;
+    return g_fullSyncError ? -1 : 0;
+}
+int TestFsync(int descriptor) {
+    if (!g_injectSync) return ::fsync(descriptor);
+    ++g_syncCalls;
+    errno = g_syncError;
+    return g_syncError ? -1 : 0;
+}
+}
+#define fcntl TestFcntl
+#define fsync TestFsync
+#endif
+
 #include "host_file.h"
+
+#ifdef __APPLE__
+#undef fsync
+#undef fcntl
+#endif
 
 #include <algorithm>
 #include <fstream>
@@ -19,6 +63,29 @@ std::string Read(const std::filesystem::path& path) {
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
+#ifdef __APPLE__
+void CheckFullSync(const std::filesystem::path& path) {
+    FILE* file = RuntimeHostFile::Open(path, "wb");
+    Require(file != nullptr, "cannot create flush fixture");
+    struct Case { int fullError; int fallbackError; bool succeeds; unsigned fallbackCalls; };
+    bool passed = true;
+    g_injectSync = true;
+    for (const auto& test : {Case{0, EIO, true, 0}, Case{ENOTSUP, 0, true, 1},
+                            Case{EINVAL, 0, true, 1}, Case{ENOTSUP, EIO, false, 1},
+                            Case{ENOTTY, 0, true, 1}, Case{ENOTTY, EIO, false, 1},
+                            Case{EIO, 0, false, 0}, Case{EINTR, 0, false, 0}}) {
+        g_fullSyncError = test.fullError;
+        g_syncError = test.fallbackError;
+        g_fullSyncCalls = g_syncCalls = 0;
+        const bool result = RuntimeHostFile::FileOperations::Flush(file);
+        passed &= result == test.succeeds && g_fullSyncCalls == 1 && g_syncCalls == test.fallbackCalls;
+    }
+    g_injectSync = false;
+    std::fclose(file);
+    std::filesystem::remove(path);
+    Require(passed, "full sync did not preserve success, unsupported, or I/O failure semantics");
+}
+#endif
 struct ShortWrites : RuntimeHostFile::FileOperations {
     static size_t Write(FILE* file, const char* data, size_t size) {
         return FileOperations::Write(file, data, std::min(size, size_t{3}));
@@ -40,7 +107,7 @@ struct FailedPublish : RuntimeHostFile::FileOperations {
     static bool Publish(const std::filesystem::path&, const std::filesystem::path&, bool) { return false; }
 };
 struct PublishedFailure : RuntimeHostFile::FileOperations {
-    static bool Publish(const std::filesystem::path& temporary, const std::filesystem::path& target, bool replace) {
+    static bool Publish(std::filesystem::path& temporary, const std::filesystem::path& target, bool replace) {
         FileOperations::Publish(temporary, target, replace);
         return false;
     }
@@ -108,6 +175,9 @@ int main() {
     try {
         claimed = std::filesystem::create_directory(root);
         Require(claimed, "cannot claim test directory");
+#ifdef __APPLE__
+        CheckFullSync(root / "flush-fixture");
+#endif
         const auto path = root / "Config.toml";
         Require(RuntimeHostFile::WriteAtomically(path, "original contents"), "initial publication failed");
         CheckFailure<FailedWrite>(path);

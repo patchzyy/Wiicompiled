@@ -48,19 +48,36 @@ struct FileOperations {
 #ifdef _WIN32
         return _commit(_fileno(file)) == 0;
 #else
+#ifdef __APPLE__
+        if (::fcntl(fileno(file), F_FULLFSYNC) == 0) return true;
+        if (errno != ENOTSUP && errno != EINVAL && errno != ENOTTY) return false;
+#endif
         return ::fsync(fileno(file)) == 0;
 #endif
     }
 
     static bool Close(FILE* file) { return std::fclose(file) == 0; }
 
-    static bool Publish(const std::filesystem::path& temporary,
+    static bool Publish(std::filesystem::path& temporary,
                         const std::filesystem::path& target, bool replace) {
 #ifdef _WIN32
         if (replace) {
+            auto backup = temporary;
+            backup += ".bak";
             // ReplaceFile preserves the destination's ACL and other metadata.
-            if (ReplaceFileW(target.c_str(), temporary.c_str(), nullptr, 0, nullptr, nullptr)) return true;
-            if (GetLastError() != ERROR_FILE_NOT_FOUND) return false;
+            if (ReplaceFileW(target.c_str(), temporary.c_str(), backup.c_str(), 0, nullptr, nullptr)) {
+                return DeleteFileW(backup.c_str()) != 0;
+            }
+            const auto error = GetLastError();
+            if (error == ERROR_UNABLE_TO_MOVE_REPLACEMENT || error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) {
+                if (error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) {
+                    MoveFileExW(backup.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+                }
+                // Keep recovery contents even if restoring the original name fails.
+                temporary.clear();
+                return false;
+            }
+            if (error != ERROR_FILE_NOT_FOUND) return false;
         }
         return MoveFileExW(temporary.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH) != 0;
 #else

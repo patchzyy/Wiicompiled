@@ -103,6 +103,7 @@ jobs:
             mkw_nand_save_tests \
             mkw_nand_guest_path_tests \
             mkw_host_file_tests \
+            mkw_system_bridge_tests \
             mkw_u8_archive_tests \
             mkw_runtime_config_io_tests \
             mkw_pad_trigger_tests \

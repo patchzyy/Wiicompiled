@@ -105,6 +105,24 @@ target_compile_features(mkw_host_file_tests PRIVATE cxx_std_17)
 target_link_libraries(mkw_host_file_tests PRIVATE Threads::Threads)
 add_test(NAME mkw_host_file_tests COMMAND mkw_host_file_tests)
 
+add_executable(mkw_system_bridge_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/system_bridge_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/system_bridge.cpp")
+target_include_directories(mkw_system_bridge_tests BEFORE PRIVATE
+    "${MKW_TEST_RUNTIME_DIR}/tests/system_bridge_support"
+    "${MKW_TEST_RUNTIME_DIR}/include"
+    "${MKW_TEST_RUNTIME_DIR}/third_party/toml11")
+target_compile_features(mkw_system_bridge_tests PRIVATE cxx_std_20)
+set_target_properties(mkw_system_bridge_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_system_bridge_tests COMMAND mkw_system_bridge_tests)
+if(MKW_PLATFORM_WINDOWS)
+    add_executable(mkw_host_file_recovery_tests "${MKW_TEST_RUNTIME_DIR}/tests/host_file_recovery_tests.cpp")
+    target_include_directories(mkw_host_file_recovery_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+    target_compile_features(mkw_host_file_recovery_tests PRIVATE cxx_std_17)
+    target_link_libraries(mkw_host_file_recovery_tests PRIVATE advapi32)
+    add_test(NAME mkw_host_file_recovery_tests COMMAND mkw_host_file_recovery_tests)
+endif()
+
 add_executable(mkw_u8_archive_tests "${MKW_TEST_RUNTIME_DIR}/tests/u8_archive_tests.cpp")
 target_include_directories(mkw_u8_archive_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
 target_compile_features(mkw_u8_archive_tests PRIVATE cxx_std_17)
