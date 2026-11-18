@@ -124,7 +124,7 @@ assert_file "$cmake_bin" "Portable CMake (run prepare-portable-tools.sh --arch $
 assert_file "$ninja_bin" "Portable Ninja"
 assert_file "$cc" "Portable C compiler"
 assert_file "$cxx" "Portable C++ compiler"
-assert_dir "$aurora_source" "aurora-main source tree"
+assert_file "$aurora_source/CMakeLists.txt" "aurora-main source tree"
 clang_binary=$(normalize "${llvm_dir:-$toolchain_dir}/bin/clang-22")
 assert_file "$clang_binary" "Portable clang driver binary"
 
