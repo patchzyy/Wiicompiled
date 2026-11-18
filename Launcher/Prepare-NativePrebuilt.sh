@@ -20,6 +20,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/.." && pwd)
+source "$script_dir/build-cache.sh"
 
 arch=""
 output_dir=""
@@ -129,19 +130,7 @@ assert_file "$clang_binary" "Portable clang driver binary"
 
 (( parallel > 0 )) || parallel=$(nproc)
 
-fingerprint_tree() {
-    # $1 = root dir, remaining args = top-level subdirectory names to exclude
-    local root=$1; shift
-    root=$(normalize "$root")
-    [[ -d "$root" ]] || return 0
-    local find_args=("$root" -name .git -prune -o)
-    local ex
-    for ex in "$@"; do find_args+=(-path "$root/$ex" -prune -o); done
-    find_args+=(-type f -print)
-    find "${find_args[@]}" | LC_ALL=C sort | while IFS= read -r abs; do
-        printf '%s %s\n' "${abs#$root/}" "$(sha256_of "$abs")"
-    done | sha256sum | awk '{print $1}'
-}
+
 
 # The fixed (path-independent) half of the configure command line - identical for every
 # harvest, which is what lets one package be valid regardless of where it was built.
@@ -191,11 +180,11 @@ if [[ -n "$sysroot" ]]; then
 fi
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
-aurora_fingerprint=$("$cmake_bin" "-DAURORA_DIR=$aurora_source" -P "$runtime_source/cmake/AuroraFingerprint.cmake")
+aurora_fingerprint=$(mkw_fingerprint_tree "$aurora_source" extern build)
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
 # The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted.
-third_party_fingerprint=$(fingerprint_tree "$runtime_source/third_party")
+third_party_fingerprint=$(mkw_fingerprint_tree "$runtime_source/third_party")
 [[ -n "$third_party_fingerprint" ]] || fail "The vendored third-party tree could not be fingerprinted: $runtime_source/third_party"
 mbedtls_fingerprint=$(sha256_of "$runtime_source/cmake/MbedTLSPin.cmake")
 
