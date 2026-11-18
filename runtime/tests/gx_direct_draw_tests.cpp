@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <numeric>
 
 namespace {
 class RuntimeDirectDrawTest : public GXFifoTest {
@@ -67,8 +68,15 @@ TEST_F(RuntimeDirectDrawTest, DirectNumericPayloadMatchesIncrementalForEveryWrit
             for (u32 width : {1u, 2u, 4u}) {
                 const u32 bytesPerVertex = (cnt == GX_POS_XY ? 2u : 3u) * GetCompSizeBytes(type);
                 std::vector<u8> payload(bytesPerVertex * 3);
-                for (size_t i = 0; i < payload.size(); ++i) {
-                    payload[i] = static_cast<u8>(i * 17u + 11u);
+                if (type == GX_F32) {
+                    for (size_t i = 0; i < payload.size() / sizeof(float); ++i) {
+                        const float value = static_cast<float>(i + 1) / 7.0f;
+                        BigEndian::WriteFloat32(payload.data(), i * sizeof(float), value);
+                    }
+                } else {
+                    for (size_t i = 0; i < payload.size(); ++i) {
+                        payload[i] = static_cast<u8>(i * 17u + 11u);
+                    }
                 }
                 reset_runtime();
                 position(cnt, type, 7);
@@ -89,6 +97,13 @@ TEST_F(RuntimeDirectDrawTest, DirectNumericPayloadMatchesIncrementalForEveryWrit
 }
 
 TEST_F(RuntimeDirectDrawTest, MixedMatrixColorsAndAllTextureCoordinatesMatchIncremental) {
+    constexpr u32 bytesPerVertex = 45;
+    std::vector<u8> payload(bytesPerVertex * 3);
+    std::iota(payload.begin(), payload.end(), u8{64});
+    for (u8 vertex = 0; vertex < 3; ++vertex) {
+        payload[vertex * bytesPerVertex] = vertex * 6;
+        payload[vertex * bytesPerVertex + 1] = vertex * 6 + 3;
+    }
     std::vector<u8> reference;
     for (bool direct : {false, true}) {
         reset_runtime();
@@ -105,8 +120,7 @@ TEST_F(RuntimeDirectDrawTest, MixedMatrixColorsAndAllTextureCoordinatesMatchIncr
             g.vtxAttrFmt[0][tex] = {GX_TEX_ST, GX_S16, static_cast<u8>(tex)};
         }
         begin(3, direct);
-        ASSERT_EQ(g.fifoDirectBytesRemaining, direct ? 45u * 3u : 0u);
-        const std::vector<u8> payload(45u * 3u, 0x12);
+        ASSERT_EQ(g.fifoDirectBytesRemaining, direct ? payload.size() : 0u);
         GX_HLE_FIFO_WriteBurst(payload.data(), static_cast<u32>(payload.size()));
         if (!direct) {
             reference = capture_fifo();
@@ -220,6 +234,11 @@ TEST_F(RuntimeDirectDrawTest, LayoutChangeBeforeFirstPayloadRechecksDirectEligib
     HleFifoWrite(0x11, 1);
     EXPECT_EQ(g_hleGxState.fifoDirectBytesRemaining, 0u);
     EXPECT_TRUE(g_hleGxState.auroraBeginCalled);
+    HleFifoWrite(0x2233, 2);
+    HleFifoWrite(0x44556677, 4);
+    HleFifoWrite(0x8899, 2);
+    EXPECT_FALSE(g_hleGxState.inBegin);
+    EXPECT_FALSE(g_hleGxState.auroraBeginCalled);
 }
 
 TEST_F(RuntimeDirectDrawTest, DirectPayloadLargerThanQueueStillMatchesIncremental) {

@@ -2,6 +2,8 @@
 #include "../src/hle/gx/gx_internal.h"
 #include "isa/big_endian.h"
 
+#include <bit>
+
 // Keep the production loaders and metadata writers, without a guest dispatch registry.
 #undef PPC_NATIVE_OVERRIDE
 #undef PPC_NATIVE_OVERRIDE_VOID
@@ -29,6 +31,7 @@ protected:
         GxWorker::detail::t_onWorker = false;
         TextureBindingTest::memory.fill(0);
         TextureBindingTest::unreadableObject = 0;
+        TextureBindingTest::unreadableObjectAccesses = 0;
         TextureBindingTest::rangeChecks = 0;
         TextureBindingTest::retiredRanges.clear();
         InvalidateTexObjLoads();
@@ -93,9 +96,11 @@ protected:
 TEST_F(RuntimeTextureBindingTest, RepeatedBindingSkipsMetadataAndExistingHostLoad) {
     Init();
     Warm();
+    Memory::Write32(kGuestGxData + 0x5FC, 0x20);
+    Memory::Write16(kGuestGxData + 2, 0x1234);
     ExpectFast();
     EXPECT_TRUE(capture_fifo().empty());
-    EXPECT_EQ(Memory::Read32(kGuestGxData + 0x5FC) & 1u, 1u);
+    EXPECT_EQ(Memory::Read32(kGuestGxData + 0x5FC), 0x21u);
     EXPECT_EQ(Memory::Read16(kGuestGxData + 2), 0);
 }
 
@@ -164,6 +169,26 @@ TEST_F(RuntimeTextureBindingTest, GetterShadowCannotValidateAnotherSnapshot) {
     ExpectFull();
     Warm();
     ExpectFast();
+}
+
+TEST_F(RuntimeTextureBindingTest, ValidatedLoadRestoresClampedLodAfterGetterRefresh) {
+    constexpr uint32_t lodOutput = kGuestGxData + 0x600;
+    const auto getMaxLod = [&] {
+        GX__GetTexObjLODAll_80170cbc(kObject, 0, 0, 0, lodOutput, 0, 0, 0, 0);
+        return std::bit_cast<float>(Memory::Read32(lodOutput));
+    };
+
+    Init();
+    Memory::Write32(kObject + 4, 0x5000);
+    Warm();
+    ASSERT_EQ(getMaxLod(), 3.0f);
+    Memory::Write32(kObject + 4, 0x3000);
+    ASSERT_EQ(getMaxLod(), 3.0f);
+    Memory::Write32(kObject + 4, 0x5000);
+
+    ExpectFast();
+    EXPECT_TRUE(capture_fifo().empty());
+    EXPECT_EQ(getMaxLod(), 3.0f);
 }
 
 TEST_F(RuntimeTextureBindingTest, ProducerBacklogUsesExecutedBytes) {
@@ -236,6 +261,70 @@ TEST_F(RuntimeTextureBindingTest, PixelDmaBetweenQueuedLoadsCannotBeSkipped) {
     EXPECT_GT(gxState().loadedTextures[1].texDataVersion, oldVersion);
 }
 
+TEST_F(RuntimeTextureBindingTest, PixelDmaRequiresRebindingEachLoadedMap) {
+    Init();
+    for (uint32_t map : {0u, 1u, 2u}) {
+        Load(kObject, map);
+    }
+    decode_fifo(capture_fifo());
+    const auto oldVersion = gxState().loadedTextures[0].texDataVersion;
+    ASSERT_NE(oldVersion, 0u);
+    ASSERT_EQ(gxState().loadedTextures[1].texDataVersion, oldVersion);
+    ASSERT_EQ(gxState().loadedTextures[2].texDataVersion, oldVersion);
+
+    GxWorker::detail::g_active = true;
+    GxNotifyGuestRamDmaWrite(kPixels, 256);
+    ExpectFull(kObject, 0);
+    decode_fifo(capture_fifo());
+    const auto newVersion = gxState().loadedTextures[0].texDataVersion;
+    ASSERT_GT(newVersion, oldVersion);
+    ASSERT_FALSE(g_TexObjMeta.at(kObject).needsUpload);
+    ASSERT_EQ(TextureBindingTest::retiredRanges.size(), 1u);
+    EnsureTexObjIntervalsLocked();
+
+    ExpectFast(kObject, 1);
+    auto bytes = capture_fifo();
+    EXPECT_FALSE(bytes.empty());
+    if (!bytes.empty()) {
+        decode_fifo(bytes);
+    }
+    EXPECT_EQ(gxState().loadedTextures[1].texDataVersion, newVersion);
+    ExpectFast(kObject, 1);
+    EXPECT_TRUE(capture_fifo().empty());
+
+    g_TexObjMeta.at(kObject).validatedLoad.Invalidate();
+    ExpectFull(kObject, 2);
+    bytes = capture_fifo();
+    EXPECT_FALSE(bytes.empty());
+    if (!bytes.empty()) {
+        decode_fifo(bytes);
+    }
+    EXPECT_EQ(gxState().loadedTextures[2].texDataVersion, newVersion);
+}
+
+TEST_F(RuntimeTextureBindingTest, HostReinitializationRequiresRebindingOtherMaps) {
+    Init();
+    Load();
+    Load(kObject, 1);
+    decode_fifo(capture_fifo());
+    const auto oldId = gxState().loadedTextures[1].texObjId;
+    const auto oldVersion = gxState().loadedTextures[1].texDataVersion;
+
+    Init();
+    Load();
+    decode_fifo(capture_fifo());
+    const auto newId = gxState().loadedTextures[0].texObjId;
+    ASSERT_NE(newId, oldId);
+    ASSERT_EQ(gxState().loadedTextures[0].texDataVersion, oldVersion);
+    EnsureTexObjIntervalsLocked();
+
+    ExpectFast(kObject, 1);
+    const auto bytes = capture_fifo();
+    ASSERT_FALSE(bytes.empty());
+    decode_fifo(bytes);
+    EXPECT_EQ(gxState().loadedTextures[1].texObjId, newId);
+}
+
 TEST_F(RuntimeTextureBindingTest, DirtyAliasesAndAddressReuseUploadBeforeRebinding) {
     Init();
     Warm();
@@ -272,9 +361,14 @@ TEST_F(RuntimeTextureBindingTest, InvalidationAndCopyEvictionPreserveMetadataVal
     GX__InvalidateTexAll_80171110();
     ExpectFast();
     EXPECT_FALSE(capture_fifo().empty());
-    GXDestroyCopyTex(GuestToHostPtr(kPixels));
+    void* copyDest = GuestToHostPtr(kPixels);
+    ASSERT_NE(copyDest, nullptr);
+    gxState().copyTextures[copyDest] = {.revision = 1};
+    GXDestroyCopyTex(copyDest);
+    decode_fifo(capture_fifo());
+    EXPECT_FALSE(gxState().copyTextures.contains(copyDest));
     ExpectFast();
-    EXPECT_FALSE(capture_fifo().empty());
+    EXPECT_TRUE(capture_fifo().empty());
 }
 
 TEST_F(RuntimeTextureBindingTest, ResetAndHostDestructionCannotReuseCompletedLoad) {
@@ -289,17 +383,47 @@ TEST_F(RuntimeTextureBindingTest, ResetAndHostDestructionCannotReuseCompletedLoa
     EXPECT_TRUE(g_TexObjMeta.at(kObject).host->constructed);
 }
 
-TEST_F(RuntimeTextureBindingTest, UnreadableSnapshotAndBadMapDoNotBecomeValidated) {
+TEST_F(RuntimeTextureBindingTest, UnreadableSnapshotDoesNotBecomeValidated) {
     Init();
     Warm();
     TextureBindingTest::unreadableObject = CanonicalizeGxMainRamAddress(kObject);
     ExpectFull();
     EXPECT_FALSE(g_TexObjMeta.at(kObject).validatedLoad.valid);
     TextureBindingTest::unreadableObject = 0;
-    Warm();
-    Load(kObject, 8);
-    EXPECT_TRUE(capture_fifo().empty());
-    ExpectFast();
+    ExpectFull();
+    EXPECT_TRUE(g_TexObjMeta.at(kObject).validatedLoad.valid);
+}
+
+TEST_F(RuntimeTextureBindingTest, InvalidMapDoesNotCaptureOrValidateDescriptor) {
+    Init();
+    for (bool defer : {false, true}) {
+        SCOPED_TRACE(defer);
+        GxWorker::detail::g_active = defer;
+        auto& validation = g_TexObjMeta.at(kObject).validatedLoad;
+        validation.Invalidate();
+        Load(kObject, 8);
+        GxWorker::Sync();
+        EXPECT_FALSE(validation.valid);
+        EXPECT_TRUE(capture_fifo().empty());
+
+        TextureBindingTest::unreadableObject = CanonicalizeGxMainRamAddress(kObject);
+        const auto accesses = TextureBindingTest::unreadableObjectAccesses;
+        Memory::Write32(kGuestGxData + 0x5FC, 0x20);
+        Memory::Write16(kGuestGxData + 2, 0x1234);
+
+        Load(kObject, 8);
+        EXPECT_EQ(Memory::Read32(kGuestGxData + 0x5FC), 0x21u);
+        EXPECT_EQ(Memory::Read16(kGuestGxData + 2), 0u);
+        GxWorker::Sync();
+        EXPECT_EQ(TextureBindingTest::unreadableObjectAccesses, accesses);
+        EXPECT_FALSE(validation.valid);
+        EXPECT_TRUE(capture_fifo().empty());
+
+        TextureBindingTest::unreadableObject = 0;
+        ExpectFull();
+        EXPECT_TRUE(validation.valid);
+        capture_fifo();
+    }
 }
 
 TEST_F(RuntimeTextureBindingTest, InvalidGuestDescriptorKeepsPlaceholderFallback) {

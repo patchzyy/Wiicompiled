@@ -1,4 +1,5 @@
 ﻿using System.Reflection;
+using System.Diagnostics;
 using System.Threading.Tasks;
 using Translator.Cli.Configuration;
 using Translator.Core.Mods;
@@ -73,6 +74,25 @@ public sealed class TranslateRecursiveRuntimeConfigTests
 
             var buffered = Translate("buffered", 1, bounded: false);
             Assert.Equal(2, buffered.Sources.Count);
+
+            var optionPath = new ProcessStartInfo("dotnet")
+            {
+                WorkingDirectory = root,
+                ArgumentList = { typeof(TranslationProjectConfig).Assembly.Location, "translate-recursive",
+                    $"0x{entry:X8}", "--project", projectPath, "--outdir", "--no-function-files", "--bounded-ir",
+                    "--threads", "1" }
+            };
+            using (var process = Process.Start(optionPath)!)
+            {
+                if (!process.WaitForExit(30_000))
+                {
+                    process.Kill(entireProcessTree: true);
+                    process.WaitForExit();
+                    throw new TimeoutException("Translation with an option-shaped output path timed out.");
+                }
+                Assert.Equal(0, process.ExitCode);
+                Assert.Equal(2, Directory.GetFiles(Path.Combine(root, "--no-function-files"), "*.cpp").Length);
+            }
             foreach (var threads in new[] { 1, 3 })
             {
                 var lazy = Translate($"lazy-{threads}", threads, bounded: true);

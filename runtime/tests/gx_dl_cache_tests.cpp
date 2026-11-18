@@ -1,15 +1,31 @@
 #include "../src/hle/gx/gx_dl_cache.h"
-#include "../src/hle/gx/gx_internal.h"
-
-#include <xxhash.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <new>
 #include <stdexcept>
 #include <string_view>
 
 extern "C" const uint8_t kMkwGuestRegion = 0;
+
+namespace {
+thread_local int g_allocationsBeforeFailure = -1;
+}
+
+void* operator new(size_t size) {
+    if (g_allocationsBeforeFailure == 0) {
+        g_allocationsBeforeFailure = -1;
+        throw std::bad_alloc{};
+    }
+    if (g_allocationsBeforeFailure > 0) --g_allocationsBeforeFailure;
+    if (auto* memory = std::malloc(size == 0 ? 1 : size)) return memory;
+    throw std::bad_alloc{};
+}
+
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, size_t) noexcept { std::free(memory); }
 
 namespace {
 
@@ -24,17 +40,21 @@ struct Record {
     uint64_t contentDigest = 0;
     uint64_t writeGeneration = GxGuestWrite::kUntracked;
     std::vector<uint64_t> cpWrites;
-    std::vector<uint8_t> flattened;
+    bool streamIsSource = false;
+    std::vector<uint8_t> stream;
 
-    size_t Bytes() const { return flattened.size() + cpWrites.size() * sizeof(uint64_t); }
+    size_t Bytes() const { return stream.size() + cpWrites.size() * sizeof(uint64_t); }
 };
 
 using Cache = GxDisplayListScanCache::BoundedCache<Record>;
+using GxDisplayListScanCache::DisplayListBytes;
+using GxDisplayListScanCache::MakeIdentityKey;
+using GxDisplayListScanCache::Probe;
 
 bool Store(Cache& cache, uint64_t key, size_t flattenedBytes, size_t cpWrites = 0) {
     Record record{};
     record.cpWrites.resize(cpWrites, key);
-    record.flattened.resize(flattenedBytes, static_cast<uint8_t>(key));
+    record.stream.resize(flattenedBytes, static_cast<uint8_t>(key));
     const size_t bytes = record.Bytes();
     return cache.Insert(key, std::move(record), bytes);
 }
@@ -62,7 +82,7 @@ void ByteBudgetAndReplacement() {
     Require(cache.Size() == 2 && cache.StoredBytes() == 12, "replacement byte accounting failed");
     Require(cache.Find(1) && !cache.Find(2) && cache.Find(3) == retained,
             "oldest replacement was evicted or unrelated record moved");
-    Require(cache.Find(1)->flattened == std::vector<uint8_t>(8, 1), "replacement payload was lost");
+    Require(cache.Find(1)->stream == std::vector<uint8_t>(8, 1), "replacement payload was lost");
     Require(Store(cache, 4, 4), "byte-budget eviction failed");
     Require(cache.Size() == 2 && cache.StoredBytes() == 12 && !cache.Find(3) && cache.Find(1),
             "replacement was not promoted to most recent");
@@ -72,6 +92,49 @@ void ByteBudgetAndReplacement() {
     Require(cache.Size() == 3 && cache.StoredBytes() == 12, "CP-write bytes were not counted");
     Require(Store(cache, 5, 4), "CP-write replacement failed");
     Require(cache.StoredBytes() == 8, "CP-write replacement counted old bytes twice");
+}
+
+void BytePressureSkipsEmptyRecords() {
+    Cache cache{514, 8};
+    for (uint64_t key = 1; key <= 512; ++key) Require(Store(cache, key, 0), "empty record setup failed");
+    Require(Store(cache, 513, 4) && Store(cache, 514, 4), "byte record setup failed");
+    cache.Touch(513);
+    Require(Store(cache, 515, 4), "byte pressure starved behind empty records");
+    Require(cache.Size() == 514 && cache.StoredBytes() == 8 && cache.Find(513) && !cache.Find(514),
+            "combined pressure failed to pick the oldest byte-bearing entry");
+    for (uint64_t key = 1; key <= 512; ++key) Require(cache.Find(key), "byte pressure evicted an empty record");
+
+    const auto* promoted = cache.Find(512);
+    Require(Store(cache, 512, 4) && cache.Find(512) == promoted && !cache.Find(513),
+            "zero-to-positive replacement failed to join the byte order");
+    Require(Store(cache, 515, 0) && Store(cache, 516, 8) && !cache.Find(512) && cache.Find(515),
+            "byte pressure evicted a positive-to-zero replacement");
+    Require(Store(cache, 517, 0) && Store(cache, 518, 0) && !cache.Find(1) && cache.Find(516),
+            "entry pressure failed to pick the overall oldest entry");
+}
+
+void AllocationFailurePreservesVictims() {
+    for (const int failAfter : {0, 1}) {
+        Cache cache{2, 8};
+        Require(Store(cache, 1, 4) && Store(cache, 2, 4), "allocation failure setup failed");
+        auto* first = cache.Find(1);
+        auto* second = cache.Find(2);
+        Record record{};
+        record.stream.resize(4);
+        bool failed = false;
+        g_allocationsBeforeFailure = failAfter;
+        try {
+            cache.Insert(3, std::move(record), 4);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        g_allocationsBeforeFailure = -1;
+        Require(failed, "cache insertion did not hit the allocation failure");
+        Require(cache.Size() == 2 && cache.StoredBytes() == 8 && cache.Find(1) == first &&
+                cache.Find(2) == second && !cache.Find(3), "allocation failure changed the working set");
+        Require(Store(cache, 4, 4) && !cache.Find(1) && cache.Find(2) == second,
+                "allocation failure changed byte recency");
+    }
 }
 
 void RejectedInsertsPreserveRecords() {
@@ -122,29 +185,21 @@ void BoundedRejectionsMakeProgress() {
     const auto* protectedRecord = cache.Find(1);
     Require(!Store(cache, 1, 66), "replacement exceeded 64 victims");
     Require(cache.Size() == 64 && cache.StoredBytes() == 64 && cache.Find(1) == protectedRecord &&
-            protectedRecord->flattened.size() == 1, "bounded rejection lost the protected replacement");
+            protectedRecord->stream.size() == 1, "bounded rejection lost the protected replacement");
     Require(Store(cache, 1, 66) && cache.Size() == 63 && cache.StoredBytes() == 128,
             "replacement did not make progress for the next attempt");
-
-    cache.Clear();
-    for (uint64_t key = 1; key <= 64; ++key) Require(Store(cache, key, 0), "empty record setup failed");
-    Require(Store(cache, 65, 128), "large record setup failed");
-    Require(!Store(cache, 66, 1) && cache.Size() == 1 && cache.StoredBytes() == 128,
-            "zero-byte victims bypassed the eviction work limit");
-    Require(Store(cache, 66, 1) && cache.Size() == 1 && cache.StoredBytes() == 1,
-            "zero-byte victims caused repeated insertion starvation");
 }
 
 void ClearAndPointerLifetime() {
     Cache cache{8192, 8192};
     Require(Store(cache, 0, 1), "pointer setup failed");
     const auto* first = cache.Find(0);
-    const auto* payload = first->flattened.data();
+    const auto* payload = first->stream.data();
     for (uint64_t key = 1; key < 8192; ++key) Require(Store(cache, key, 1), "growth insert failed");
     cache.Touch(0);
     for (uint64_t key = 8192; key < 16384; ++key) {
         Require(Store(cache, key, 1), "churn insert failed");
-        Require(cache.Find(0) == first && first->flattened.data() == payload,
+        Require(cache.Find(0) == first && first->stream.data() == payload,
                 "rehash or unrelated eviction invalidated a retained stream");
         cache.Touch(0);
     }
@@ -157,49 +212,91 @@ void ClearAndPointerLifetime() {
 
 void LiveBytesStillInvalidateRetainedRecords() {
     constexpr uint32_t address = 0x80010000;
+    constexpr uint32_t alias = 0xC0010000;
     constexpr uint64_t layout = 0x12345678;
     std::array<uint8_t, 8> bytes{0x08, 0x50, 0, 0, 0, 1, 0, 0};
-    const auto digest = [&] { return static_cast<uint64_t>(XXH3_64bits(bytes.data(), bytes.size())); };
-    const auto key = GxDisplayListScanCache::MakeIdentityKey(address, bytes.size(), layout);
-    Require(key == GxDisplayListScanCache::MakeIdentityKey(0xC0010000, bytes.size(), layout),
-            "cached and uncached aliases use different keys");
+    const auto key = MakeIdentityKey(address, bytes.size(), layout);
     Cache cache{2, 32};
     Record record{};
     record.listAddr = CanonicalizeGxMainRamAddress(address);
     record.nbytes = bytes.size();
     record.layoutHash = layout;
-    record.contentDigest = digest();
+    record.contentDigest = XXH3_64bits(bytes.data(), bytes.size());
     record.writeGeneration = GxGuestWrite::GenerationForRange(address, bytes.size());
-    Require(cache.Insert(key, std::move(record), 0), "validation setup failed");
+    record.stream = {0};
+    Require(cache.Insert(key, std::move(record), 1), "validation setup failed");
     auto* retained = cache.Find(key);
-    const auto reusable = [&](uint32_t addr, uint32_t count, uint64_t currentLayout, uint64_t currentDigest) {
-        return GxDisplayListScanCache::CanReuse(retained->listAddr, retained->nbytes, retained->layoutHash,
-                                               retained->contentDigest, addr, count, currentLayout,
-                                               currentDigest);
+    const auto probe = [&](uint32_t addr, uint32_t count, uint64_t currentLayout) {
+        const auto generation = GxGuestWrite::GenerationForRange(addr, count);
+        DisplayListBytes current{bytes.data(), count};
+        return Probe(cache, current, addr, count, currentLayout, generation);
     };
-    Require(reusable(0xC0010000, bytes.size(), layout, digest()), "unchanged alias was rejected");
-    Require(!reusable(address, bytes.size() - 1, layout, digest()) &&
-            !reusable(address, bytes.size(), layout + 1, digest()) &&
-            !reusable(address + 32, bytes.size(), layout, digest()), "identity mismatch was reused");
-    GxGuestWrite::NotifyWrite(0xC0010000, bytes.size());
-    const auto generation = GxGuestWrite::GenerationForRange(address, bytes.size());
-    Require(!GxGuestWrite::CanSkipDigest(retained->writeGeneration, generation), "write failed to invalidate digest");
-    Require(reusable(address, bytes.size(), layout, digest()), "unchanged bytes after a write were rejected");
-    bytes[5] ^= 0x80;
-    Require(!reusable(address, bytes.size(), layout, digest()), "changed command bytes reused a retained record");
-    Require(!GxGuestWrite::CanSkipDigest(GxGuestWrite::kUntracked, GxGuestWrite::kUntracked),
-            "untracked writes bypassed digest validation");
-    Require(Store(cache, 1, 16), "validation churn setup failed");
-    cache.Touch(key);
+    Require(probe(alias, bytes.size(), layout) == retained, "unchanged alias was rejected");
+    Require(!probe(address, bytes.size() - 1, layout) && !probe(address, bytes.size(), layout + 1) &&
+            !probe(address + 32, bytes.size(), layout), "identity mismatch was reused");
+    GxGuestWrite::NotifyWrite(alias, bytes.size());
+    Require(Store(cache, 1, 16) && probe(address, bytes.size(), layout) == retained,
+            "unchanged bytes after a write were rejected");
+    const auto validatedGeneration = GxGuestWrite::GenerationForRange(address, bytes.size());
+    Require(retained->writeGeneration == validatedGeneration, "validated hit did not refresh the generation");
     Require(Store(cache, 2, 16) && cache.Find(key) == retained && !cache.Find(1),
-            "unrelated eviction discarded the retained record");
-    Require(!reusable(address, bytes.size(), layout, digest()), "churn made a stale digest reusable");
-    Record replacement = *retained;
-    replacement.contentDigest = digest();
-    replacement.writeGeneration = generation;
-    Require(cache.Insert(key, std::move(replacement), 0) && cache.StoredBytes() == 16,
-            "invalidated replacement changed unrelated byte accounting");
-    Require(reusable(address, bytes.size(), layout, digest()), "replacement did not refresh the digest");
+            "unrelated eviction discarded the validated record");
+    bytes[5] ^= 0x80;
+    GxGuestWrite::NotifyWrite(alias, bytes.size());
+    Require(!probe(address, bytes.size(), layout) && retained->writeGeneration == validatedGeneration,
+            "changed live commands reused a retained record");
+
+    constexpr uint32_t untrackedAddress = 0xF0000000;
+    Record untracked = *retained;
+    untracked.listAddr = untrackedAddress;
+    untracked.writeGeneration = GxGuestWrite::kUntracked;
+    Require(cache.Insert(MakeIdentityKey(untrackedAddress, bytes.size(), layout), std::move(untracked), 1),
+            "untracked validation setup failed");
+    Require(!probe(untrackedAddress, bytes.size(), layout), "untracked writes bypassed digest validation");
+}
+
+void RawProbeAndScanUseTheSameCapture() {
+    constexpr uint32_t address = 0x80020000;
+    constexpr uint64_t layout = 0x12345678;
+    constexpr std::array<uint8_t, 4> original{0x90, 0, 1, 7};
+    constexpr uint32_t size = original.size();
+    const auto key = MakeIdentityKey(address, size, layout);
+    const auto generation = GxGuestWrite::GenerationForRange(address, size);
+    auto guest = original;
+    Cache cache{2, 32};
+    {
+        DisplayListBytes bytes{guest.data(), size};
+        Require(!Probe(cache, bytes, address, size, layout, generation), "empty cache hit");
+        const auto* scanned = bytes.Data();
+        guest.back() = 42;
+        Record record{};
+        record.listAddr = CanonicalizeGxMainRamAddress(address);
+        record.nbytes = size;
+        record.layoutHash = layout;
+        record.writeGeneration = generation;
+        record.contentDigest = bytes.Digest();
+        Require(scanned[3] == 7 && record.contentDigest == XXH3_64bits(original.data(), size),
+                "miss digest did not describe the captured bytes");
+        record.streamIsSource = true;
+        record.stream.assign(scanned, scanned + size);
+        Require(cache.Insert(key, std::move(record), size), "raw validation setup failed");
+    }
+    {
+        DisplayListBytes bytes{guest.data(), size};
+        Require(!Probe(cache, bytes, address, size, layout, generation),
+                "unchanged generation bypassed raw-byte validation");
+        const auto* rescanned = bytes.Data();
+        guest.back() = 7;
+        Require(rescanned[3] == 42 && bytes.Digest() != cache.Find(key)->contentDigest,
+                "stale-hit scan did not retain the probed bytes");
+    }
+    {
+        DisplayListBytes bytes{guest.data(), size};
+        const auto* hit = Probe(cache, bytes, address, size, layout, generation);
+        Require(hit != nullptr, "unchanged raw bytes missed");
+        guest.back() = 42;
+        Require(hit->stream[3] == 7, "raw hit submitted bytes different from the probe");
+    }
 }
 
 struct LegacyCache {
@@ -242,7 +339,7 @@ void Benchmark(Storage& cache, std::string_view policy, std::string_view scenari
         } else {
             ++misses;
             Record record{};
-            record.flattened.resize(bytesPerEntry);
+            record.stream.resize(bytesPerEntry);
             const auto before = cache.Size();
             const bool inserted = cache.Insert(key, std::move(record), bytesPerEntry);
             skips += !inserted;
@@ -286,11 +383,14 @@ int main(int argc, char** argv) {
         } else {
             EntryBudgetAndRecency();
             ByteBudgetAndReplacement();
+            BytePressureSkipsEmptyRecords();
+            AllocationFailurePreservesVictims();
             RejectedInsertsPreserveRecords();
             EvictionLimitAndProtection();
             BoundedRejectionsMakeProgress();
             ClearAndPointerLifetime();
             LiveBytesStillInvalidateRetainedRecords();
+            RawProbeAndScanUseTheSameCapture();
             std::cout << "display-list scan cache tests passed\n";
         }
         return 0;

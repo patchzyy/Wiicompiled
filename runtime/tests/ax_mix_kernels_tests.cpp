@@ -42,6 +42,8 @@ constexpr Backend kSelected = {kSelectedName, AxMixKernels::MixAddRamp,
 
 uint32_t g_random = 0x12345678u;
 
+char g_case[192]{};
+
 uint32_t NextRandom() {
     g_random ^= g_random << 13;
     g_random ^= g_random >> 17;
@@ -50,7 +52,9 @@ uint32_t NextRandom() {
 }
 
 void Require(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
+    if (condition) return;
+    if (g_case[0]) std::fprintf(stderr, "%s: ", g_case);
+    throw std::runtime_error(message);
 }
 
 int32_t Wrap32(int64_t value) {
@@ -85,6 +89,8 @@ std::vector<uint32_t> Counts() {
 
 void TestRamps(const Backend& backend, uint32_t count, size_t offset,
                uint16_t volume, uint16_t delta, unsigned pattern) {
+    std::snprintf(g_case, sizeof(g_case), "%s count=%u offset=%zu volume=%u delta=%u pattern=%u seed=%u",
+                  backend.name, count, offset, unsigned(volume), unsigned(delta), pattern, g_random);
     // Source ends at the allocation boundary so ASan also catches tail overreads.
     std::vector<int16_t> input(offset + count, 12345);
     std::vector<int32_t> initial(offset + count + 1, 0x13579bdf);
@@ -121,6 +127,8 @@ void TestRamps(const Backend& backend, uint32_t count, size_t offset,
 }
 
 void TestAccum(const Backend& backend, uint32_t count, size_t offset, unsigned pattern) {
+    std::snprintf(g_case, sizeof(g_case), "%s count=%u offset=%zu pattern=%u seed=%u",
+                  backend.name, count, offset, pattern, g_random);
     std::vector<int32_t> source(offset + count, 0x2468ace);
     std::vector<uint16_t> ramp(offset + count, 12345);
     std::vector<int32_t> initial(offset + count + 1, 0x13579bdf);
@@ -155,6 +163,8 @@ void TestAccum(const Backend& backend, uint32_t count, size_t offset, unsigned p
 
 void TestAccumEdges(const Backend& backend) {
     for (int32_t source : kWords) for (int32_t initial : kWords) for (uint16_t gain : kGains) {
+        std::snprintf(g_case, sizeof(g_case), "%s source=%d initial=%d gain=%u",
+                      backend.name, source, initial, unsigned(gain));
         std::array<int32_t, 17> src, dst;
         std::array<uint16_t, 17> ramp;
         src.fill(source);
@@ -169,6 +179,8 @@ void TestAccumEdges(const Backend& backend) {
 }
 
 void TestEndian(const Backend& backend, size_t count, size_t offset) {
+    std::snprintf(g_case, sizeof(g_case), "%s count=%zu offset=%zu seed=%u",
+                  backend.name, count, offset, g_random);
     std::vector<int32_t> source(offset + count, 0x13579bdf);
     for (size_t i = 0; i < count; ++i) {
         source[offset + i] = i % 2 == 0 ? kWords[(i / 2) % std::size(kWords)] : Wrap32(NextRandom());

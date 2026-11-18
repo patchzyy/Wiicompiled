@@ -5,10 +5,7 @@
 #include "isa/big_endian.h"
 
 #include <cstdlib>
-
-// The display-list scan cache validates a cached scan against the live guest
-// bytes with a 64-bit XXH3 digest (see GxDisplayListScanCache::CanReuse).
-#include <xxhash.h>
+#include <new>
 
 namespace aurora::gx::fifo {
 bool in_display_list();
@@ -25,17 +22,8 @@ using namespace GxStream;
 using GxCpDecode::ApplyCpRegWrite;
 using GxCpDecode::SameVtxAttrFmt;
 
-// Small display lists dominate the in-race call count. Cache them as well, but
-// cap both individual entries and aggregate copied command bytes so malformed
-// guest input cannot turn this optimization into unbounded host allocation.
-constexpr uint32_t kDlScanCacheMaxEntryBytes = 64u * 1024u;
 constexpr size_t kDlScanCacheMaxEntries = 8192;
 constexpr size_t kDlScanCacheMaxStoredBytes = 8u * 1024u * 1024u;
-
-// Display-list write tracking (audit F6a): re-digesting every list every call is the
-// costliest step of GX__CallDisplayList, and wasted on BRRES shape lists that are written
-// once at load and never touched again.
-constexpr uint64_t kDlWriteGenerationUntracked = GxGuestWrite::kUntracked;
 
 // Byte footprint of one vertex of the currently configured layout. Indexed attributes are
 // sized before the matrix-attribute check here (unlike BuildScanVertexLayout), but a
@@ -470,9 +458,6 @@ static HleGxVertexStateSnapshot CaptureGxVertexStateForCpWrites(const std::vecto
 }
 
 struct DlScanCacheEntry {
-    uint32_t listAddr = 0;
-    uint32_t nbytes = 0;
-    uint64_t layoutHash = 0;
     std::array<uint32_t, GX_VA_MAX_ATTR> maxIdx{};
     std::array<bool, GX_VA_MAX_ATTR> sawIdx{};
     std::array<uint32_t, GX_VA_MAX_ATTR> maxXfIdx{};
@@ -484,22 +469,22 @@ struct DlScanCacheEntry {
     bool dlHasArrayStateWrites = false;
     bool dlHasCpWrites = false;
     bool scanOk = false;
-    // Flatten results for lists that need one. `flattenVerbatim` means the
-    // flattened stream is byte-identical to the source list, so aurora can be
-    // handed the guest bytes directly and no copy has to be stored.
     bool needsFlatten = false;
     bool flattenOk = false;
-    bool flattenVerbatim = false;
 };
 
 struct DlScanCacheRecord {
     DlScanCacheEntry result{};
+    uint32_t listAddr = 0;
+    uint32_t nbytes = 0;
+    uint64_t layoutHash = 0;
     // Answer of DisplayListMayContainDraw for these bytes
     bool mayContainDraw = false;
     uint64_t contentDigest = 0;
-    uint64_t writeGeneration = kDlWriteGenerationUntracked;
+    uint64_t writeGeneration = GxGuestWrite::kUntracked;
     std::vector<DlCpWrite> cpWrites{};
-    std::vector<uint8_t> flattened{};
+    bool streamIsSource = false;
+    std::vector<uint8_t> stream{};
 };
 
 using DlScanCacheState = GxDisplayListScanCache::BoundedCache<DlScanCacheRecord>;
@@ -529,92 +514,36 @@ static uint64_t HashScanLayoutState() {
     return g_hleGxState.vtxLayoutHash;
 }
 
-static uint64_t DlScanCacheKey(uint32_t listAddr, uint32_t nbytes, uint64_t layoutHash) {
-    return GxDisplayListScanCache::MakeIdentityKey(listAddr, nbytes, layoutHash);
-}
-
 static DlScanCacheState& DlScanCache() {
     static thread_local DlScanCacheState s_cache{kDlScanCacheMaxEntries, kDlScanCacheMaxStoredBytes};
     return s_cache;
 }
 
-static uint64_t DlContentDigest(const uint8_t* list, uint32_t nbytes) {
-    return static_cast<uint64_t>(XXH3_64bits(list, static_cast<size_t>(nbytes)));
-}
-
-
-struct DlScanCacheProbe {
-    const DlScanCacheRecord* record = nullptr;
-    uint64_t contentDigest = 0;
-    bool digestValid = false;
-    uint64_t writeGeneration = kDlWriteGenerationUntracked;
-};
-
-static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr, uint32_t nbytes,
-                                         uint64_t layoutHash) {
-    DlScanCacheProbe probe{};
-    probe.writeGeneration = GxGuestWrite::GenerationForRange(listAddr, nbytes);
-
-    auto& s_cache = DlScanCache();
-    const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    if (auto* found = s_cache.Find(key)) {
-        auto& record = *found;
-        const auto& entry = record.result;
-        const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
-                                     entry.nbytes == nbytes && entry.layoutHash == layoutHash;
-        if (identityMatches && probe.writeGeneration != kDlWriteGenerationUntracked &&
-            record.writeGeneration == probe.writeGeneration) {
-            // Nothing has flushed a write over these bytes since the digest was
-            // taken, so the stored digest still describes them. Skip XXH3.
-            probe.record = &record;
-            probe.contentDigest = record.contentDigest;
-            probe.digestValid = true;
-        } else {
-            probe.contentDigest = DlContentDigest(list, nbytes);
-            probe.digestValid = true;
-            if (identityMatches &&
-                GxDisplayListScanCache::CanReuse(entry.listAddr, entry.nbytes, entry.layoutHash,
-                                                 record.contentDigest, listAddr, nbytes, layoutHash,
-                                                 probe.contentDigest)) {
-                // False alarm: the bump did not actually change this list
-                record.writeGeneration = probe.writeGeneration;
-                probe.record = &record;
-            }
-        }
-    }
-    if (probe.record != nullptr) {
-        s_cache.Touch(key);
-    }
-    return probe;
-}
-
-static size_t DlScanCacheRecordBytes(const DlScanCacheRecord& record) {
-    return record.flattened.size() + record.cpWrites.size() * sizeof(DlCpWrite);
-}
-
 static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layoutHash,
                              uint64_t contentDigest, uint64_t writeGeneration,
                              bool mayContainDraw, const DlScanCacheEntry& entry,
-                             std::vector<DlCpWrite>&& cpWrites, const uint8_t* flattened,
-                             uint32_t flattenedBytes) {
+                             std::vector<DlCpWrite>&& cpWrites, const uint8_t* stream,
+                             uint32_t streamBytes, bool streamIsSource) try {
     auto& s_cache = DlScanCache();
-    const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
+    const uint64_t key = GxDisplayListScanCache::MakeIdentityKey(listAddr, nbytes, layoutHash);
     DlScanCacheRecord record{};
     record.result = entry;
     record.mayContainDraw = mayContainDraw;
-    record.result.listAddr = CanonicalizeGxMainRamAddress(listAddr);
-    record.result.nbytes = nbytes;
-    record.result.layoutHash = layoutHash;
+    record.listAddr = CanonicalizeGxMainRamAddress(listAddr);
+    record.nbytes = nbytes;
+    record.layoutHash = layoutHash;
     record.contentDigest = contentDigest;
-    // Sampled before the digest was taken, so a write racing the digest can only
-    // make the next call re-digest, never make it trust a stale entry.
+    // Sampled before capture so later write notifications force revalidation.
     record.writeGeneration = writeGeneration;
     record.cpWrites = std::move(cpWrites);
-    if (flattened != nullptr && flattenedBytes != 0) {
-        record.flattened.assign(flattened, flattened + flattenedBytes);
+    record.streamIsSource = streamIsSource;
+    if (streamBytes != 0) {
+        record.stream.assign(stream, stream + streamBytes);
     }
-    const size_t incomingBytes = DlScanCacheRecordBytes(record);
+    const size_t incomingBytes = record.stream.size() + record.cpWrites.size() * sizeof(DlCpWrite);
     s_cache.Insert(key, std::move(record), incomingBytes);
+} catch (const std::bad_alloc&) {
+    // The current draw still has its scan results and stream.
 }
 
 static void BuildScanVertexLayout(GXVtxFmt vtxfmt, std::array<ScanAttrStep, 26>& indexedSteps,
@@ -843,7 +772,6 @@ struct DlInterpretVisitor {
     uint32_t DrawVertexSize(GXVtxFmt vtxfmt) { return CalcDLVertexSize(vtxfmt); }
     bool OnDraw(const uint8_t*, uint8_t opcode, GXVtxFmt vtxfmt, uint16_t vtxCount,
                 const uint8_t* vertices, uint32_t& payloadBytes) {
-        EnsureAuroraFrameActive();
         const HleGxVertexStateSnapshot drawGuestState = CaptureGxVertexState();
         ApplyAuroraVtxStateForDlBegin(vtxfmt);
         GXBegin(OpcodeToGXPrimitive(opcode), vtxfmt, vtxCount);
@@ -1298,27 +1226,29 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         return;
     }
     try {
-        const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
-        if (!list) return;
+        const auto* guestList = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
+        if (!guestList) return;
 
-        const bool allowScanCache = nbytes <= kDlScanCacheMaxEntryBytes;
+        // Frame waits can dispatch guest code before the worker-side snapshot is taken.
+        EnsureAuroraFrameActive();
+        GxDisplayListScanCache::DisplayListBytes bytes{guestList, nbytes};
+        const bool allowScanCache = bytes.CanCache();
         const uint64_t scanLayoutHash = allowScanCache ? HashScanLayoutState() : 0;
-        // The digest is computed lazily inside the probe: an entry whose covering
-        // write-tracking granules have not moved since it was stored keeps its
-        // recorded digest and skips the XXH3 pass over the whole list entirely.
-        const DlScanCacheProbe probe =
-            allowScanCache ? ProbeDlScanCache(list, listAddr, nbytes, scanLayoutHash)
-                           : DlScanCacheProbe{};
-        const DlScanCacheRecord* cached = probe.record;
+        const uint64_t writeGeneration = allowScanCache
+                                             ? GxGuestWrite::GenerationForRange(listAddr, nbytes)
+                                             : GxGuestWrite::kUntracked;
+        const DlScanCacheRecord* cached =
+            allowScanCache ? GxDisplayListScanCache::Probe(DlScanCache(), bytes, listAddr, nbytes,
+                                                          scanLayoutHash, writeGeneration)
+                           : nullptr;
 
         // The scan a cached record came from already walked the list for this,
         // so only a miss pays for DisplayListMayContainDraw.
         const bool mayContainDraw =
-            (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(list, nbytes);
+            (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(bytes.Data(), nbytes);
         if (!mayContainDraw) {
-            EnsureAuroraFrameActive();
             GXMarkFrameWork();
-            GXCallDisplayList(list, nbytes);
+            GXCallDisplayList(cached ? cached->stream.data() : bytes.Data(), nbytes);
             // The republish is required even for register-only lists (verified by
             // experiment: dropping it corrupts in-race geometry decode). It is
             // instead memoized inside SyncAppliedVtxStateFromHleReal, so a run of
@@ -1368,15 +1298,11 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 ApplyCpRegWrite(write.reg, write.value);
             }
             if (needsFlatten && flattenOk) {
-                if (entry.flattenVerbatim) {
-                    auroraStream = list;
-                    auroraStreamBytes = nbytes;
-                } else {
-                    auroraStream = cached->flattened.data();
-                    auroraStreamBytes = static_cast<uint32_t>(cached->flattened.size());
-                }
+                auroraStream = cached->stream.data();
+                auroraStreamBytes = static_cast<uint32_t>(cached->stream.size());
             }
         } else {
+            const auto* list = bytes.Data();
             std::vector<DlCpWrite> cpWrites{};
             // The scan discovers the list's CP writes as it walks, so this path
             // cannot narrow the snapshot the way the cached one does.
@@ -1408,9 +1334,6 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             // scan/flatten are pure functions of the list bytes and the layout-hash cache key.
             if (allowScanCache && scanOk && !dlHasNestedDl && (!needsFlatten || flattenOk)) {
                 DlScanCacheEntry entry{};
-                entry.listAddr = CanonicalizeGxMainRamAddress(listAddr);
-                entry.nbytes = nbytes;
-                entry.layoutHash = scanLayoutHash;
                 entry.maxIdx = maxIdx;
                 entry.sawIdx = sawIdx;
                 entry.maxXfIdx = maxXfIdx;
@@ -1424,15 +1347,12 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 entry.scanOk = scanOk;
                 entry.needsFlatten = needsFlatten;
                 entry.flattenOk = flattenOk;
-                entry.flattenVerbatim = flattenVerbatim;
                 const bool storeFlattened = needsFlatten && flattenOk && !flattenVerbatim;
 
-                const uint64_t contentDigest =
-                    probe.digestValid ? probe.contentDigest : DlContentDigest(list, nbytes);
-                StoreDlScanCache(listAddr, nbytes, scanLayoutHash, contentDigest,
-                                 probe.writeGeneration, mayContainDraw, entry, std::move(cpWrites),
-                                 storeFlattened ? flattened.data() : nullptr,
-                                 storeFlattened ? static_cast<uint32_t>(flattened.size()) : 0u);
+                StoreDlScanCache(listAddr, nbytes, scanLayoutHash, bytes.Digest(),
+                                 writeGeneration, mayContainDraw, entry, std::move(cpWrites),
+                                 storeFlattened ? flattened.data() : list,
+                                 storeFlattened ? static_cast<uint32_t>(flattened.size()) : nbytes, !storeFlattened);
             }
         }
 
@@ -1448,7 +1368,6 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 flattenApplyOk = flattenArraysOk && flattenXfOk;
             }
             if (flattenApplyOk) {
-                EnsureAuroraFrameActive();
                 GXMarkFrameWork();
                 GXCallDisplayList(auroraStream, auroraStreamBytes);
                 // No flip back to GX_DIRECT here
@@ -1468,9 +1387,8 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 applyOk = arraysOk && xfOk;
             }
             if (applyOk) {
-                EnsureAuroraFrameActive();
                 GXMarkFrameWork();
-                GXCallDisplayList(list, nbytes);
+                GXCallDisplayList(cached ? cached->stream.data() : bytes.Data(), nbytes);
 
                 SyncAppliedVtxStateFromHleReal();
                 return;
@@ -1481,10 +1399,9 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         if (haveStateBeforeScan) {
             RestoreGxVertexState(stateBeforeScan);
         }
-        EnsureAuroraFrameActive();
         GXMarkFrameWork();
         InvalidateAppliedAuroraState();
-        ParseDisplayList(list, nbytes);
+        ParseDisplayList(bytes.Data(), nbytes);
         InvalidateAppliedAuroraState();
     } catch (...) {}
 }

@@ -59,7 +59,10 @@ if (functionMap is not null)
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
 }
 var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
-var preferCachedInputs = HasFlag(tail, "--prefer-cached-inputs");
+var enabledFlags = new HashSet<string>(StringComparer.Ordinal);
+if (HandleCommandLineOptions(command, tail, enabledFlags) is { } commandLineExitCode)
+    return commandLineExitCode;
+var preferCachedInputs = enabledFlags.Contains("--prefer-cached-inputs");
 var dolFile = new Lazy<DolFile>(LoadDol);
 var relFile = new Lazy<RelFile?>(LoadRel);
 var image = new Lazy<ProgramImage>(LoadImage);
@@ -155,15 +158,6 @@ List<AddressRange>? _executableRanges = null;
 var _executableRangesGate = new object();
 // Argument registers checked for callback function pointers at every call site
 var argumentRegisters = new[] { "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10" };
-
-// Argument validation runs before any command can execute. `--help` used to
-// fall straight through to the command's parser, which ignored every argument
-// it did not recognise, so `emit-build-shards --help` ran the command with its
-// defaults and rewrote generated/build_shards.
-if (HandleCommandLineOptions(command, tail) is { } commandLineExitCode)
-{
-    return commandLineExitCode;
-}
 
 return command switch
 {
@@ -460,12 +454,13 @@ int RunTranslateRecursive(string[] argsTail)
     var outDir = OptionValue(argsTail, "--outdir") ?? RequireProject().Output.Functions;
     var outputMetadataPath = OptionValue(argsTail, "--output-metadata");
     var productionSourceBundlePath = OptionValue(argsTail, "--production-source-bundle");
-    var emitFunctionFiles = !HasFlag(argsTail, "--no-function-files");
-    var boundedIr = HasFlag(argsTail, "--bounded-ir");
+    var emitFunctionFiles = !enabledFlags.Contains("--no-function-files");
+    var boundedIr = enabledFlags.Contains("--bounded-ir");
     if (!emitFunctionFiles && string.IsNullOrWhiteSpace(productionSourceBundlePath))
         throw new ArgumentException("--no-function-files requires --production-source-bundle.");
     BaseTranslationOutputMetadata? previousOutputMetadata = null;
-    if (HasFlag(argsTail, "--prune-stale") &&
+    var pruneStale = enabledFlags.Contains("--prune-stale");
+    if (pruneStale &&
         outputMetadataPath is not null &&
         File.Exists(outputMetadataPath))
     {
@@ -479,7 +474,6 @@ int RunTranslateRecursive(string[] argsTail)
                 $"[translator] Warning: existing output metadata could not be read; stale pruning will use one-time tree migration: {ex.Message}");
         }
     }
-    var pruneStale = HasFlag(argsTail, "--prune-stale");
     var threadsOption = OptionValue(argsTail, "--threads");
     var maxThreads = threadsOption != null ? Math.Max(1, ParseInt(threadsOption)) : Math.Max(1, Environment.ProcessorCount);
     Console.WriteLine($"[translator] Using up to {maxThreads} worker thread(s).");
@@ -1347,10 +1341,10 @@ int RunTranslateRecursive(string[] argsTail)
                     .Take(4)
                     .ToArray();
                 var variantIndex = 0;
+                var targetFunction = canonicalGuestFunctions[target];
                 foreach (var outputGroup in rankedOutputs)
                 {
                     var output = outputGroup.Key;
-                    var targetFunction = canonicalGuestFunctions[target];
                     var entryLive = GuestStateLivenessAnalyzer.Analyze(
                         targetFunction, stateFreeLivenessContracts, output).BlockLiveIn[targetFunction.EntryLabel];
                     var publicContract = guestAbiContracts[target];
@@ -1774,7 +1768,7 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
             $"[translator] Warning: no base translation output metadata at {baseTranslationOutputMetadataPath}; " +
             "cannot verify the base translation is aware of this mod's patch set.");
     }
-    var skipRetroWfc = HasFlag(argsTail, "--skip-retro-wfc");
+    var skipRetroWfc = enabledFlags.Contains("--skip-retro-wfc");
     var explicitRetroWfcPayloadSpec = OptionValue(argsTail, "--retro-wfc-payload");
     var retroWfcPayloadSpec = skipRetroWfc
         ? null
@@ -1975,7 +1969,7 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
         .OrderBy(s => s.Address)
         .ToList();
     var cppFailureCount = 0;
-    var emitCpp = HasFlag(argsTail, "--emit-cpp");
+    var emitCpp = enabledFlags.Contains("--emit-cpp");
     var maxThreads = OptionValue(argsTail, "--threads") is { } threadsText
         ? Math.Max(1, ParseInt(threadsText))
         : Math.Max(1, Environment.ProcessorCount);
@@ -3788,7 +3782,7 @@ static string[] GlobalFlagOptions() => new[] { "--prefer-cached-inputs" };
 /// command's parser would discard), null otherwise. Only inspects option-like tokens; positional
 /// addresses, paths and passthrough values are never rejected.
 /// </summary>
-static int? HandleCommandLineOptions(string command, string[] argsTail)
+static int? HandleCommandLineOptions(string command, string[] argsTail, HashSet<string> enabledFlags)
 {
     if (CommandSpec(command) is not { } spec)
     {
@@ -3820,7 +3814,12 @@ static int? HandleCommandLineOptions(string command, string[] argsTail)
             index++;
             continue;
         }
-        if (flags.Contains(token) || !token.StartsWith('-'))
+        if (flags.Contains(token))
+        {
+            enabledFlags.Add(token);
+            continue;
+        }
+        if (!token.StartsWith('-'))
         {
             continue;
         }
@@ -3970,8 +3969,6 @@ static (string? Value, string[] Remaining) ExtractOption(string[] values, string
 
     return (null, values);
 }
-
-static bool HasFlag(string[] argsTail, string name) => argsTail.Any(a => string.Equals(a, name, StringComparison.Ordinal));
 
 /// <summary>
 /// Addresses a leaf splice must never cover: the decoded bytes aren't what the runtime

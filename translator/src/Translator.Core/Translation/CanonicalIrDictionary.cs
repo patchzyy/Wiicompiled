@@ -5,6 +5,8 @@ namespace Translator.Core.Translation;
 
 /// <summary>
 /// Fixed keys over canonical SSA decoded on demand without caching bodies.
+/// Keys, Count and ContainsKey describe the address snapshot. Enumeration requires
+/// the provider to retain every body in that snapshot for the duration of the read.
 /// Concurrent readers require a thread-safe provider, such as CanonicalIrStore.
 /// </summary>
 public sealed class CanonicalIrDictionary : IReadOnlyDictionary<uint, IrFunction>

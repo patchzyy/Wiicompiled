@@ -45,6 +45,10 @@ public:
         std::unique_lock lock{m_mutex};
         return m_cv.wait_for(lock, std::chrono::seconds{2}, [&] { return m_entered; });
     }
+    bool WaitOpened() {
+        std::unique_lock lock{m_mutex};
+        return m_cv.wait_for(lock, std::chrono::seconds{2}, [&] { return m_open; });
+    }
     void Open() {
         std::lock_guard lock{m_mutex};
         m_open = true;
@@ -87,7 +91,7 @@ TEST_F(GxWorkerTest, DoesNotNotifyBeforeTheRequestedTail) {
     }
     GxWorker::Submit([&] { last.Block(); });
     std::thread release{[&] {
-        EXPECT_TRUE(WaitUntil([] { return GxWorker::g_waitTarget.load() != GxWorker::kNotWaiting; }));
+        EXPECT_TRUE(WaitUntil([] { return GxWorker::g_testWaits.load() != 0; }));
         first.Open();
         EXPECT_TRUE(last.WaitEntered());
         EXPECT_EQ(GxWorker::g_testNotifications.load(), 0u);
@@ -127,7 +131,14 @@ TEST_F(GxWorkerTest, ServicesCallbacksAndDrainsTheirNestedSyncAndNewWork) {
         }
     };
     GxWorker::SetWaitCallback(ServiceWait);
+    std::thread watchdog{[&] {
+        if (!gate.WaitOpened()) {
+            ADD_FAILURE() << "The wait callback did not release the worker gate";
+            gate.Open();
+        }
+    }};
     GxWorker::Sync();
+    watchdog.join();
     EXPECT_GE(callbacks, 1u);
     EXPECT_EQ(completed, 2u);
     EXPECT_EQ(GxWorker::g_waitTarget.load(), GxWorker::kNotWaiting);
@@ -235,6 +246,7 @@ TEST(GxWorkerDeathTest, AbandonDoesNotExecuteTheFollowingRecord) {
 #endif
 
 TEST_F(GxWorkerTest, DISABLED_WakeBenchmark) {
+    constexpr uint32_t recordsPerBatch = 20000;
     std::array<std::vector<int64_t>, 2> times;
     std::array<uint64_t, 2> notifications{};
     std::array<uint64_t, 2> waits{};
@@ -248,20 +260,27 @@ TEST_F(GxWorkerTest, DISABLED_WakeBenchmark) {
             Gate gate;
             const auto start = std::chrono::steady_clock::now();
             GxWorker::Submit([&] { gate.Block(); });
-            for (uint32_t i = 0; i < 20000; ++i) {
+            for (uint32_t i = 1; i < recordsPerBatch; ++i) {
                 GxWorker::Submit([&] { ++completed; });
             }
+            GxWorker::Submit([&] {
+                ++completed;
+                GxWorker::g_testAcknowledgeRecord = true;
+            });
             std::thread release{[&] {
-                EXPECT_TRUE(WaitUntil([] { return GxWorker::g_waitTarget.load() != GxWorker::kNotWaiting; }));
+                EXPECT_TRUE(WaitUntil([] { return GxWorker::g_testWaits.load() != 0; }));
                 gate.Open();
             }};
             GxWorker::Sync();
+            const auto end = std::chrono::steady_clock::now();
             release.join();
-            times[mode].push_back(std::chrono::duration_cast<std::chrono::microseconds>(
-                                      std::chrono::steady_clock::now() - start).count());
+            times[mode].push_back(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
+
+            // The worker accounts for notifications after publishing the tail.
+            ASSERT_TRUE(WaitUntil([] { return GxWorker::g_testAccountedTail.load() == GxWorker::g_write; }));
             notifications[mode] += GxWorker::g_testNotifications.load();
             waits[mode] += GxWorker::g_testWaits.load();
-            EXPECT_EQ(completed, 20000u);
+            EXPECT_EQ(completed, recordsPerBatch);
         }
     }
     for (uint32_t mode = 0; mode < 2; ++mode) {

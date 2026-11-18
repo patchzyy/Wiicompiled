@@ -9,13 +9,17 @@ extern "C" const uint8_t kMkwGuestRegion = 0;
 namespace TextureBindingTest {
 std::array<uint8_t, 4 * 1024 * 1024> memory{};
 uint32_t unreadableObject = 0;
+uint32_t unreadableObjectAccesses = 0;
 uint64_t rangeChecks = 0;
 std::vector<std::pair<uint32_t, uint32_t>> retiredRanges;
 
 uint8_t* Pointer(uint32_t address, size_t length) {
     const uint32_t offset = CanonicalizeGxMainRamAddress(address);
-    if ((unreadableObject != 0 && offset >= unreadableObject && offset < unreadableObject + 32) ||
-        offset > memory.size() || length > memory.size() - offset) {
+    if (unreadableObject != 0 && offset >= unreadableObject && offset < unreadableObject + 32) {
+        ++unreadableObjectAccesses;
+        throw Memory::AccessViolation(address, length, "test unmapped range");
+    }
+    if (offset > memory.size() || length > memory.size() - offset) {
         throw Memory::AccessViolation(address, length, "test unmapped range");
     }
     return memory.data() + offset;

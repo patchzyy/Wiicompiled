@@ -511,14 +511,14 @@ bool ShadowEquals(const uint64_t (&a)[4], const uint64_t (&b)[4]) noexcept {
     return a[0] == b[0] && a[1] == b[1] && a[2] == b[2] && a[3] == b[3];
 }
 
+} // namespace
+
 // Captures the current guest bytes as the slot's shadow so the cache is marked in sync. HLE
 // GXInitTexObj* callers fetch the meta reference before rewriting guest memory, so their capture
 // is intentionally stale; the next lookup just re-decodes once, which is the safe direction.
-void MarkTexObjSyncedLocked(TexObjSlot& slot) noexcept {
+void RefreshTexObjDecodeShadow(TexObjSlot& slot) noexcept {
     slot.hasGuestShadow = ReadTexObjShadow(slot.objAddr, slot.guestShadow);
 }
-
-} // namespace
 
 TexObjSlot* TryGetValidatedTexObjSlot(uint32_t addr) {
     TexObjSlot* slot = FindTexObjSlot(addr);
@@ -573,7 +573,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
                 outMeta = MergeGuestTexObjMeta(*slot, extracted);
                 return true;
             }
-            MarkTexObjSyncedLocked(*slot);
+            RefreshTexObjDecodeShadow(*slot);
             outMeta = *slot;
             return true;
         }
@@ -586,7 +586,7 @@ bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta) {
             QueueTexObjIntervalUpdate(*slot);
             slot->validatedLoad.Invalidate();
             static_cast<TexObjMeta&>(*slot) = extracted;
-            MarkTexObjSyncedLocked(*slot);
+            RefreshTexObjDecodeShadow(*slot);
             outMeta = extracted;
             return true;
         }
@@ -609,7 +609,7 @@ TexObjMeta& GetTexObjMeta(uint32_t addr) {
     TexObjSlot& slot = FindOrCreateTexObjSlot(addr);
     slot.validatedLoad.Invalidate();
     QueueTexObjIntervalUpdate(slot);
-    MarkTexObjSyncedLocked(slot);
+    RefreshTexObjDecodeShadow(slot);
     return slot;
 }
 

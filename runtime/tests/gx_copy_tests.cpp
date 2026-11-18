@@ -2,6 +2,7 @@
 #include "../src/hle/gx/gx_internal.h"
 #include "gx_sync_support/copy_observation.h"
 #include "gx/readback.hpp"
+#include "gx/texture.hpp"
 #include "__gx.h"
 
 // Exercise the wrappers without registering guest ABI entry points in the host fixture.
@@ -70,6 +71,7 @@ void Draw() noexcept { ++g_overlayDraws; }
 
 namespace {
 namespace stub = aurora::gfx::testing;
+constexpr u32 kCopyWarmupFrames = 8;
 
 class GxCopyTest : public GXFifoTest, public ::testing::WithParamInterface<bool> {
 protected:
@@ -109,6 +111,7 @@ protected:
         aurora::gx::fifo::end_frame();
         GXSetDrawDoneCallback(nullptr);
         AuroraResetCopyProbesForTesting();
+        aurora::gx::texture::shutdown();
         aurora::gfx::readback::shutdown();
         aurora::gfx::readback::set_supported(false);
         GXFifoTest::TearDown();
@@ -133,6 +136,13 @@ protected:
         GX__SetTexCopySrc_8016f478(2, 4, width, height);
         GX__SetTexCopyDst_8016f4dc(width, height, format, GX_FALSE);
         GX__CopyTex_8016fd74(address, clear);
+    }
+    void WarmCopy(u16 width, u16 height) {
+        for (u32 frame = 0; frame <= kCopyWarmupFrames; ++frame) {
+            Copy(kGuestBase, GX_FALSE, GX_TF_RGBA8, width, height);
+            Drain();
+            aurora::gx::texture::end_frame();
+        }
     }
 };
 
@@ -206,19 +216,34 @@ TEST_P(GxCopyTest, InvalidationRetiresTheQueuedCopyBeforeLaterConsumers) {
     EXPECT_EQ(g_drawDoneCallbacks.load(), 0u);
 }
 
-TEST_P(GxCopyTest, PersistentCopyPolicyAndDepthProbesSurviveWithoutTheWait) {
-    Copy(kGuestBase, GX_FALSE);
-    Drain();
-    ASSERT_EQ(stub::copyObservations.size(), 1u);
+TEST_P(GxCopyTest, LargeCopyBecomesNonpersistentAfterWarmup) {
+    WarmCopy(640, 480);
+    ASSERT_EQ(stub::copyObservations.size(), kCopyWarmupFrames + 1);
+    EXPECT_TRUE(stub::copyObservations[kCopyWarmupFrames - 1].options.persistent);
+    EXPECT_FALSE(stub::copyObservations.back().options.persistent);
+    EXPECT_EQ(g_drawDoneCallbacks.load(), 0u);
+}
+
+TEST_P(GxCopyTest, ChangingCopySizeStartsWithColdKey) {
+    WarmCopy(8, 8);
+    ASSERT_EQ(stub::copyObservations.size(), kCopyWarmupFrames + 1);
+    const auto& copies = aurora::gx::g_gxState.copyTextures;
+    const auto oldCopy = copies.find(GuestToHostPtr(kGuestBase));
+    ASSERT_NE(oldCopy, copies.end());
+    ASSERT_EQ(oldCopy->second.consecutiveFrames, kCopyWarmupFrames);
     EXPECT_TRUE(stub::copyObservations.back().options.persistent);
-    // The renderer stub retains this field, allowing the real copy policy to see a warm destination.
-    aurora::gx::g_gxState.copyTextures[GuestToHostPtr(kGuestBase)].consecutiveFrames = 8;
     Copy(kGuestBase, GX_FALSE, GX_TF_RGBA8, 640, 480);
     Drain();
-    EXPECT_FALSE(stub::copyObservations.back().options.persistent);
+    ASSERT_EQ(stub::copyObservations.size(), kCopyWarmupFrames + 2);
+    EXPECT_TRUE(stub::copyObservations.back().options.persistent);
+    EXPECT_EQ(g_drawDoneCallbacks.load(), 0u);
+}
+
+TEST_P(GxCopyTest, DepthProbeStaysNonpersistentWithoutTheWait) {
     const auto probe = kGuestBase + (GetParam() ? 2048u : 3072u);
     Copy(probe, GX_FALSE, GX_TF_Z8, 4, 4);
     Drain();
+    ASSERT_EQ(stub::copyObservations.size(), 1u);
     EXPECT_FALSE(stub::copyObservations.back().options.persistent);
     EXPECT_FALSE(stub::readbackJobs.empty());
     EXPECT_EQ(g_guestBytes[probe - kGuestBase], 0xff);

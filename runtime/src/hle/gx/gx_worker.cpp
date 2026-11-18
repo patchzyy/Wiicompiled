@@ -73,6 +73,8 @@ bool g_testEnabled = true;
 bool g_testWakeEachRecord = false;
 std::atomic<uint64_t> g_testNotifications{0};
 std::atomic<uint64_t> g_testWaits{0};
+bool g_testAcknowledgeRecord = false; // Worker only.
+std::atomic<uint64_t> g_testAccountedTail{0};
 void (*g_testBeforeTailRecheck)() = nullptr;
 #endif
 
@@ -262,6 +264,12 @@ void WorkerMain() {
 #endif
                 g_tailCv.notify_all();
             }
+#if defined(MKW_GX_WORKER_TESTING)
+            if (g_testAcknowledgeRecord) {
+                g_testAcknowledgeRecord = false;
+                g_testAccountedTail.store(tail, std::memory_order_release);
+            }
+#endif
         }
     }
 }

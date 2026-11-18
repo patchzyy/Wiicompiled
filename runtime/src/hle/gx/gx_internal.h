@@ -354,6 +354,7 @@ TexObjMeta& GetTexObjMeta(uint32_t addr);
 TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr);
 bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta);
 // Lookup and publication require g_texObjMutex; reset acquires it itself.
+void RefreshTexObjDecodeShadow(TexObjSlot& slot) noexcept;
 TexObjSlot* TryGetValidatedTexObjSlot(uint32_t addr);
 void MarkTexObjLoadValidated(uint32_t addr);
 void InvalidateTexObjLoads();
