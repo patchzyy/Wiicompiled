@@ -34,26 +34,6 @@ bool SetsOffset(const std::string& original, const char* message) {
 } // namespace
 
 int main() {
-    for (const std::string mode : {"specialized", "hybrid"}) {
-        std::istringstream input("[video]\nshader_mode = '" + mode + "'\n");
-        const auto config = RuntimeConfigFile::ParseConfig(input, "shader.toml");
-        if (!Require(config.shaderMode == mode, "valid shader mode was not loaded")) return 1;
-    }
-    for (const std::string text : {"", "video = 4\n", "[[video]]\nshader_mode = 'hybrid'\n",
-                                  "[video]\nshader_mode = true\n", "[video]\nshader_mode = 1\n",
-                                  "[video]\nshader_mode = []\n", "[video]\nshader_mode = {}\n",
-                                  "[video]\nshader_mode = 'force_generic'\n", "[video]\nshader_mode = 'HYBRID'\n",
-                                  "[video]\nshader_mode = 'hybrid'\nshader_mode = 'specialized'\n",
-                                  "[video]\nshader_mode = 'hybrid'\n[video]\n"}) {
-        std::istringstream input(text);
-        const auto config = RuntimeConfigFile::ParseConfig(input, "invalid-shader.toml");
-        if (!Require(config.shaderMode.value_or("specialized") == "specialized", "invalid shader mode did not default")) return 1;
-    }
-    {
-        const auto doc = Update("[video]\nshader_mode = 'specialized'\n", "video", "shader_mode", "'hybrid'");
-        if (!Require(doc && doc->at("video").at("shader_mode").as_string() == "hybrid", "next-start shader mode was not saved")) return 1;
-    }
-
     {
         std::istringstream input("[video]\nmetalfx_spatial_upscaling = true\n");
         const RuntimeUserConfig config = RuntimeConfigFile::ParseConfig(input, "enabled.toml");

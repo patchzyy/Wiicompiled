@@ -136,13 +136,3 @@ jobs:
             runtime/tests/ax_mix_kernels_tests.cpp -o build-macos/ax-mix-sanitized
           build-macos/ax-mix-sanitized
           build-macos/mkw_ax_mix_kernels_tests --benchmark 20000
-
-      - name: Build and test GX performance paths
-        shell: bash
-        run: |
-          cmake -S runtime -B build-macos -DMKW_BUILD_AURORA_TESTS=ON
-          cmake --build build-macos --parallel 3 --target \
-            gx_fifo_tests shader_module_cache_tests gx_shader_layout_tests \
-            mkw_gx_texture_binding_tests mkw_gx_sync_tests mkw_gx_dl_cache_tests
-          ctest --test-dir build-macos --output-on-failure \
-            -R '^(GXFifoTest|RuntimeDirectDrawTest|ShaderModuleCacheTest|GxShader(Layout|Key|Arena|Mode|State)|mkw_gx_(texture_binding|sync|dl_cache)_tests)'

@@ -1464,8 +1464,6 @@ int RuntimeMain(int argc, char** argv) {
         // aurora_initialize does.
         Wiimote::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled());
 
-        aurora_set_shader_mode(RuntimeConfigFile::ShaderMode() == "hybrid"
-                                   ? AURORA_SHADER_HYBRID : AURORA_SHADER_SPECIALIZED);
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
             throw std::runtime_error(auroraInfo.initializationError != nullptr

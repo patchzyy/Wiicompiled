@@ -47,7 +47,6 @@ struct RuntimeUserConfig {
     std::optional<std::string> displayMode;
     std::optional<uint32_t> frameInterpolationFps;
     std::optional<bool> metalFxSpatialUpscaling;
-    std::optional<std::string> shaderMode;
     std::optional<bool> skipUnreadyPipelines;
     std::optional<bool> vsync;
     std::optional<bool> gxWorker;
@@ -295,7 +294,6 @@ inline void EnsureConfigFile() {
               "frame_interpolation_fps = 0\n"
               "display_mode = \"windowed\"\n"
               "graphics_api = \"auto\"\n"
-              "shader_mode = 'specialized'\n"
               "skip_unready_pipelines = true\n"
               "vsync = false\n"
               "# Runs GX command processing on its own thread. Read once, at startup.\n"
@@ -487,10 +485,6 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     }
     config.metalFxSpatialUpscaling =
         FindConfigValue<bool>(document, "video", "metalfx_spatial_upscaling");
-    if (auto value = FindConfigValue<std::string>(document, "video", "shader_mode");
-        value && (*value == "specialized" || *value == "hybrid")) {
-        config.shaderMode = *value;
-    }
     config.skipUnreadyPipelines = FindConfigValue<bool>(document, "video", "skip_unready_pipelines");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
     config.gxWorker = FindConfigValue<bool>(document, "video", "gx_worker");
@@ -706,12 +700,6 @@ inline bool SetDisplayMode(std::string value) {
     }
     Mutable().displayMode = value;
     return WriteSetting("video", "display_mode", FormatString(value));
-}
-
-inline bool SetShaderMode(std::string value) {
-    if (value != "specialized" && value != "hybrid") return false;
-    Mutable().shaderMode = value;
-    return WriteSetting("video", "shader_mode", FormatString(value));
 }
 
 inline bool SetSkipUnreadyPipelines(bool value) {
@@ -1047,8 +1035,6 @@ inline bool SetWiiRumbleEnabled(bool value) {
 inline uint32_t FrameInterpolationFps(uint32_t fallback = 0) {
     return Get().frameInterpolationFps.value_or(fallback);
 }
-
-inline std::string ShaderMode() { return Get().shaderMode.value_or("specialized"); }
 
 // Whether to skip draws whose graphics pipeline has not finished compiling yet.
 inline bool SkipUnreadyPipelines(bool fallback = true) {
