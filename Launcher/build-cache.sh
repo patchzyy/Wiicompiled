@@ -19,13 +19,20 @@ mkw_fingerprint_tree() (
     set -o pipefail
     cd -- "$1" || exit 1
     shift
-    local args=(. -name .git -prune -o) dir record
+    local args=(. -name .git -prune -o) dir record digest
     for dir in "$@"; do args+=(-path "./$dir" -prune -o); done
-    find "${args[@]}" -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z -- |
-        while IFS= read -r -d '' record; do
-            # sha256sum -z emits the digest, two spaces, then the ./ path.
-            printf '%s %s\n' "${record:68}" "${record:0:64}"
-        done | mkw_sha256
+    find "${args[@]}" -type f -print0 | LC_ALL=C sort -z |
+        if [[ ${mkw_sha256_cmd[0]} == sha256sum ]]; then
+            xargs -0 -r sha256sum -z -- | while IFS= read -r -d '' record; do
+                # sha256sum -z emits the digest, two spaces, then the ./ path.
+                printf '%s %s\n' "${record:68}" "${record:0:64}"
+            done
+        else
+            while IFS= read -r -d '' record; do
+                digest=$(mkw_sha256 < "$record") || exit 1
+                printf '%s %s\n' "${record#./}" "$digest"
+            done
+        fi | mkw_sha256
 )
 
 # Prints "<sha>  <relative path>" for every file under each directory, relative to $1.
