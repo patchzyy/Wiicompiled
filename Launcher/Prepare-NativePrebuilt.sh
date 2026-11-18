@@ -191,9 +191,7 @@ if [[ -n "$sysroot" ]]; then
 fi
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
-# extern/ is excluded because the payload ships that tree separately (aurora-main/extern is bundled
-# whole by build-appimage.sh); build/ is a plain developer build directory.
-aurora_fingerprint=$(fingerprint_tree "$aurora_source" extern build)
+aurora_fingerprint=$("$cmake_bin" "-DAURORA_DIR=$aurora_source" -P "$runtime_source/cmake/AuroraFingerprint.cmake")
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
 # The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted.
@@ -636,8 +634,7 @@ generated_cmake="$output_dir/native_prebuilt.cmake"
 # ---------------------------------------------------------------------------
 # Provenance: the pinned toolchain is what makes a precompiled archive interchangeable with
 # locally compiled objects (bit-for-bit the compiler and flag set the user's machine will use);
-# LocalBuild.ps1's Windows equivalent re-checks both before consuming a package, and a Linux
-# consumer-side check (once local-build.sh gains --native-prebuilt-dir) should do the same.
+# local-build.sh checks the Aurora source fingerprint before accepting this package.
 # compiler_sha256/flag_fingerprint/aurora_fingerprint/third_party_fingerprint were already computed
 # above (needed before the --print-fingerprint-only early exit).
 # ---------------------------------------------------------------------------

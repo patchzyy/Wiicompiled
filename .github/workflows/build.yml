@@ -59,6 +59,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Test Linux prebuilt package selection
+        if: runner.os == 'Linux'
+        run: bash Launcher/Test-AuroraPrebuilt.sh
+
       - name: Configure without graphics dependencies or game assets
         run: >-
           cmake -S runtime -B build-platform -G Ninja
