@@ -216,8 +216,11 @@ void TestBackend(const Backend& backend) {
         for (unsigned pattern = 0; pattern < 8; ++pattern) TestAccum(backend, count, offset, pattern);
     }
     for (unsigned trial = 0; trial < 512; ++trial) {
-        TestRamps(backend, NextRandom() % 162, 1 + NextRandom() % 3,
-                  static_cast<uint16_t>(NextRandom()), static_cast<uint16_t>(NextRandom()), 1);
+        const size_t count = NextRandom() % 162;
+        const size_t offset = 1 + NextRandom() % 3;
+        const auto volume = static_cast<uint16_t>(NextRandom());
+        const auto delta = static_cast<uint16_t>(NextRandom());
+        TestRamps(backend, count, offset, volume, delta, 1);
     }
     TestRamps(backend, 65539, 1, 0xffff, 0xffff, 0);
     TestAccumEdges(backend);

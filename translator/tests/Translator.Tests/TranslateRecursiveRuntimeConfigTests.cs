@@ -64,7 +64,11 @@ public sealed class TranslateRecursiveRuntimeConfigTests
                 };
                 if (bounded) args.Add("--bounded-ir");
                 if (!emitFiles) args.Add("--no-function-files");
-                Assert.Equal(0, InvokeCli(args.ToArray()));
+                var run = InvokeCliProcess(root, args.ToArray());
+                Assert.Equal(0, run.ExitCode);
+                Assert.Contains(
+                    $"[translator] Canonical IR mode: {(bounded ? "bounded" : "buffered")}.",
+                    run.Output, StringComparison.Ordinal);
                 var sources = Directory.Exists(functions)
                     ? Directory.GetFiles(functions, "*.cpp").ToDictionary(
                         static path => Path.GetFileName(path), static path => File.ReadAllText(path))
@@ -75,24 +79,27 @@ public sealed class TranslateRecursiveRuntimeConfigTests
             var buffered = Translate("buffered", 1, bounded: false);
             Assert.Equal(2, buffered.Sources.Count);
 
-            var optionPath = new ProcessStartInfo("dotnet")
-            {
-                WorkingDirectory = root,
-                ArgumentList = { typeof(TranslationProjectConfig).Assembly.Location, "translate-recursive",
-                    $"0x{entry:X8}", "--project", projectPath, "--outdir", "--no-function-files", "--bounded-ir",
-                    "--threads", "1" }
-            };
-            using (var process = Process.Start(optionPath)!)
-            {
-                if (!process.WaitForExit(30_000))
-                {
-                    process.Kill(entireProcessTree: true);
-                    process.WaitForExit();
-                    throw new TimeoutException("Translation with an option-shaped output path timed out.");
-                }
-                Assert.Equal(0, process.ExitCode);
-                Assert.Equal(2, Directory.GetFiles(Path.Combine(root, "--no-function-files"), "*.cpp").Length);
-            }
+            var metadataCollision = InvokeCliProcess(root, "translate-recursive", "--project", projectPath,
+                $"0x{entry:X8}", "--outdir", "--output-metadata", "--bounded-ir",
+                "--output-metadata", "result.json", "--output-metadata", "ignored.json", "--threads", "0x1");
+            Assert.Equal(0, metadataCollision.ExitCode);
+            Assert.Contains("[translator] Canonical IR mode: bounded.", metadataCollision.Output, StringComparison.Ordinal);
+            Assert.Contains("[translator] Using up to 1 worker thread(s).", metadataCollision.Output, StringComparison.Ordinal);
+            Assert.Equal(2, BaseTranslationOutputMetadataFile.Read(Path.Combine(root, "result.json")).Functions.Count);
+            Assert.Equal(2, Directory.GetFiles(Path.Combine(root, "--output-metadata"), "*.cpp").Length);
+            Assert.False(File.Exists(Path.Combine(root, "ignored.json")));
+            Assert.False(File.Exists(Path.Combine(root, "--bounded-ir")));
+
+            var flagOperands = InvokeCliProcess(root, "translate-recursive", $"0x{entry:X8}",
+                "--outdir", "--bounded-ir", "--output-metadata", "--project",
+                "--production-source-bundle", "--no-function-files", "--threads", "-1", "--project", projectPath);
+            Assert.Equal(0, flagOperands.ExitCode);
+            Assert.Contains("[translator] Canonical IR mode: buffered.", flagOperands.Output, StringComparison.Ordinal);
+            Assert.Contains("[translator] Using up to 1 worker thread(s).", flagOperands.Output, StringComparison.Ordinal);
+            Assert.Equal(2, Directory.GetFiles(Path.Combine(root, "--bounded-ir"), "*.cpp").Length);
+            Assert.Equal(2, BaseTranslationOutputMetadataFile.Read(Path.Combine(root, "--project")).Functions.Count);
+            Assert.True(File.Exists(Path.Combine(root, "--no-function-files")));
+
             foreach (var threads in new[] { 1, 3 })
             {
                 var lazy = Translate($"lazy-{threads}", threads, bounded: true);
@@ -111,6 +118,19 @@ public sealed class TranslateRecursiveRuntimeConfigTests
         {
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
+    }
+
+    [Theory]
+    [InlineData("--unknown", "--help")]
+    [InlineData("--unknown", "-h")]
+    [InlineData("--outdir", "-?")]
+    public void CommandHelpTakesPrecedenceOverOtherArguments(string option, string help)
+    {
+        var run = InvokeCliProcess(Path.GetTempPath(), "translate-recursive", option, help);
+        Assert.Equal(0, run.ExitCode);
+        Assert.Contains("translator translate-recursive <start_addr>", run.Output, StringComparison.Ordinal);
+        Assert.Contains("[--bounded-ir]", run.Output, StringComparison.Ordinal);
+        Assert.Empty(run.Error);
     }
 
     [Fact]
@@ -290,6 +310,29 @@ public sealed class TranslateRecursiveRuntimeConfigTests
                 Directory.Delete(root, recursive: true);
             }
         }
+    }
+
+    private static (int ExitCode, string Output, string Error) InvokeCliProcess(string workingDirectory, params string[] args)
+    {
+        var startInfo = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = workingDirectory,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            ArgumentList = { typeof(TranslationProjectConfig).Assembly.Location }
+        };
+        foreach (var arg in args) startInfo.ArgumentList.Add(arg);
+
+        using var process = Process.Start(startInfo)!;
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(30_000))
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit();
+            throw new TimeoutException("Translator subprocess timed out.");
+        }
+        return (process.ExitCode, output.GetAwaiter().GetResult(), error.GetAwaiter().GetResult());
     }
 
     private static int InvokeCli(params string[] args)

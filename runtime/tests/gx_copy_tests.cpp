@@ -53,7 +53,7 @@ void* GuestToHostPtr(uint32_t address, size_t length) {
         length > g_guestBytes.size() - (canonical - base)) {
         return nullptr;
     }
-    return g_guestBytes.data() + canonical - base;
+    return g_guestBytes.data() + (canonical - base);
 }
 void EnsureAuroraFrameActive() {}
 void VI_HLE_SetXfbReady(uint32_t address) { g_readyXfb = address; }
@@ -257,7 +257,8 @@ TEST_P(GxCopyTest, DisplayCopyRetainsPresentationAndInlineRenderWorkerJoin) {
         GXSetDispCopyDst(640, 480);
     });
     GX__CopyDisp_8016fc38(kGuestBase, GX_TRUE);
-    EXPECT_EQ(stub::copyObservations.size(), 1u);
+    ASSERT_EQ(stub::copyObservations.size(), 1u);
+    EXPECT_EQ(stub::copyObservations.front().draws, 1u);
     EXPECT_EQ(g_readyXfb, kGuestBase);
     EXPECT_EQ(g_presents, 1u);
     EXPECT_EQ(g_overlayDraws, 1u);

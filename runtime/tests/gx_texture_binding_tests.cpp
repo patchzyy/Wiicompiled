@@ -144,6 +144,10 @@ TEST_F(RuntimeTextureBindingTest, EverySnapshotByteParticipatesInValidation) {
     Warm();
     const auto original = CaptureTexObjBytes(kObject);
     for (uint32_t offset = 0; offset < original.size(); ++offset) {
+        {
+            TexObjSnapshotScope before(kObject, original);
+            ASSERT_NE(TryGetValidatedTexObjSlot(kObject), nullptr) << offset;
+        }
         const uint8_t changed = original[offset] ^ 0x80;
         Memory::Write8(kObject + offset, changed);
         const auto snapshot = CaptureTexObjBytes(kObject);
@@ -357,10 +361,18 @@ TEST_F(RuntimeTextureBindingTest, PaletteFormatsAlwaysKeepFullPathAcrossTlutChan
 
 TEST_F(RuntimeTextureBindingTest, InvalidationAndCopyEvictionPreserveMetadataValidation) {
     Init();
-    Warm();
+    Load();
+    EnsureTexObjIntervalsLocked();
+    auto bind = capture_fifo();
+    ASSERT_FALSE(bind.empty());
+    decode_fifo(bind);
+    ASSERT_EQ(gxState().loadedTextures[0].data, GuestToHostPtr(kPixels));
     GX__InvalidateTexAll_80171110();
+    auto invalidate = capture_fifo();
+    ASSERT_FALSE(invalidate.empty());
+    decode_fifo(invalidate);
     ExpectFast();
-    EXPECT_FALSE(capture_fifo().empty());
+    EXPECT_TRUE(capture_fifo().empty());
     void* copyDest = GuestToHostPtr(kPixels);
     ASSERT_NE(copyDest, nullptr);
     gxState().copyTextures[copyDest] = {.revision = 1};
@@ -427,14 +439,31 @@ TEST_F(RuntimeTextureBindingTest, InvalidMapDoesNotCaptureOrValidateDescriptor) 
 }
 
 TEST_F(RuntimeTextureBindingTest, InvalidGuestDescriptorKeepsPlaceholderFallback) {
-    WriteGuestTexObj(kObject, kPixels, 8, 8, GX_CTF_R4, GX_CLAMP, GX_CLAMP, false, false, 0);
+    Init();
     Load();
+    EnsureTexObjIntervalsLocked();
+    decode_fifo(capture_fifo());
+    auto& loaded = gxState().loadedTextures[0];
+    ASSERT_EQ(loaded.data, GuestToHostPtr(kPixels));
+    const auto validId = loaded.texObjId;
+
+    WriteGuestTexObj(kOtherObject, kOtherPixels, 8, 8, GX_CTF_R4, GX_CLAMP, GX_CLAMP, false, false, 0);
+    Load(kOtherObject);
     auto bytes = capture_fifo();
     ASSERT_FALSE(bytes.empty());
+    decode_fifo(bytes);
+    EXPECT_EQ(loaded.width(), 1u);
+    EXPECT_EQ(loaded.height(), 1u);
+    EXPECT_NE(loaded.texObjId, validId);
     EXPECT_EQ(g_boundTexMaps[0].objAddr, 0u);
-    Init();
-    Warm();
+
+    EnsureTexObjIntervalsLocked();
     ExpectFast();
+    bytes = capture_fifo();
+    ASSERT_FALSE(bytes.empty());
+    decode_fifo(bytes);
+    EXPECT_EQ(loaded.texObjId, validId);
+    EXPECT_EQ(loaded.data, GuestToHostPtr(kPixels));
 }
 
 TEST_F(RuntimeTextureBindingTest, DISABLED_BenchmarkRepeatedLoads) {

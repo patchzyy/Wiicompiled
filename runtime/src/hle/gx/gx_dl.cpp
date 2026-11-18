@@ -1399,6 +1399,11 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         if (haveStateBeforeScan) {
             RestoreGxVertexState(stateBeforeScan);
         }
+        if (!GxWorker::OnWorker() && !g_auroraFrameActive.load(std::memory_order_acquire)) {
+            EnsureAuroraFrameForFifo();
+            // A frame wait may have run another display list on this thread.
+            bytes = GxDisplayListScanCache::DisplayListBytes{guestList, nbytes};
+        }
         GXMarkFrameWork();
         InvalidateAppliedAuroraState();
         ParseDisplayList(bytes.Data(), nbytes);

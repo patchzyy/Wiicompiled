@@ -104,6 +104,29 @@ TEST_F(GxWorkerTest, DoesNotNotifyBeforeTheRequestedTail) {
     EXPECT_EQ(GxWorker::g_waitTarget.load(), GxWorker::kNotWaiting);
 }
 
+TEST_F(GxWorkerTest, ReachingTargetNotifiesTheBlockedProducer) {
+    Gate gate;
+    GxWorker::Submit([&] { gate.Block(); });
+    GxWorker::Publish();
+    if (!gate.WaitEntered()) {
+        gate.Open();
+        GxWorker::Sync();
+        FAIL() << "The worker did not enter the gate";
+    }
+    std::unique_lock lock{GxWorker::g_tailMutex};
+    GxWorker::g_waitTarget.store(GxWorker::g_write);
+    gate.Open();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (GxWorker::g_testNotifications.load() == 0) {
+        if (GxWorker::g_tailCv.wait_until(lock, deadline) == std::cv_status::timeout) {
+            ADD_FAILURE() << "The worker did not signal the target";
+            break;
+        }
+    }
+    EXPECT_EQ(GxWorker::g_tail.load(), GxWorker::g_write);
+    GxWorker::g_waitTarget.store(GxWorker::kNotWaiting);
+}
+
 TEST_F(GxWorkerTest, RechecksCompletionAfterPublishingTheWaitTarget) {
     Gate gate;
     GxWorker::Submit([&] { gate.Block(); });
@@ -118,16 +141,19 @@ TEST_F(GxWorkerTest, RechecksCompletionAfterPublishingTheWaitTarget) {
     EXPECT_EQ(GxWorker::g_waitTarget.load(), GxWorker::kNotWaiting);
 }
 
-TEST_F(GxWorkerTest, ServicesCallbacksAndDrainsTheirNestedSyncAndNewWork) {
+void CheckWorkSubmittedByCallback(bool syncInsideCallback) {
     Gate gate;
     uint32_t callbacks = 0;
-    uint32_t completed = 0;
+    std::atomic_uint32_t completed{0};
     GxWorker::Submit([&] { gate.Block(); ++completed; });
     g_service = [&] {
         if (++callbacks == 1) {
             GxWorker::Submit([&] { ++completed; });
             gate.Open();
-            GxWorker::Sync();
+            if (syncInsideCallback) {
+                GxWorker::Sync();
+                EXPECT_EQ(completed.load(), 2u);
+            }
         }
     };
     GxWorker::SetWaitCallback(ServiceWait);
@@ -140,8 +166,19 @@ TEST_F(GxWorkerTest, ServicesCallbacksAndDrainsTheirNestedSyncAndNewWork) {
     GxWorker::Sync();
     watchdog.join();
     EXPECT_GE(callbacks, 1u);
-    EXPECT_EQ(completed, 2u);
+    EXPECT_EQ(completed.load(), 2u);
+    GxWorker::SetWaitCallback(nullptr);
+    GxWorker::Publish();
+    GxWorker::Sync();
     EXPECT_EQ(GxWorker::g_waitTarget.load(), GxWorker::kNotWaiting);
+}
+
+TEST_F(GxWorkerTest, NestedSyncDrainsWorkBeforeReturningToCallback) {
+    CheckWorkSubmittedByCallback(true);
+}
+
+TEST_F(GxWorkerTest, OuterSyncDrainsWorkSubmittedByCallback) {
+    CheckWorkSubmittedByCallback(false);
 }
 
 TEST_F(GxWorkerTest, RingBackpressureAndWrapPreserveOrderWithoutServicingGuestCallbacks) {
@@ -218,6 +255,12 @@ TEST_F(GxWorkerTest, ThrowingCommandsStillCompleteTheirRecordAndReleaseTheirPayl
 TEST(GxWorkerDeathTest, AbandonWakesTheIdleConsumerAndSignalsExit) {
     ASSERT_EXIT({
         GxWorker::Start();
+        if (!WaitUntil([] { return GxWorker::g_consumerWaiting.load(); })) {
+            std::_Exit(2);
+        }
+        {
+            std::lock_guard lock{GxWorker::g_headMutex};
+        }
         GxWorker::Abandon();
         std::_Exit(!GxWorker::Active() && GxWorker::g_thread == nullptr && GxWorker::g_exited.load() ? 0 : 1);
     }, ::testing::ExitedWithCode(0), "");

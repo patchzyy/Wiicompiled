@@ -54,7 +54,11 @@ protected:
         for (; pos + width <= bytes.size(); pos += width) {
             const u32 value = width == 4 ? BigEndian::Read32(bytes.data() + pos)
                 : width == 2 ? BigEndian::Read16(bytes.data() + pos) : bytes[pos];
+            const auto remaining = g_hleGxState.fifoDirectBytesRemaining;
             HleFifoWrite(value, width);
+            if (pos == 0 && remaining >= width) {
+                EXPECT_EQ(g_hleGxState.fifoDirectBytesRemaining, remaining - width);
+            }
         }
         for (; pos < bytes.size(); ++pos) {
             HleFifoWrite(bytes[pos], 1);
@@ -89,6 +93,7 @@ TEST_F(RuntimeDirectDrawTest, DirectNumericPayloadMatchesIncrementalForEveryWrit
                 ASSERT_EQ(g_hleGxState.fifoDirectBytesRemaining, payload.size());
                 write(payload, width);
                 EXPECT_EQ(capture_fifo(), reference) << "type=" << type << " count=" << cnt << " width=" << width;
+                EXPECT_EQ(g_hleGxState.fifoDirectBytesRemaining, 0u);
                 EXPECT_FALSE(g_hleGxState.inBegin);
                 EXPECT_EQ(g_hleGxState.vertsRemaining, 0u);
             }

@@ -1,12 +1,13 @@
 using System.Collections;
+using System.Diagnostics.CodeAnalysis;
 using Translator.Core.Ir;
 
 namespace Translator.Core.Translation;
 
 /// <summary>
 /// Fixed keys over canonical SSA decoded on demand without caching bodies.
-/// Keys, Count and ContainsKey describe the address snapshot. Enumeration requires
-/// the provider to retain every body in that snapshot for the duration of the read.
+/// The provider must supply a body for every address in the snapshot for as long
+/// as the dictionary is used.
 /// Concurrent readers require a thread-safe provider, such as CanonicalIrStore.
 /// </summary>
 public sealed class CanonicalIrDictionary : IReadOnlyDictionary<uint, IrFunction>
@@ -39,15 +40,21 @@ public sealed class CanonicalIrDictionary : IReadOnlyDictionary<uint, IrFunction
 
     public IrFunction this[uint key] => TryGetValue(key, out var value)
         ? value
-        : throw new KeyNotFoundException($"Missing canonical SSA for 0x{key:X8}.");
+        : throw new KeyNotFoundException($"Address 0x{key:X8} is outside the canonical SSA snapshot.");
 
     public bool ContainsKey(uint key) => _membership.Contains(key);
 
-    public bool TryGetValue(uint key, out IrFunction value)
+    public bool TryGetValue(uint key, [MaybeNullWhen(false)] out IrFunction value)
     {
-        if (_membership.Contains(key) && _provider.TryGet(key, out value)) return true;
-        value = null!;
-        return false;
+        if (!_membership.Contains(key))
+        {
+            value = null;
+            return false;
+        }
+
+        if (!_provider.TryGet(key, out value))
+            throw new InvalidOperationException($"Missing canonical SSA for snapshot address 0x{key:X8}.");
+        return true;
     }
 
     public IEnumerator<KeyValuePair<uint, IrFunction>> GetEnumerator()

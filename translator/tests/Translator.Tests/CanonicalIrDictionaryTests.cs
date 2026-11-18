@@ -51,7 +51,7 @@ public sealed class CanonicalIrDictionaryTests
     }
 
     [Fact]
-    public void MissingAndReplacedBodiesDoNotChangeMembershipOrLeaveCachedValues()
+    public void ReplacedBodiesAreReadAndMissingSnapshotBodiesViolateTheInvariant()
     {
         var store = new CanonicalIrStore();
         store.Put(10, Function("original", new IrReturn(null)));
@@ -61,14 +61,14 @@ public sealed class CanonicalIrDictionaryTests
         Assert.Equal("replacement", view[10].Name);
         store.Remove(10);
 
-        Assert.Single(view.Keys);
         Assert.True(view.ContainsKey(10));
         Assert.Equal(new uint[] { 10 }, view.Keys);
-        Assert.False(view.TryGetValue(10, out var missing));
-        Assert.Null(missing);
-        Assert.Throws<KeyNotFoundException>(() => view[10]);
-        Assert.Throws<KeyNotFoundException>(() => view.Values.ToArray());
-        Assert.Throws<KeyNotFoundException>(() => view.ToArray());
+        Assert.Equal(view.Keys.Count(), view.Count);
+        var error = Assert.Throws<InvalidOperationException>(() => view.TryGetValue(10, out _));
+        Assert.Contains("0x0000000A", error.Message, StringComparison.Ordinal);
+        Assert.Throws<InvalidOperationException>(() => view[10]);
+        Assert.Throws<InvalidOperationException>(() => view.Values.ToArray());
+        Assert.Throws<InvalidOperationException>(() => view.ToArray());
     }
 
     [Fact]
@@ -177,10 +177,11 @@ public sealed class CanonicalIrDictionaryTests
     }
 
     [Fact]
-    public void DefaultAnalysisResolvesEachBodyOnceAndLazyAnalysisResolvesEachPass()
+    public void LocalContractsSaveOneLazyBodyReadWithoutChangingTheResult()
     {
         var store = new CanonicalIrStore();
-        store.Put(10, Function("leaf", new IrReturn(null)));
+        var body = Function("leaf", new IrReturn(null));
+        store.Put(10, body);
         var provider = new CountingProvider(store);
         var view = new CanonicalIrDictionary(provider, new uint[] { 10 });
 
@@ -189,6 +190,29 @@ public sealed class CanonicalIrDictionaryTests
         var lazy = GuestAbiInterproceduralAnalyzer.Analyze(view, retainBodies: false, maxDegreeOfParallelism: 1);
         Assert.Equal(4, provider.Reads);
         Assert.Equal(JsonSerializer.Serialize(buffered), JsonSerializer.Serialize(lazy));
+
+        var localContracts = new Dictionary<uint, GuestAbiContract> { [10] = GuestAbiContractAnalyzer.Analyze(body) };
+        var seeded = GuestAbiInterproceduralAnalyzer.Analyze(view, retainBodies: false,
+            maxDegreeOfParallelism: 1, localContracts: localContracts);
+        Assert.Equal(6, provider.Reads);
+        Assert.Equal(JsonSerializer.Serialize(lazy), JsonSerializer.Serialize(seeded));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LocalContractsMustMatchFunctionAddressesBeforeDecoding(bool includeUnrelatedAddress)
+    {
+        var provider = new CountingProvider(new CanonicalIrStore());
+        var view = new CanonicalIrDictionary(provider, new uint[] { 10 });
+        var localContracts = new Dictionary<uint, GuestAbiContract>();
+        if (includeUnrelatedAddress)
+            localContracts[20] = GuestAbiContractAnalyzer.Analyze(Function("other", new IrReturn(null)));
+
+        var error = Assert.Throws<ArgumentException>(() => GuestAbiInterproceduralAnalyzer.Analyze(
+            view, retainBodies: false, maxDegreeOfParallelism: 1, localContracts: localContracts));
+        Assert.Equal("localContracts", error.ParamName);
+        Assert.Equal(0, provider.Reads);
     }
 
     [Fact]
@@ -212,7 +236,9 @@ public sealed class CanonicalIrDictionaryTests
         foreach (var pair in functions) store.Put(pair.Key, pair.Value);
         var buffered = GuestAbiInterproceduralAnalyzer.Analyze(functions);
         var lazy = GuestAbiInterproceduralAnalyzer.Analyze(new CanonicalIrDictionary(store, functions.Keys),
-            retainBodies: false, maxDegreeOfParallelism: 2);
+            retainBodies: false, maxDegreeOfParallelism: 2,
+            localContracts: functions.ToDictionary(static pair => pair.Key,
+                static pair => GuestAbiContractAnalyzer.Analyze(pair.Value)));
 
         Assert.Equal(JsonSerializer.Serialize(buffered), JsonSerializer.Serialize(lazy));
         Assert.DoesNotContain(thunk, lazy.Contracts[0x80001000].DirectCallTargets);

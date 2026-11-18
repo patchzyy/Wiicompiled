@@ -16,11 +16,16 @@ public sealed record GuestAbiInterproceduralResult(
 /// </summary>
 public static class GuestAbiInterproceduralAnalyzer
 {
+    /// <remarks>
+    /// If supplied, <paramref name="localContracts"/> must come from the same bodies analyzed
+    /// without callee contracts and cover exactly the supplied function addresses.
+    /// </remarks>
     public static GuestAbiInterproceduralResult Analyze(
         IReadOnlyDictionary<uint, IrFunction> functions,
         IReadOnlyDictionary<uint, GuestAbiContract>? externalContracts = null,
         bool retainBodies = true,
-        int? maxDegreeOfParallelism = null)
+        int? maxDegreeOfParallelism = null,
+        IReadOnlyDictionary<uint, GuestAbiContract>? localContracts = null)
     {
         externalContracts ??= new Dictionary<uint, GuestAbiContract>();
         var addresses = functions.Keys.OrderBy(static address => address).ToArray();
@@ -33,6 +38,21 @@ public static class GuestAbiInterproceduralAnalyzer
             MaxDegreeOfParallelism = maxDegreeOfParallelism ?? Environment.ProcessorCount
         };
 
+        // Mirror of `contracts` keyed by ordinal.  The fixpoint compares against
+        // it from the parallel phase, where the dictionary must stay untouched.
+        var current = new GuestAbiContract[addresses.Length];
+        if (localContracts is not null)
+        {
+            if (localContracts.Count != addresses.Length)
+                throw new ArgumentException("Local contracts must match the function addresses.", nameof(localContracts));
+            for (var index = 0; index < addresses.Length; ++index)
+            {
+                if (!localContracts.TryGetValue(addresses[index], out var contract))
+                    throw new ArgumentException($"Missing local contract for 0x{addresses[index]:X8}.", nameof(localContracts));
+                current[index] = contract;
+            }
+        }
+
         // Lazy callers must supply stable bodies and support concurrent reads.
         var bodies = retainBodies ? new IrFunction[addresses.Length] : null;
         if (bodies is not null)
@@ -41,14 +61,14 @@ public static class GuestAbiInterproceduralAnalyzer
         }
         IrFunction Body(int index) => bodies is not null ? bodies[index] : functions[addresses[index]];
 
-        // Mirror of `contracts` keyed by ordinal.  The fixpoint compares against
-        // it from the parallel phase, where the dictionary must stay untouched.
-        var current = new GuestAbiContract[addresses.Length];
-        Parallel.For(
-            0,
-            addresses.Length,
-            parallelOptions,
-            index => current[index] = GuestAbiContractAnalyzer.Analyze(Body(index)));
+        if (localContracts is null)
+        {
+            Parallel.For(
+                0,
+                addresses.Length,
+                parallelOptions,
+                index => current[index] = GuestAbiContractAnalyzer.Analyze(Body(index)));
+        }
 
         var contracts = new Dictionary<uint, GuestAbiContract>(addresses.Length);
         for (var index = 0; index < addresses.Length; ++index) contracts.Add(addresses[index], current[index]);
