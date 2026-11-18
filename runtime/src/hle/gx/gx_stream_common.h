@@ -36,6 +36,9 @@ constexpr uint8_t GX_DRAW_POINTS_CMD         = 0xB8;
 
 namespace GxStream {
 
+// Called after the immediate begin state has been initialized.
+void PrepareImmediateDirectDraw();
+
 // --- Big-endian scalar reads out of a command stream ---------------------
 
 inline uint16_t ReadBE16(const uint8_t* ptr) { return BigEndian::Read16(ptr); }

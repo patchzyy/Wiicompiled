@@ -123,8 +123,20 @@ jobs:
             mkw_macos_context_abi_tests \
             mkw_macos_host_context_tests \
             mkw_macos_guest_flat_memory_tests \
-            mkw_macos_external_audio_tests
+            mkw_macos_external_audio_tests \
+            mkw_ax_mix_kernels_tests
 
       - name: Test execution substrate
         shell: bash
         run: ctest --test-dir build-macos --output-on-failure
+
+      - name: Check ARM audio kernels with sanitizers
+        shell: bash
+        run: |
+          clang++ -std=c++17 -O2 -fno-fast-math \
+            -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -DMKW_AX_MIX_REQUIRE_NEON=1 \
+            -Iruntime/include -Iruntime/src/hle/audio \
+            runtime/tests/ax_mix_kernels_tests.cpp -o build-macos/ax-mix-sanitized
+          build-macos/ax-mix-sanitized
+          build-macos/mkw_ax_mix_kernels_tests --benchmark 20000

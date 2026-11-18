@@ -165,19 +165,13 @@ PPC_NATIVE_OVERRIDE_VOID(8016fc24, GX__SetDispCopyGamma_8016fc24, (uint32_t g), 
 extern "C" void GX__CopyDisp_8016fc38(uint32_t da, uint32_t c) {
     EnsureAuroraFrameActive();
     if (GxWorker::ShouldDefer()) {
-        // The worker drains like the inline path; EndAuroraFrame joins it before the next frame.
+        // The copy is ordered with draws in Aurora's FIFO; frame end drains it.
         GxWorker::Submit([da, c] {
-            GXDrawDone();
             GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
         });
     } else {
-        // GX copies are FIFO-ordered on hardware. Drain submitted draws before
-        // resolving the EFB so high-level copies see the same contents.
-        GXDrawDone();
         GXCopyDisp(GuestToHostPtr(da), (GXBool)c);
-        // Present immediately so post-copy draws don't leak into this frame. Join at the DONE phase
-        // (not the cheaper SEALED phase GXDrawDone waits for) because ImGui's draw lists, owned by
-        // Aurora's render worker, replay during encode; aurora_end_frame would join here anyway.
+        // ImGui draw lists remain owned by the render worker until encoding completes.
         aurora_wait_for_frame_worker();
     }
     ++g_gxFrameCount;
@@ -195,8 +189,8 @@ extern "C" void GX__CopyTex_8016fd74(uint32_t da, uint32_t c) {
     // Begin the frame before going inline so a deferred begin reaches the worker first.
     EnsureAuroraFrameActive();
     GX_SYNC_INLINE();
-    // Match GX FIFO ordering: texture copies observe all prior draws.
-    GXDrawDone();
+    // Flush dirty state without inserting a completion token before the ordered copy.
+    GXFlush();
     const uint16_t rawSrcLeft = g_texCopyState.srcLeft;
     const uint16_t rawSrcTop = g_texCopyState.srcTop;
     const uint16_t rawSrcWidth = g_texCopyState.srcWidth;

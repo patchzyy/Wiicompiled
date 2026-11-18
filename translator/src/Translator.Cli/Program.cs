@@ -37,8 +37,10 @@ CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 
 var command = args.Length > 0 ? args[0] : "info";
-var (projectOption, tailWithoutProject) = ExtractOption(args.Skip(1).ToArray(), "--project");
-var (profileOption, tail) = ExtractOption(tailWithoutProject, "--profile");
+var (optionValues, enabledFlags, firstCommandArgument, helpRequested, unrecognizedOption) =
+    ParseCommandLineOptions(command, args);
+var projectOption = optionValues.GetValueOrDefault("--project");
+var profileOption = optionValues.GetValueOrDefault("--profile");
 var project = !string.IsNullOrWhiteSpace(projectOption)
     ? TranslationProjectConfig.Load(projectOption)
     : null;
@@ -59,7 +61,15 @@ if (functionMap is not null)
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
 }
 var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
-var preferCachedInputs = HasFlag(tail, "--prefer-cached-inputs");
+if (helpRequested)
+    return ShowCommandHelp(command);
+if (unrecognizedOption is not null)
+{
+    Console.Error.WriteLine($"Unrecognized option '{unrecognizedOption}' for command '{command}'.");
+    WriteUsage(Console.Error, new[] { command });
+    return 2;
+}
+var preferCachedInputs = enabledFlags.Contains("--prefer-cached-inputs");
 var dolFile = new Lazy<DolFile>(LoadDol);
 var relFile = new Lazy<RelFile?>(LoadRel);
 var image = new Lazy<ProgramImage>(LoadImage);
@@ -156,27 +166,18 @@ var _executableRangesGate = new object();
 // Argument registers checked for callback function pointers at every call site
 var argumentRegisters = new[] { "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10" };
 
-// Argument validation runs before any command can execute. `--help` used to
-// fall straight through to the command's parser, which ignored every argument
-// it did not recognise, so `emit-build-shards --help` ran the command with its
-// defaults and rewrote generated/build_shards.
-if (HandleCommandLineOptions(command, tail) is { } commandLineExitCode)
-{
-    return commandLineExitCode;
-}
-
 return command switch
 {
     "help" or "--help" or "-h" or "-?" => ShowGlobalHelp(),
     "info" or "--info" or "--version" => RunInfo(),
     "generate-data-init" => RunGenerateDataInit(),
-    "translate-recursive" => RunTranslateRecursive(tail),
-    "translate-mod" => RunTranslateMod(tail),
-    "emit-build-shards" => RunEmitBuildShards(tail),
-    "emit-native-index" => RunEmitNativeIndex(tail),
-    "emit-base-manifest" => RunEmitBaseManifest(tail),
-    "check-base-mod-awareness" => RunCheckBaseModAwareness(tail),
-    "validate-retro-wfc-payload" => RunValidateRetroWfcPayload(tail),
+    "translate-recursive" => RunTranslateRecursive(firstCommandArgument),
+    "translate-mod" => RunTranslateMod(),
+    "emit-build-shards" => RunEmitBuildShards(),
+    "emit-native-index" => RunEmitNativeIndex(),
+    "emit-base-manifest" => RunEmitBaseManifest(),
+    "check-base-mod-awareness" => RunCheckBaseModAwareness(),
+    "validate-retro-wfc-payload" => RunValidateRetroWfcPayload(),
     _ => ShowHelp(command)
 };
 
@@ -185,11 +186,11 @@ return command switch
 /// Exit 0 = yes, 3 = no, anything else = error (also treat as no). Answering wrong in the permissive
 /// direction bakes vanilla code into a modded product, so every uncertainty exits non-zero.
 /// </summary>
-int RunCheckBaseModAwareness(string[] argsTail)
+int RunCheckBaseModAwareness()
 {
-    var metadataPath = OptionValue(argsTail, "--translation-output-metadata")
+    var metadataPath = optionValues.GetValueOrDefault("--translation-output-metadata")
         ?? Path.Combine(root, "generated", "base_translation_output.json");
-    var codePul = OptionValue(argsTail, "--code-pul") ?? profile?.CodePul;
+    var codePul = optionValues.GetValueOrDefault("--code-pul") ?? profile?.CodePul;
     if (string.IsNullOrWhiteSpace(codePul))
     {
         Console.Error.WriteLine("[translator] check-base-mod-awareness needs --code-pul or a profile that has one.");
@@ -238,7 +239,7 @@ RuntimeNativeIndex ResolveRegionalNativeIndex(string nativeSourceDirectory, stri
     return index.ForRegion(GuestAddressTable.Load(tablePath), region);
 }
 
-int RunEmitBuildShards(string[] argsTail)
+int RunEmitBuildShards()
 {
     // The project decides the guest region the shards are built for.
     if (project is null)
@@ -246,13 +247,13 @@ int RunEmitBuildShards(string[] argsTail)
         Console.Error.WriteLine("emit-build-shards requires --project <path>.");
         return 1;
     }
-    var baseMetadata = OptionValue(argsTail, "--base-metadata") ?? Path.Combine(root, "generated", "base_translation_output.json");
-    var baseFunctions = OptionValue(argsTail, "--base-functions-dir") ?? Path.Combine(root, "generated", "functions");
-    var output = OptionValue(argsTail, "--out") ?? Path.Combine(root, "generated", "build_shards");
-    var nativeSources = OptionValue(argsTail, "--native-source-dir") ?? Path.Combine(root, "runtime", "src");
-    var nativeIndexOption = OptionValue(argsTail, "--native-index");
-    var resolvedProfile = OptionValue(argsTail, "--resolved-profile");
-    var retroCpp = OptionValue(argsTail, "--retro-cpp-dir");
+    var baseMetadata = optionValues.GetValueOrDefault("--base-metadata") ?? Path.Combine(root, "generated", "base_translation_output.json");
+    var baseFunctions = optionValues.GetValueOrDefault("--base-functions-dir") ?? Path.Combine(root, "generated", "functions");
+    var output = optionValues.GetValueOrDefault("--out") ?? Path.Combine(root, "generated", "build_shards");
+    var nativeSources = optionValues.GetValueOrDefault("--native-source-dir") ?? Path.Combine(root, "runtime", "src");
+    var nativeIndexOption = optionValues.GetValueOrDefault("--native-index");
+    var resolvedProfile = optionValues.GetValueOrDefault("--resolved-profile");
+    var retroCpp = optionValues.GetValueOrDefault("--retro-cpp-dir");
 
     try
     {
@@ -306,16 +307,16 @@ int RunEmitBuildShards(string[] argsTail)
     }
 }
 
-int RunEmitNativeIndex(string[] argsTail)
+int RunEmitNativeIndex()
 {
-    var output = OptionValue(argsTail, "--out");
+    var output = optionValues.GetValueOrDefault("--out");
     if (string.IsNullOrWhiteSpace(output))
     {
         Console.Error.WriteLine("[translator] emit-native-index needs --out.");
         return 1;
     }
     var nativeSourcePath = Path.GetFullPath(
-        OptionValue(argsTail, "--native-source-dir") ?? RequireProject().Runtime.NativeRegistrationRoot);
+        optionValues.GetValueOrDefault("--native-source-dir") ?? RequireProject().Runtime.NativeRegistrationRoot);
     if (!Directory.Exists(nativeSourcePath))
     {
         Console.Error.WriteLine($"[translator] native source directory not found: {nativeSourcePath}");
@@ -419,9 +420,9 @@ int RunInfo()
     return 0;
 }
 
-int RunValidateRetroWfcPayload(string[] argsTail)
+int RunValidateRetroWfcPayload()
 {
-    var directory = OptionValue(argsTail, "--directory");
+    var directory = optionValues.GetValueOrDefault("--directory");
     if (string.IsNullOrWhiteSpace(directory))
     {
         Console.Error.WriteLine("--directory is required.");
@@ -431,7 +432,7 @@ int RunValidateRetroWfcPayload(string[] argsTail)
     try
     {
         WiiCompiled.Setup.Common.RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(directory,
-            gameId: OptionValue(argsTail, "--game-id")!);
+            gameId: optionValues.GetValueOrDefault("--game-id")!);
         Console.WriteLine("[translator] Retro WFC payload signature validated.");
         return 0;
     }
@@ -447,24 +448,26 @@ int RunValidateRetroWfcPayload(string[] argsTail)
     }
 }
 
-int RunTranslateRecursive(string[] argsTail)
+int RunTranslateRecursive(string? firstCommandArgument)
 {
-    if (argsTail.Length == 0 || argsTail[0].StartsWith("--", StringComparison.Ordinal))
+    if (firstCommandArgument is null || firstCommandArgument.StartsWith("--", StringComparison.Ordinal))
     {
         Console.Error.WriteLine("Usage: translator translate-recursive <start_addr> [--outdir path] [--output-metadata path] [--threads N] [--prune-stale]");
         return 1;
     }
 
-    var startAddr = ParseAddress(argsTail[0]);
+    var startAddr = ParseAddress(firstCommandArgument);
     var allowUnsupportedInstructions = RequireProject().Translation.AllowUnsupportedInstructions;
-    var outDir = OptionValue(argsTail, "--outdir") ?? RequireProject().Output.Functions;
-    var outputMetadataPath = OptionValue(argsTail, "--output-metadata");
-    var productionSourceBundlePath = OptionValue(argsTail, "--production-source-bundle");
-    var emitFunctionFiles = !HasFlag(argsTail, "--no-function-files");
+    var outDir = optionValues.GetValueOrDefault("--outdir") ?? RequireProject().Output.Functions;
+    var outputMetadataPath = optionValues.GetValueOrDefault("--output-metadata");
+    var productionSourceBundlePath = optionValues.GetValueOrDefault("--production-source-bundle");
+    var emitFunctionFiles = !enabledFlags.Contains("--no-function-files");
+    var boundedIr = enabledFlags.Contains("--bounded-ir");
     if (!emitFunctionFiles && string.IsNullOrWhiteSpace(productionSourceBundlePath))
         throw new ArgumentException("--no-function-files requires --production-source-bundle.");
     BaseTranslationOutputMetadata? previousOutputMetadata = null;
-    if (HasFlag(argsTail, "--prune-stale") &&
+    var pruneStale = enabledFlags.Contains("--prune-stale");
+    if (pruneStale &&
         outputMetadataPath is not null &&
         File.Exists(outputMetadataPath))
     {
@@ -478,8 +481,7 @@ int RunTranslateRecursive(string[] argsTail)
                 $"[translator] Warning: existing output metadata could not be read; stale pruning will use one-time tree migration: {ex.Message}");
         }
     }
-    var pruneStale = HasFlag(argsTail, "--prune-stale");
-    var threadsOption = OptionValue(argsTail, "--threads");
+    var threadsOption = optionValues.GetValueOrDefault("--threads");
     var maxThreads = threadsOption != null ? Math.Max(1, ParseInt(threadsOption)) : Math.Max(1, Environment.ProcessorCount);
     Console.WriteLine($"[translator] Using up to {maxThreads} worker thread(s).");
 
@@ -954,14 +956,18 @@ int RunTranslateRecursive(string[] argsTail)
 
             var emissionAddresses = baseSummaries.Keys.OrderBy(address => address).ToArray();
             var localGuestAbiContracts = new Dictionary<uint, GuestAbiContract>(emissionAddresses.Length);
-            var canonicalGuestFunctions = new Dictionary<uint, IrFunction>(emissionAddresses.Length);
+            var bufferedGuestFunctions = boundedIr ? null : new Dictionary<uint, IrFunction>(emissionAddresses.Length);
+            IReadOnlyDictionary<uint, IrFunction> canonicalGuestFunctions = bufferedGuestFunctions is not null
+                ? bufferedGuestFunctions
+                : new CanonicalIrDictionary(canonicalIrStore, emissionAddresses);
+            Console.WriteLine($"[translator] Canonical IR mode: {(bufferedGuestFunctions is null ? "bounded" : "buffered")}.");
             var irInstructionCounts = new Dictionary<uint, int>(emissionAddresses.Length);
             // Each slot is an independent pure decode plus contract analysis, so
             // compute them in parallel into position-indexed arrays and fill the
             // dictionaries afterwards in the original ascending order. Dictionary
             // insertion order is preserved, so every downstream enumeration of
             // these maps is byte-for-byte the same as the serial version.
-            var canonicalByIndex = new IrFunction[emissionAddresses.Length];
+            var canonicalByIndex = boundedIr ? null : new IrFunction[emissionAddresses.Length];
             var localContractByIndex = new GuestAbiContract[emissionAddresses.Length];
             var irInstructionCountByIndex = new int[emissionAddresses.Length];
             IndexedParallel.For(emissionAddresses.Length, parallelOptions, i =>
@@ -969,14 +975,14 @@ int RunTranslateRecursive(string[] argsTail)
                 var address = emissionAddresses[i];
                 if (!canonicalIrStore.TryGet(address, out var canonicalSsa))
                     throw new InvalidOperationException($"Missing canonical SSA while building ABI contract for 0x{address:X8}.");
-                canonicalByIndex[i] = canonicalSsa;
+                if (canonicalByIndex is not null) canonicalByIndex[i] = canonicalSsa;
                 localContractByIndex[i] = GuestAbiContractAnalyzer.Analyze(canonicalSsa);
                 irInstructionCountByIndex[i] = canonicalSsa.Blocks.Sum(block => block.Instructions.Count);
             });
             for (var i = 0; i < emissionAddresses.Length; i++)
             {
                 var address = emissionAddresses[i];
-                canonicalGuestFunctions[address] = canonicalByIndex[i];
+                if (bufferedGuestFunctions is not null) bufferedGuestFunctions[address] = canonicalByIndex![i];
                 localGuestAbiContracts[address] = localContractByIndex[i];
                 irInstructionCounts[address] = irInstructionCountByIndex[i];
             }
@@ -988,7 +994,10 @@ int RunTranslateRecursive(string[] argsTail)
             // rather than retaining every descendant dependency forever.
             var interproceduralGuestAbi = GuestAbiInterproceduralAnalyzer.Analyze(
                 canonicalGuestFunctions,
-                nativeGuestEffects.Contracts);
+                nativeGuestEffects.Contracts,
+                retainBodies: !boundedIr,
+                maxDegreeOfParallelism: boundedIr ? maxThreads : null,
+                localContracts: boundedIr ? localGuestAbiContracts : null);
             var guestAbiContracts = interproceduralGuestAbi.Contracts
                 .ToDictionary(static pair => pair.Key, static pair => pair.Value);
             var recursiveComponents = interproceduralGuestAbi.StronglyConnectedComponents
@@ -1341,10 +1350,10 @@ int RunTranslateRecursive(string[] argsTail)
                     .Take(4)
                     .ToArray();
                 var variantIndex = 0;
+                var targetFunction = canonicalGuestFunctions[target];
                 foreach (var outputGroup in rankedOutputs)
                 {
                     var output = outputGroup.Key;
-                    var targetFunction = canonicalGuestFunctions[target];
                     var entryLive = GuestStateLivenessAnalyzer.Analyze(
                         targetFunction, stateFreeLivenessContracts, output).BlockLiveIn[targetFunction.EntryLabel];
                     var publicContract = guestAbiContracts[target];
@@ -1624,12 +1633,12 @@ int RunTranslateRecursive(string[] argsTail)
     return 0;
 }
 
-int RunTranslateMod(string[] argsTail)
+int RunTranslateMod()
 {
-    var outDir = OptionValue(argsTail, "--out") ?? profile?.Output;
+    var outDir = optionValues.GetValueOrDefault("--out") ?? profile?.Output;
     if (string.IsNullOrWhiteSpace(outDir))
     {
-        return RunTranslateModCore(argsTail, null);
+        return RunTranslateModCore(null);
     }
 
     var publishedOutput = Path.GetFullPath(outDir);
@@ -1641,7 +1650,7 @@ int RunTranslateMod(string[] argsTail)
     {
         var result = TransactionalDirectoryOutput.GenerateAndPublish(
             publishedOutput,
-            stagingDirectory => RunTranslateModCore(argsTail, stagingDirectory),
+            RunTranslateModCore,
             (stagingDirectory, exitCode) => PreserveTranslateModFailureDiagnostics(
                 stagingDirectory,
                 publishedOutput,
@@ -1689,7 +1698,7 @@ void PreserveTranslateModFailureDiagnostics(string stagingDirectory, string publ
     Console.Error.WriteLine($"[translator] Preserved failure diagnostics: {diagnosticsDirectory}");
 }
 
-int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
+int RunTranslateModCore(string? outputDirectoryOverride)
 {
     // Wall-clock accounting mirroring RunTranslateRecursive's LogPhase output.
     var modPhaseStart = DateTime.Now;
@@ -1701,9 +1710,9 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
         modLastPhaseSeconds = now;
     }
 
-    var codePul = OptionValue(argsTail, "--code-pul") ?? profile?.CodePul;
-    var baseManifestPath = OptionValue(argsTail, "--base-manifest");
-    var outDir = outputDirectoryOverride ?? OptionValue(argsTail, "--out") ?? profile?.Output;
+    var codePul = optionValues.GetValueOrDefault("--code-pul") ?? profile?.CodePul;
+    var baseManifestPath = optionValues.GetValueOrDefault("--base-manifest");
+    var outDir = outputDirectoryOverride ?? optionValues.GetValueOrDefault("--out") ?? profile?.Output;
     if (string.IsNullOrWhiteSpace(codePul) ||
         string.IsNullOrWhiteSpace(baseManifestPath) ||
         string.IsNullOrWhiteSpace(outDir))
@@ -1712,8 +1721,8 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
         return 1;
     }
 
-    var modRoot = OptionValue(argsTail, "--mod-root") ?? profile?.ModRoot;
-    var baseTranslationOutputMetadataPath = OptionValue(argsTail, "--base-translation-output-metadata")
+    var modRoot = optionValues.GetValueOrDefault("--mod-root") ?? profile?.ModRoot;
+    var baseTranslationOutputMetadataPath = optionValues.GetValueOrDefault("--base-translation-output-metadata")
         ?? Path.Combine(root, "generated", "base_translation_output.json");
     // The base translation bakes mod-safety decisions (leaf-inlining blocks, residency fences)
     // around the patch set it knew about; a base tree that never saw this Code.pul can splice
@@ -1768,8 +1777,8 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
             $"[translator] Warning: no base translation output metadata at {baseTranslationOutputMetadataPath}; " +
             "cannot verify the base translation is aware of this mod's patch set.");
     }
-    var skipRetroWfc = HasFlag(argsTail, "--skip-retro-wfc");
-    var explicitRetroWfcPayloadSpec = OptionValue(argsTail, "--retro-wfc-payload");
+    var skipRetroWfc = enabledFlags.Contains("--skip-retro-wfc");
+    var explicitRetroWfcPayloadSpec = optionValues.GetValueOrDefault("--retro-wfc-payload");
     var retroWfcPayloadSpec = skipRetroWfc
         ? null
         : explicitRetroWfcPayloadSpec ??
@@ -1780,19 +1789,19 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
         Console.Error.WriteLine("[translator] Retro WFC lowering is project-specific and requires a profile with enable_retro_wfc: true.");
         return 1;
     }
-    var modName = OptionValue(argsTail, "--mod-name")
+    var modName = optionValues.GetValueOrDefault("--mod-name")
         ?? (!string.IsNullOrWhiteSpace(modRoot) ? Path.GetFileName(Path.GetFullPath(modRoot)) : "Pulsar Mod");
-    var region = OptionValue(argsTail, "--region") ?? profile?.Region ?? "P";
+    var region = optionValues.GetValueOrDefault("--region") ?? profile?.Region ?? "P";
     if (project?.Identity.Region is { } projectRegion &&
         !string.Equals(region, projectRegion, StringComparison.OrdinalIgnoreCase))
     {
         Console.Error.WriteLine($"[translator] --region {region} does not match the project's region {projectRegion}.");
         return 1;
     }
-    var moduleGuestBase = OptionValue(argsTail, "--module-guest-base") is { } moduleBaseText
+    var moduleGuestBase = optionValues.GetValueOrDefault("--module-guest-base") is { } moduleBaseText
         ? ParseAddress(moduleBaseText)
         : profile?.ModuleGuestBase ?? 0x81700000u;
-    var moduleLinkBaseText = OptionValue(argsTail, "--module-link-base");
+    var moduleLinkBaseText = optionValues.GetValueOrDefault("--module-link-base");
     var moduleLinkBase = moduleLinkBaseText is not null
         ? ParseAddress(moduleLinkBaseText)
         : profile?.ModuleLinkBase ?? 0x803992E0u;
@@ -1969,8 +1978,8 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
         .OrderBy(s => s.Address)
         .ToList();
     var cppFailureCount = 0;
-    var emitCpp = HasFlag(argsTail, "--emit-cpp");
-    var maxThreads = OptionValue(argsTail, "--threads") is { } threadsText
+    var emitCpp = enabledFlags.Contains("--emit-cpp");
+    var maxThreads = optionValues.GetValueOrDefault("--threads") is { } threadsText
         ? Math.Max(1, ParseInt(threadsText))
         : Math.Max(1, Environment.ProcessorCount);
     LogModPhase("setup + patch planning");
@@ -1992,8 +2001,7 @@ int RunTranslateModCore(string[] argsTail, string? outputDirectoryOverride)
             moduleLinkBase,
             selected.CodeSize,
             nonReturningModuleCallTargets,
-            maxThreads,
-            argsTail);
+            maxThreads);
     }
 
     LogModPhase("mod C++ emission");
@@ -2342,11 +2350,7 @@ int EmitModCpp(
     uint moduleLinkBase,
     uint moduleLinkedCodeSize,
     IReadOnlySet<uint> nonReturningCallTargets,
-    int maxThreads,
-    // The translate-mod command line, so mod emission honours the same codegen
-    // policy overrides (residency, boundary narrowing) as base emission instead
-    // of quietly diverging from it.
-    string[] argsTail)
+    int maxThreads)
 {
     var modImage = BuildSyntheticModProgramImage(outDir, overlayBuild);
     var inferredAbi = new InferredGuestFunctionAbiProvider(modImage);
@@ -2880,17 +2884,17 @@ static bool RetroWfcHookSetsLinkRegister(RetroWfcExecutableHookPlan hook) =>
     hook.TypeName is "call" or "branchCtrLink" ||
     hook.Intent.Contains("Call", StringComparison.Ordinal);
 
-int RunEmitBaseManifest(string[] argsTail)
+int RunEmitBaseManifest()
 {
     var loadedProject = RequireProject();
-    var outDir = OptionValue(argsTail, "--out") ?? Path.GetDirectoryName(loadedProject.Output.BaseManifest)!;
-    var functionsDir = OptionValue(argsTail, "--functions-dir") ?? loadedProject.Output.Functions;
-    var outputMetadataPath = OptionValue(argsTail, "--translation-output-metadata");
+    var outDir = optionValues.GetValueOrDefault("--out") ?? Path.GetDirectoryName(loadedProject.Output.BaseManifest)!;
+    var functionsDir = optionValues.GetValueOrDefault("--functions-dir") ?? loadedProject.Output.Functions;
+    var outputMetadataPath = optionValues.GetValueOrDefault("--translation-output-metadata");
     var outputMetadata = outputMetadataPath is null
         ? null
         : BaseTranslationOutputMetadataFile.Read(outputMetadataPath);
     outputMetadata?.RequireReleaseEligible(outputMetadataPath!);
-    var region = OptionValue(argsTail, "--region") ?? loadedProject.Identity.Region ?? "unknown";
+    var region = optionValues.GetValueOrDefault("--region") ?? loadedProject.Identity.Region ?? "unknown";
 
     var rel = relFile.Value ?? throw new InvalidOperationException("Base mod manifest generation currently requires the project's single configured REL.");
     var relImage = rel.BuildImage(loadedProject.Inputs.Rel!.LoadAddress);
@@ -3697,6 +3701,7 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--production-source-bundle", "path"),
         new("--threads", "N"),
         new("--no-function-files"),
+        new("--bounded-ir"),
         new("--prune-stale")
     }),
     "translate-mod" => (null, new CommandOption[]
@@ -3770,60 +3775,60 @@ static string CommandUsage(string command)
     return text.ToString();
 }
 
-// Options every command tolerates. --project and --profile are consumed before
-// dispatch, so they only reach a command's tail when they were repeated.
-static string[] GlobalValueOptions() => new[] { "--project", "--profile" };
-
-static string[] GlobalFlagOptions() => new[] { "--prefer-cached-inputs" };
-
-/// <summary>
-/// Returns an exit code when the command line was fully handled here (help, or an option the
-/// command's parser would discard), null otherwise. Only inspects option-like tokens; positional
-/// addresses, paths and passthrough values are never rejected.
-/// </summary>
-static int? HandleCommandLineOptions(string command, string[] argsTail)
+static (Dictionary<string, string> Values, HashSet<string> Flags, string? FirstCommandArgument,
+    bool HelpRequested, string? UnrecognizedOption) ParseCommandLineOptions(string command, string[] args)
 {
-    if (CommandSpec(command) is not { } spec)
+    var spec = CommandSpec(command);
+    var valueNames = new HashSet<string>(StringComparer.Ordinal) { "--project", "--profile" };
+    var flagNames = new HashSet<string>(StringComparer.Ordinal) { "--prefer-cached-inputs" };
+    foreach (var option in spec?.Options ?? Array.Empty<CommandOption>())
     {
-        return null;
+        (option.Value is null ? flagNames : valueNames).Add(option.Name);
     }
 
-    if (argsTail.Any(static token =>
-            string.Equals(token, "--help", StringComparison.Ordinal) ||
-            string.Equals(token, "-h", StringComparison.Ordinal) ||
-            string.Equals(token, "-?", StringComparison.Ordinal)))
-    {
-        return ShowCommandHelp(command);
-    }
-
-    var values = new HashSet<string>(StringComparer.Ordinal);
-    values.UnionWith(spec.Options.Where(static option => option.Value is not null).Select(static option => option.Name));
-    values.UnionWith(GlobalValueOptions());
+    var values = new Dictionary<string, string>(StringComparer.Ordinal);
     var flags = new HashSet<string>(StringComparer.Ordinal);
-    flags.UnionWith(spec.Options.Where(static option => option.Value is null).Select(static option => option.Name));
-    flags.UnionWith(GlobalFlagOptions());
+    string? firstCommandArgument = null;
+    string? unrecognizedOption = null;
+    var helpRequested = false;
 
-    for (var index = 0; index < argsTail.Length; index++)
+    for (var index = 1; index < args.Length; index++)
     {
-        var token = argsTail[index];
-        if (values.Contains(token))
-        {
-            // Step over the value so an option argument that happens to look
-            // like an option of its own is never rejected.
-            index++;
-            continue;
-        }
-        if (flags.Contains(token) || !token.StartsWith('-'))
-        {
-            continue;
-        }
+        var token = args[index];
+        // The first --project and --profile pairs can precede the command's positional argument.
+        var firstGlobalValue = (token is "--project" or "--profile") && !values.ContainsKey(token);
+        if (!firstGlobalValue)
+            firstCommandArgument ??= token;
 
-        Console.Error.WriteLine($"Unrecognized option '{token}' for command '{command}'.");
-        WriteUsage(Console.Error, new[] { command });
-        return 2;
+        if (valueNames.Contains(token))
+        {
+            if (index + 1 == args.Length)
+            {
+                if (firstGlobalValue) throw new ArgumentException($"{token} requires a value.");
+                continue;
+            }
+
+            var value = args[++index];
+            values.TryAdd(token, value);
+            // Help historically takes precedence over command arguments, including value operands.
+            helpRequested |= !firstGlobalValue && IsHelpOption(value);
+            continue;
+        }
+        if (flagNames.Contains(token))
+        {
+            flags.Add(token);
+            continue;
+        }
+        if (IsHelpOption(token))
+            helpRequested = true;
+        else if (token.StartsWith('-'))
+            unrecognizedOption ??= token;
     }
 
-    return null;
+    return (values, flags, firstCommandArgument, spec is not null && helpRequested,
+        spec is not null ? unrecognizedOption : null);
+
+    static bool IsHelpOption(string token) => token is "--help" or "-h" or "-?";
 }
 
 ProgramImage LoadImage()
@@ -3933,38 +3938,6 @@ static int ParseInt(string text) =>
     text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
         ? int.Parse(text[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture)
         : int.Parse(text, CultureInfo.InvariantCulture);
-
-static string? OptionValue(string[] argsTail, string name)
-{
-    var index = Array.IndexOf(argsTail, name);
-    if (index >= 0 && index + 1 < argsTail.Length)
-    {
-        return argsTail[index + 1];
-    }
-    return null;
-}
-
-static (string? Value, string[] Remaining) ExtractOption(string[] values, string name)
-{
-    for (var index = 0; index < values.Length; index++)
-    {
-        if (!string.Equals(values[index], name, StringComparison.Ordinal))
-        {
-            continue;
-        }
-        if (index + 1 >= values.Length)
-        {
-            throw new ArgumentException($"{name} requires a value.");
-        }
-
-        var remaining = values.Where((_, itemIndex) => itemIndex != index && itemIndex != index + 1).ToArray();
-        return (values[index + 1], remaining);
-    }
-
-    return (null, values);
-}
-
-static bool HasFlag(string[] argsTail, string name) => argsTail.Any(a => string.Equals(a, name, StringComparison.Ordinal));
 
 /// <summary>
 /// Addresses a leaf splice must never cover: the decoded bytes aren't what the runtime

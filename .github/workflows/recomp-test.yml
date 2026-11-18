@@ -69,6 +69,18 @@ jobs:
         shell: pwsh
         run: ./Launcher/Test-Recompilation.ps1 -Parallel 4
 
+      - name: Test GX performance paths
+        shell: pwsh
+        run: |
+          $tools = Join-Path $PWD 'Launcher/artifacts/portable-tools'
+          $build = Join-Path $PWD 'build/recomp-test/native-build'
+          $env:PATH = "$build;$tools/llvm-mingw/bin;$tools/CMake/bin;$tools/Ninja;$env:PATH"
+          cmake -S build/recomp-test/runtime -B $build -DMKW_BUILD_AURORA_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build $build --parallel 3 --target gx_fifo_tests shader_module_cache_tests mkw_gx_texture_binding_tests mkw_gx_sync_tests mkw_gx_dl_cache_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir $build --output-on-failure --no-tests=error -R '^(GXFifoTest|RuntimeDirectDrawTest|ShaderModuleCacheTest|mkw_gx_(texture_binding|sync|dl_cache)_tests)'
+
       # Print cache results (even if the build fails)
       - name: Show sccache stats
         if: always()

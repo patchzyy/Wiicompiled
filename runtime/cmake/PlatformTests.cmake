@@ -155,6 +155,7 @@ endif()
 if(TARGET gx_fifo_tests)
     target_sources(gx_fifo_tests PRIVATE
         "${MKW_TEST_RUNTIME_DIR}/tests/gx_fifo_invalidation_tests.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/tests/gx_direct_draw_tests.cpp"
         "${MKW_TEST_RUNTIME_DIR}/src/hle/gx/gx_fifo.cpp")
     target_include_directories(gx_fifo_tests PRIVATE
         "${MKW_AURORA_DIR}/tests" "${MKW_TEST_RUNTIME_DIR}/include"
@@ -164,6 +165,70 @@ if(TARGET gx_fifo_tests)
     if(MKW_PLATFORM_WINDOWS)
         target_link_libraries(gx_fifo_tests PRIVATE advapi32)
     endif()
+
+    get_target_property(_mkw_gx_sources gx_fifo_tests SOURCES)
+    get_target_property(_mkw_gx_source_dir gx_fifo_tests SOURCE_DIR)
+    get_target_property(_mkw_gx_includes gx_fifo_tests INCLUDE_DIRECTORIES)
+    get_target_property(_mkw_gx_links gx_fifo_tests LINK_LIBRARIES)
+    set(_mkw_gx_encoder_sources)
+    foreach(_mkw_gx_source IN LISTS _mkw_gx_sources)
+        if(_mkw_gx_source MATCHES "(^|/)lib/")
+            get_filename_component(_mkw_gx_absolute "${_mkw_gx_source}" ABSOLUTE
+                BASE_DIR "${_mkw_gx_source_dir}")
+            list(APPEND _mkw_gx_encoder_sources "${_mkw_gx_absolute}")
+        endif()
+    endforeach()
+
+    add_executable(mkw_gx_texture_binding_tests
+        "${MKW_TEST_RUNTIME_DIR}/tests/gx_texture_binding_tests.cpp"
+        "${MKW_AURORA_DIR}/tests/gx_test_stubs.cpp"
+        ${_mkw_gx_encoder_sources})
+    add_executable(mkw_gx_sync_tests
+        "${MKW_TEST_RUNTIME_DIR}/tests/gx_worker_tests.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/tests/gx_copy_tests.cpp"
+        "${MKW_AURORA_DIR}/tests/gx_test_stubs.cpp"
+        ${_mkw_gx_encoder_sources})
+    target_compile_definitions(mkw_gx_sync_tests PRIVATE MKW_GX_COPY_TESTING=1)
+    foreach(_mkw_gx_test IN ITEMS mkw_gx_texture_binding_tests mkw_gx_sync_tests)
+        target_include_directories(${_mkw_gx_test} PRIVATE
+            ${_mkw_gx_includes} "${MKW_TEST_RUNTIME_DIR}/tests")
+        target_compile_definitions(${_mkw_gx_test} PRIVATE AURORA TARGET_PC=1)
+        target_compile_features(${_mkw_gx_test} PRIVATE cxx_std_20)
+        target_link_libraries(${_mkw_gx_test} PRIVATE ${_mkw_gx_links} Threads::Threads)
+        set_target_properties(${_mkw_gx_test} PROPERTIES UNITY_BUILD OFF)
+        aurora_copy_runtime_dlls(${_mkw_gx_test})
+        add_test(NAME ${_mkw_gx_test} COMMAND ${_mkw_gx_test})
+        set_tests_properties(${_mkw_gx_test} PROPERTIES TIMEOUT 120)
+    endforeach()
+
+    add_executable(mkw_gx_dl_cache_tests "${MKW_TEST_RUNTIME_DIR}/tests/gx_dl_cache_tests.cpp")
+    target_include_directories(mkw_gx_dl_cache_tests PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/include"
+        "${MKW_TEST_RUNTIME_DIR}/third_party/toml11"
+        "${MKW_AURORA_DIR}/include")
+    target_compile_features(mkw_gx_dl_cache_tests PRIVATE cxx_std_20)
+    target_compile_definitions(mkw_gx_dl_cache_tests PRIVATE AURORA TARGET_PC=1 NOMINMAX)
+    target_link_libraries(mkw_gx_dl_cache_tests PRIVATE xxHash::xxhash ${AURORA_SDL3_TARGET})
+    set_target_properties(mkw_gx_dl_cache_tests PROPERTIES UNITY_BUILD OFF)
+    add_test(NAME mkw_gx_dl_cache_tests COMMAND mkw_gx_dl_cache_tests)
+endif()
+
+function(mkw_add_ax_mix_test target)
+    add_executable(${target} "${MKW_TEST_RUNTIME_DIR}/tests/ax_mix_kernels_tests.cpp")
+    target_include_directories(${target} PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/src/hle/audio")
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    set_target_properties(${target} PROPERTIES UNITY_BUILD OFF)
+    if(NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR)
+        add_test(NAME ${target} COMMAND ${target})
+    endif()
+endfunction()
+
+mkw_add_ax_mix_test(mkw_ax_mix_kernels_tests)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+    target_compile_definitions(mkw_ax_mix_kernels_tests PRIVATE MKW_AX_MIX_REQUIRE_NEON=1)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+    target_compile_options(mkw_ax_mix_kernels_tests PRIVATE -march=x86-64-v2)
 endif()
 
 add_executable(mkw_fiber_manager_tests
@@ -297,6 +362,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
         ]=] MKW_HOST_SUPPORTS_X86_V3)
         cmake_pop_check_state()
     endif()
+    if((NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR) AND MKW_HOST_SUPPORTS_X86_V3)
+        mkw_add_ax_mix_test(mkw_ax_mix_kernels_v3_tests)
+        target_compile_options(mkw_ax_mix_kernels_v3_tests PRIVATE -march=x86-64-v3)
+    endif()
+
     # Compile the same oracle cases for both paths. The v2 binary proves the
     # scalar fallback stays free of FMA; the v3 binary checks the existing
     # vector intrinsic path against the same strict result.

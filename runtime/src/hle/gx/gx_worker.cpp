@@ -54,7 +54,9 @@ uint64_t g_write = 0;
 std::atomic<uint64_t> g_head{0};
 std::atomic<uint64_t> g_tail{0};
 std::atomic<bool> g_consumerWaiting{false};
-std::atomic<bool> g_producerWaiting{false};
+constexpr uint64_t kNotWaiting = ~uint64_t{0};
+// Publish the required tail before rechecking it under g_tailMutex.
+std::atomic<uint64_t> g_waitTarget{kNotWaiting};
 std::mutex g_headMutex;
 std::condition_variable g_headCv;
 std::mutex g_tailMutex;
@@ -65,6 +67,16 @@ std::atomic<bool> g_abandon{false};
 std::atomic<bool> g_exited{false};
 std::thread* g_thread = nullptr;
 std::vector<uint8_t> g_fifoBytes;
+
+#if defined(MKW_GX_WORKER_TESTING)
+bool g_testEnabled = true;
+bool g_testWakeEachRecord = false;
+std::atomic<uint64_t> g_testNotifications{0};
+std::atomic<uint64_t> g_testWaits{0};
+bool g_testAcknowledgeRecord = false; // Worker only.
+std::atomic<uint64_t> g_testAccountedTail{0};
+void (*g_testBeforeTailRecheck)() = nullptr;
+#endif
 
 constexpr size_t AlignUp(size_t value) { return (value + detail::kAlign - 1) & ~(detail::kAlign - 1); }
 
@@ -117,11 +129,22 @@ void WaitForTail(uint64_t minTail, bool service) {
         {
             PerfStats::WaitScope wait;
             std::unique_lock lock{g_tailMutex};
-            g_producerWaiting.store(true, std::memory_order_seq_cst);
+            g_waitTarget.store(minTail, std::memory_order_seq_cst);
+#if defined(MKW_GX_WORKER_TESTING)
+            if (g_testWakeEachRecord) {
+                g_waitTarget.store(0, std::memory_order_seq_cst);
+            }
+            if (g_testBeforeTailRecheck != nullptr) {
+                g_testBeforeTailRecheck();
+            }
+#endif
             if (g_tail.load(std::memory_order_seq_cst) < minTail) {
+#if defined(MKW_GX_WORKER_TESTING)
+                g_testWaits.fetch_add(1, std::memory_order_relaxed);
+#endif
                 WaitTailBriefly(lock);
             }
-            g_producerWaiting.store(false, std::memory_order_relaxed);
+            g_waitTarget.store(kNotWaiting, std::memory_order_relaxed);
         }
         if (service && g_waitCallback != nullptr && g_tail.load(std::memory_order_acquire) < minTail) {
             g_waitCallback();
@@ -234,10 +257,19 @@ void WorkerMain() {
             }
             tail += header->size;
             g_tail.store(tail, std::memory_order_seq_cst);
-            if (g_producerWaiting.load(std::memory_order_seq_cst)) {
+            if (tail >= g_waitTarget.load(std::memory_order_seq_cst)) {
                 std::lock_guard lock{g_tailMutex};
+#if defined(MKW_GX_WORKER_TESTING)
+                g_testNotifications.fetch_add(1, std::memory_order_relaxed);
+#endif
                 g_tailCv.notify_all();
             }
+#if defined(MKW_GX_WORKER_TESTING)
+            if (g_testAcknowledgeRecord) {
+                g_testAcknowledgeRecord = false;
+                g_testAccountedTail.store(tail, std::memory_order_release);
+            }
+#endif
         }
     }
 }
@@ -342,7 +374,12 @@ void Start() {
     if (Active()) {
         return;
     }
-    if (!RuntimeConfigFile::GxWorkerEnabled(true)) {
+#if defined(MKW_GX_WORKER_TESTING)
+    const bool enabled = g_testEnabled;
+#else
+    const bool enabled = RuntimeConfigFile::GxWorkerEnabled(true);
+#endif
+    if (!enabled) {
         RT_LOGF(RT_TAG_GX, "GX worker disabled\n");
         return;
     }
@@ -350,6 +387,7 @@ void Start() {
         g_ring = static_cast<uint8_t*>(::operator new(kCapacity, std::align_val_t{64}));
     }
     g_fifoBytes.reserve(kFifoFlushBytes + 4096);
+    g_waitTarget.store(kNotWaiting, std::memory_order_relaxed);
     g_stop.store(false, std::memory_order_relaxed);
     g_abandon.store(false, std::memory_order_relaxed);
     g_exited.store(false, std::memory_order_relaxed);
