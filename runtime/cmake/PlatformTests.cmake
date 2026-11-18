@@ -23,7 +23,36 @@ if(MKW_BUILD_PSQ_TESTS)
     add_test(NAME mkw_psq_reserved_tests COMMAND "${CMAKE_COMMAND}"
         "-DPSQ_TEST_EXECUTABLE=$<TARGET_FILE:mkw_psq_helpers_tests>"
         -P "${MKW_TEST_RUNTIME_DIR}/tests/psq_reserved_tests.cmake")
+
+    add_executable(mkw_psq_gqr_state_free_tests
+        "${MKW_TEST_RUNTIME_DIR}/tests/psq_gqr_state_free_tests.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/src/ppc_quantized.cpp")
+    target_include_directories(mkw_psq_gqr_state_free_tests PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/tests/psq_memory"
+        "${MKW_TEST_RUNTIME_DIR}/include/isa"
+        "${MKW_TEST_RUNTIME_DIR}/include")
+    target_compile_features(mkw_psq_gqr_state_free_tests PRIVATE cxx_std_17)
+    target_compile_options(mkw_psq_gqr_state_free_tests PRIVATE
+        -O2 -fno-fast-math -ffp-contract=off -fno-slp-vectorize)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+        target_compile_options(mkw_psq_gqr_state_free_tests PRIVATE
+            -march=x86-64-${MKW_X86_CPU_PROFILE})
+    endif()
+    set_target_properties(mkw_psq_gqr_state_free_tests PROPERTIES UNITY_BUILD OFF)
+    add_test(NAME mkw_psq_gqr_state_free_tests COMMAND mkw_psq_gqr_state_free_tests)
 endif()
+
+add_executable(mkw_ppc_cr_logical_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/ppc_cr_logical_tests.cpp")
+target_include_directories(mkw_ppc_cr_logical_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_ppc_cr_logical_tests PRIVATE cxx_std_17)
+target_compile_options(mkw_ppc_cr_logical_tests PRIVATE
+    -fno-fast-math -ffp-contract=off)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
+    target_compile_options(mkw_ppc_cr_logical_tests PRIVATE -march=x86-64-${MKW_X86_CPU_PROFILE})
+endif()
+set_target_properties(mkw_ppc_cr_logical_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_ppc_cr_logical_tests COMMAND mkw_ppc_cr_logical_tests)
 
 add_executable(mkw_platform_paths_tests "${MKW_TEST_RUNTIME_DIR}/tests/platform_paths_tests.cpp")
 target_link_libraries(mkw_platform_paths_tests PRIVATE mkw_platform)
@@ -37,6 +66,24 @@ target_include_directories(mkw_runtime_config_tests PRIVATE
 target_compile_features(mkw_runtime_config_tests PRIVATE cxx_std_20)
 add_test(NAME mkw_runtime_config_tests COMMAND mkw_runtime_config_tests)
 
+if(MKW_PLATFORM_MACOS)
+    set(MKW_MEMORY_TEST_MAPPING_SOURCE "${MKW_TEST_RUNTIME_DIR}/src/guest_flat_memory_macos.cpp")
+else()
+    set(MKW_MEMORY_TEST_MAPPING_SOURCE "${MKW_TEST_RUNTIME_DIR}/src/guest_flat_memory.cpp")
+endif()
+add_executable(mkw_memory_access_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/memory_access_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/memory.cpp"
+    "${MKW_MEMORY_TEST_MAPPING_SOURCE}")
+target_include_directories(mkw_memory_access_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_memory_access_tests PRIVATE cxx_std_20)
+target_compile_options(mkw_memory_access_tests PRIVATE -fno-fast-math -ffp-contract=off)
+if(MKW_PLATFORM_WINDOWS)
+    target_link_libraries(mkw_memory_access_tests PRIVATE dbghelp)
+endif()
+add_test(NAME mkw_memory_access_tests COMMAND mkw_memory_access_tests)
+set_tests_properties(mkw_memory_access_tests PROPERTIES TIMEOUT 60)
+
 add_executable(mkw_nand_save_tests "${MKW_TEST_RUNTIME_DIR}/tests/nand_save_tests.cpp")
 target_include_directories(mkw_nand_save_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
 target_compile_features(mkw_nand_save_tests PRIVATE cxx_std_17)
@@ -49,6 +96,113 @@ add_test(NAME mkw_nand_guest_path_tests COMMAND mkw_nand_guest_path_tests)
 
 add_executable(mkw_nand_settings_tests "${MKW_TEST_RUNTIME_DIR}/tests/nand_settings_tests.cpp")
 find_package(Threads REQUIRED)
+target_link_libraries(mkw_memory_access_tests PRIVATE Threads::Threads)
+target_link_libraries(mkw_runtime_config_tests PRIVATE Threads::Threads)
+
+add_executable(mkw_host_file_tests "${MKW_TEST_RUNTIME_DIR}/tests/host_file_tests.cpp")
+target_include_directories(mkw_host_file_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_host_file_tests PRIVATE cxx_std_17)
+target_link_libraries(mkw_host_file_tests PRIVATE Threads::Threads)
+add_test(NAME mkw_host_file_tests COMMAND mkw_host_file_tests)
+
+add_executable(mkw_system_bridge_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/system_bridge_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/system_bridge.cpp")
+target_include_directories(mkw_system_bridge_tests BEFORE PRIVATE
+    "${MKW_TEST_RUNTIME_DIR}/tests/system_bridge_support"
+    "${MKW_TEST_RUNTIME_DIR}/include"
+    "${MKW_TEST_RUNTIME_DIR}/third_party/toml11")
+target_compile_features(mkw_system_bridge_tests PRIVATE cxx_std_20)
+set_target_properties(mkw_system_bridge_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_system_bridge_tests COMMAND mkw_system_bridge_tests)
+if(MKW_PLATFORM_WINDOWS)
+    add_executable(mkw_host_file_recovery_tests "${MKW_TEST_RUNTIME_DIR}/tests/host_file_recovery_tests.cpp")
+    target_include_directories(mkw_host_file_recovery_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+    target_compile_features(mkw_host_file_recovery_tests PRIVATE cxx_std_17)
+    target_link_libraries(mkw_host_file_recovery_tests PRIVATE advapi32)
+    add_test(NAME mkw_host_file_recovery_tests COMMAND mkw_host_file_recovery_tests)
+endif()
+
+add_executable(mkw_u8_archive_tests "${MKW_TEST_RUNTIME_DIR}/tests/u8_archive_tests.cpp")
+target_include_directories(mkw_u8_archive_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_u8_archive_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_u8_archive_tests COMMAND mkw_u8_archive_tests)
+
+add_executable(mkw_runtime_config_io_tests "${MKW_TEST_RUNTIME_DIR}/tests/runtime_config_io_tests.cpp")
+target_include_directories(mkw_runtime_config_io_tests PRIVATE
+    "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/third_party/toml11")
+target_compile_features(mkw_runtime_config_io_tests PRIVATE cxx_std_20)
+target_link_libraries(mkw_runtime_config_io_tests PRIVATE Threads::Threads)
+add_test(NAME mkw_runtime_config_io_tests COMMAND mkw_runtime_config_io_tests)
+if(MKW_PLATFORM_WINDOWS)
+    target_link_libraries(mkw_runtime_config_tests PRIVATE advapi32)
+    target_link_libraries(mkw_host_file_tests PRIVATE advapi32)
+    target_link_libraries(mkw_runtime_config_io_tests PRIVATE advapi32)
+endif()
+
+if(TARGET SDL3::SDL3)
+    add_executable(mkw_pad_trigger_tests "${MKW_TEST_RUNTIME_DIR}/tests/pad_trigger_tests.cpp")
+    target_include_directories(mkw_pad_trigger_tests PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/tests/pad_trigger_support"
+        "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_AURORA_DIR}/include")
+    target_compile_definitions(mkw_pad_trigger_tests PRIVATE TARGET_PC=1 AURORA)
+    target_compile_features(mkw_pad_trigger_tests PRIVATE cxx_std_20)
+    target_link_libraries(mkw_pad_trigger_tests PRIVATE SDL3::SDL3)
+    set_target_properties(mkw_pad_trigger_tests PROPERTIES UNITY_BUILD OFF)
+    add_test(NAME mkw_pad_trigger_tests COMMAND mkw_pad_trigger_tests)
+endif()
+
+if(TARGET gx_fifo_tests)
+    target_sources(gx_fifo_tests PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/tests/gx_fifo_invalidation_tests.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/src/hle/gx/gx_fifo.cpp")
+    target_include_directories(gx_fifo_tests PRIVATE
+        "${MKW_AURORA_DIR}/tests" "${MKW_TEST_RUNTIME_DIR}/include"
+        "${MKW_TEST_RUNTIME_DIR}/third_party/toml11")
+    target_compile_features(gx_fifo_tests PRIVATE cxx_std_20)
+    set_target_properties(gx_fifo_tests PROPERTIES UNITY_BUILD OFF)
+    if(MKW_PLATFORM_WINDOWS)
+        target_link_libraries(gx_fifo_tests PRIVATE advapi32)
+    endif()
+endif()
+
+add_executable(mkw_fiber_manager_tests
+  "${MKW_TEST_RUNTIME_DIR}/tests/fiber_manager_tests.cpp"
+  "${MKW_TEST_RUNTIME_DIR}/src/fiber_manager.cpp"
+  "${MKW_TEST_RUNTIME_DIR}/src/hle/os/os_scheduler.cpp"
+  "${MKW_TEST_RUNTIME_DIR}/src/hle/storage/nand_callbacks.cpp"
+  "${MKW_TEST_RUNTIME_DIR}/src/hle/os/os_thread.cpp")
+target_include_directories(mkw_fiber_manager_tests PRIVATE
+  "${MKW_TEST_RUNTIME_DIR}/tests/fiber_support"
+  "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/src"
+  "${MKW_TEST_RUNTIME_DIR}/third_party"
+  "${MKW_TEST_RUNTIME_DIR}/third_party/toml11")
+target_compile_features(mkw_fiber_manager_tests PRIVATE cxx_std_20)
+target_link_libraries(mkw_fiber_manager_tests PRIVATE Threads::Threads)
+if(MKW_PLATFORM_MACOS_ARM64)
+  enable_language(ASM)
+  target_sources(mkw_fiber_manager_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/src/platform/macos/co_switch.S")
+elseif(TARGET mkw::libco)
+  target_link_libraries(mkw_fiber_manager_tests PRIVATE mkw::libco)
+endif()
+set_target_properties(mkw_fiber_manager_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_fiber_manager_tests COMMAND mkw_fiber_manager_tests)
+add_executable(mkw_audio_backend_ownership_tests "${MKW_TEST_RUNTIME_DIR}/tests/audio_backend_ownership_tests.cpp" "${MKW_TEST_RUNTIME_DIR}/src/audio_backend.cpp")
+target_include_directories(mkw_audio_backend_ownership_tests BEFORE PRIVATE "${MKW_TEST_RUNTIME_DIR}/tests/host_io" "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/src")
+target_compile_features(mkw_audio_backend_ownership_tests PRIVATE cxx_std_20)
+add_test(NAME mkw_audio_backend_ownership_tests COMMAND mkw_audio_backend_ownership_tests)
+add_executable(mkw_network_receive_tests "${MKW_TEST_RUNTIME_DIR}/tests/network_receive_tests.cpp")
+target_include_directories(mkw_network_receive_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/src")
+target_compile_features(mkw_network_receive_tests PRIVATE cxx_std_20)
+target_link_libraries(mkw_network_receive_tests PRIVATE Threads::Threads)
+if(MKW_PLATFORM_WINDOWS)
+  target_link_libraries(mkw_network_receive_tests PRIVATE ws2_32)
+endif()
+set_target_properties(mkw_audio_backend_ownership_tests mkw_network_receive_tests PROPERTIES UNITY_BUILD OFF)
+add_test(NAME mkw_network_receive_tests COMMAND mkw_network_receive_tests)
+add_test(NAME mkw_windows_seh_order_tests COMMAND "${CMAKE_COMMAND}" "-DSEH_SOURCE=${MKW_TEST_RUNTIME_DIR}/src/main.cpp" -P "${MKW_TEST_RUNTIME_DIR}/tests/windows_seh_order_tests.cmake")
+set_tests_properties(mkw_fiber_manager_tests mkw_network_receive_tests PROPERTIES TIMEOUT 60)
+
 target_link_libraries(mkw_nand_settings_tests PRIVATE Threads::Threads)
 target_include_directories(mkw_nand_settings_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
 target_compile_features(mkw_nand_settings_tests PRIVATE cxx_std_17)

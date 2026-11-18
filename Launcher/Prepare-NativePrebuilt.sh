@@ -20,6 +20,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workspace=$(cd "$script_dir/.." && pwd)
+source "$script_dir/build-cache.sh"
 
 arch=""
 output_dir=""
@@ -123,25 +124,13 @@ assert_file "$cmake_bin" "Portable CMake (run prepare-portable-tools.sh --arch $
 assert_file "$ninja_bin" "Portable Ninja"
 assert_file "$cc" "Portable C compiler"
 assert_file "$cxx" "Portable C++ compiler"
-assert_dir "$aurora_source" "aurora-main source tree"
+assert_file "$aurora_source/CMakeLists.txt" "aurora-main source tree"
 clang_binary=$(normalize "${llvm_dir:-$toolchain_dir}/bin/clang-22")
 assert_file "$clang_binary" "Portable clang driver binary"
 
 (( parallel > 0 )) || parallel=$(nproc)
 
-fingerprint_tree() {
-    # $1 = root dir, remaining args = top-level subdirectory names to exclude
-    local root=$1; shift
-    root=$(normalize "$root")
-    [[ -d "$root" ]] || return 0
-    local find_args=("$root" -name .git -prune -o)
-    local ex
-    for ex in "$@"; do find_args+=(-path "$root/$ex" -prune -o); done
-    find_args+=(-type f -print)
-    find "${find_args[@]}" | LC_ALL=C sort | while IFS= read -r abs; do
-        printf '%s %s\n' "${abs#$root/}" "$(sha256_of "$abs")"
-    done | sha256sum | awk '{print $1}'
-}
+
 
 # The fixed (path-independent) half of the configure command line - identical for every
 # harvest, which is what lets one package be valid regardless of where it was built.
@@ -191,13 +180,11 @@ if [[ -n "$sysroot" ]]; then
 fi
 flag_fingerprint=$(printf '%s\n' "${fixed_configure_flags[@]}" | sha256sum | awk '{print $1}')
 
-# extern/ is excluded because the payload ships that tree separately (aurora-main/extern is bundled
-# whole by build-appimage.sh); build/ is a plain developer build directory.
-aurora_fingerprint=$(fingerprint_tree "$aurora_source" extern build)
+aurora_fingerprint=$(mkw_fingerprint_tree "$aurora_source" extern build)
 [[ -n "$aurora_fingerprint" ]] || fail "The aurora source tree could not be fingerprinted: $aurora_source"
 
 # The harvested Crypto++ archive is consumed against this tree's headers, so it is fingerprinted.
-third_party_fingerprint=$(fingerprint_tree "$runtime_source/third_party")
+third_party_fingerprint=$(mkw_fingerprint_tree "$runtime_source/third_party")
 [[ -n "$third_party_fingerprint" ]] || fail "The vendored third-party tree could not be fingerprinted: $runtime_source/third_party"
 mbedtls_fingerprint=$(sha256_of "$runtime_source/cmake/MbedTLSPin.cmake")
 
@@ -246,6 +233,7 @@ echo "Prepare-NativePrebuilt.sh: configuring the aurora/third-party staging buil
     -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx" \
     -DCMAKE_MAKE_PROGRAM="$ninja_bin" \
     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+    -DMKW_AURORA_DIR="$aurora_source" \
     -DMKW_NATIVE_PREBUILT_EXPORT_DIR="$export_dir"
 
 meta_path="$export_dir/meta.txt"
@@ -636,8 +624,7 @@ generated_cmake="$output_dir/native_prebuilt.cmake"
 # ---------------------------------------------------------------------------
 # Provenance: the pinned toolchain is what makes a precompiled archive interchangeable with
 # locally compiled objects (bit-for-bit the compiler and flag set the user's machine will use);
-# LocalBuild.ps1's Windows equivalent re-checks both before consuming a package, and a Linux
-# consumer-side check (once local-build.sh gains --native-prebuilt-dir) should do the same.
+# local-build.sh checks the Aurora source fingerprint before accepting this package.
 # compiler_sha256/flag_fingerprint/aurora_fingerprint/third_party_fingerprint were already computed
 # above (needed before the --print-fingerprint-only early exit).
 # ---------------------------------------------------------------------------

@@ -76,6 +76,12 @@ bool OS_HLE_InterruptsEnabled() noexcept
     return g_interrupts_enabled.load(std::memory_order_acquire);
 }
 
+void OS_HLE_RestoreInterruptMirror(bool enabled) noexcept
+{
+    // An idle host frame must not update another guest thread's context flags.
+    g_interrupts_enabled.store(enabled, std::memory_order_release);
+}
+
 extern "C" uint32_t OS____InterruptInit_801a661c(uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6, uint32_t r7, uint32_t r8)
 {
     (void)r3;

@@ -920,7 +920,7 @@ int32_t HandleSslIoctlv(uint32_t cmd, const std::vector<IoVector>& in, const std
         ssl.native = socket->native;
         ssl.plaintextWfc = false;
         socket->nonblocking = false;
-        SetNonBlocking(socket->native, false);
+        SetSocketNonBlocking(*socket, false);
         if (IsRetroPlaintextSslHost(ssl.hostname) && socket->peerPort == 443) {
             const int32_t reroute = ReconnectWiiSocket(*socket, 80);
             if (reroute != 0) {

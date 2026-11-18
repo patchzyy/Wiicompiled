@@ -327,21 +327,19 @@ public static partial class PpcDecoder
                 operands.Add(Reg(rb));
                 break;
 
-            case 498: // stwcx. rS,rA,rB
-                mnemonic = "stwcx.";
-                operands.Add(Reg(rs));
-                operands.Add(Reg(ra));
-                operands.Add(Reg(rb));
-                isCond = true;
-                break;
-
-
-
             default:
                 // X-form instructions use the full 10-bit XO (no OE bit)
                 // Handle them here with a secondary switch on xo10
                 switch (xo10)
                 {
+                    case 150 when rc: // stwcx. rS,rA,rB
+                        mnemonic = "stwcx.";
+                        operands.Add(Reg(rs));
+                        operands.Add(Reg(ra));
+                        operands.Add(Reg(rb));
+                        isCond = true;
+                        break;
+
                     case 23: // lwzx rD,rA,rB
                         mnemonic = "lwzx";
                         operands.Add(Reg(rs));

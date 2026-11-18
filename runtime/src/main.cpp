@@ -1035,6 +1035,12 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
             info->ExceptionRecord->ExceptionInformation[0] != 0)) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    // First-chance software exceptions belong to their frame handlers.
+    if (info->ExceptionRecord->ExceptionCode == kCppExceptionCodeGcc ||
+        info->ExceptionRecord->ExceptionCode == kCppExceptionCodeMsvc ||
+        (info->ExceptionRecord->ExceptionCode & 0x20000000u) != 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (g_suppressSehReporting && g_sehJumpTarget) {
         g_sehLastExceptionCode = info->ExceptionRecord->ExceptionCode;
         g_sehLastExceptionAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
@@ -1049,22 +1055,10 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
     if (g_suppressSehReporting) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    // Let C++ exceptions propagate to std::terminate so we can log their what().
-    if (info->ExceptionRecord->ExceptionCode == kCppExceptionCodeGcc ||
-        info->ExceptionRecord->ExceptionCode == kCppExceptionCodeMsvc) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
     if (info->ExceptionRecord->ExceptionCode == 0x40010006 || // DBG_PRINTEXCEPTION_C
         info->ExceptionRecord->ExceptionCode == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C (OutputDebugStringW)
         info->ExceptionRecord->ExceptionCode == 0x406D1388 || // SetThreadName
         info->ExceptionRecord->ExceptionCode == kAsanFatalAppExit) { // ASan reporting - let it print first
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    // Software-raised exceptions (customer bit set) are used for internal control flow by
-    // system DLLs (e.g. msxml6 while mscms parses a display colour profile) and are caught
-    // by their own frame handlers. Only hardware faults are fatal at first chance; anything
-    // else that truly goes unhandled reaches UnhandledSehFilter.
-    if ((info->ExceptionRecord->ExceptionCode & 0x20000000u) != 0) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     return ReportFatalSehAndExit(info);

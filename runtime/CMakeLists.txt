@@ -54,6 +54,7 @@ endif()
 
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
+option(MKW_BUILD_AURORA_TESTS "Build integrated Aurora regression tests" OFF)
 set(MKW_X86_CPU_PROFILE "v3" CACHE STRING
     "Minimum x86-64 CPU profile for translated products (v2 or v3)")
 set_property(CACHE MKW_X86_CPU_PROFILE PROPERTY STRINGS v2 v3)
@@ -277,7 +278,7 @@ else()
 
     # Aurora components the runtime does not use. They would otherwise fetch
     # extra dependencies at configure time, which offline builds cannot do.
-    set(AURORA_ENABLE_TESTS OFF CACHE BOOL "" FORCE)
+    set(AURORA_ENABLE_TESTS ${MKW_BUILD_AURORA_TESTS} CACHE BOOL "" FORCE)
     set(AURORA_ENABLE_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(AURORA_ENABLE_DVD OFF CACHE BOOL "" FORCE)
     set(AURORA_ENABLE_THP OFF CACHE BOOL "" FORCE)

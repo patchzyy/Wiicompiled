@@ -138,6 +138,7 @@ struct WiiSocket {
     // fd is recycled, so a new socket reports its own failures again.
     int32_t lastLoggedSendError = 0;
     int32_t lastLoggedRecvError = 0;
+    bool nativeNonblocking = true;
 };
 
 extern std::array<WiiSocket, kWiiSocketMax> g_sockets;
@@ -148,6 +149,7 @@ extern int32_t g_lastSocketError;
 // linger (IOS/Network/Socket.cpp:214-235 and 164-212). Defined below, next to
 // the deferred store it walks.
 void AbortPendingDeferredConnects(uint32_t wiiFd, int32_t result);
+void AbortPendingDeferredReceives(uint32_t wiiFd, int32_t result);
 
 enum class NasSslWriteAction {
     PassThrough,
@@ -215,7 +217,14 @@ int ProbeConnectSettled(NativeSocket socket, int timeoutMs);
 int32_t ClassifySettledConnect(NativeSocket socket);
 bool WaitForReadable(NativeSocket socket, int timeoutMs);
 void CloseNativeSocket(NativeSocket socket);
-void SetNonBlocking(NativeSocket socket, bool enabled);
+bool SetNonBlocking(NativeSocket socket, bool enabled);
+inline bool SetSocketNonBlocking(WiiSocket& socket, bool enabled) {
+    if (!SetNonBlocking(socket.native, enabled)) {
+        return false;
+    }
+    socket.nativeNonblocking = enabled;
+    return true;
+}
 int32_t ReconnectWiiSocket(WiiSocket& socket, uint16_t port);
 int MapWiiAf(uint32_t af);
 int MapNativeAfToWii(int af);
@@ -244,6 +253,8 @@ void WritePollResults(uint32_t outAddress,
 // network_socket.cpp
 void CleanupAllWiiSockets();
 sockaddr_in ReadWiiSockAddr(uint32_t addr);
+int32_t ReceiveFromNow(uint32_t fd, uint32_t flags, uint32_t dataAddress,
+                       uint32_t dataSize, uint32_t fromAddress = 0, uint32_t fromSize = 0);
 int32_t HandleIpTopIoctl(uint32_t cmd, uint32_t inBuf, uint32_t inLen, uint32_t outBuf,
                          uint32_t outLen);
 int32_t HandleIpTopIoctlv(uint32_t cmd, const std::vector<IoVector>& in,

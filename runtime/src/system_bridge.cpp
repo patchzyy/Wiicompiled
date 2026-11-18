@@ -353,8 +353,13 @@ void SystemBridge::Initialize() {
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
-                InvokeIndirectCpu(funcAddr, &cpu);
-                dolCount++;
+                try {
+                    InvokeIndirectCpu(funcAddr, &cpu);
+                    dolCount++;
+                } catch (...) {
+                    RT_LOG(RT_TAG_RUNTIME) << "C++ exception invoking DOL ctor 0x" << std::hex << funcAddr
+                              << std::dec << " - skipping." << std::endl;
+                }
             } else {
                 RT_LOG(RT_TAG_RUNTIME) << "SEH Exception caught invoking DOL ctor 0x" << std::hex << funcAddr
                           << " code=0x" << g_sehLastExceptionCode
@@ -393,8 +398,13 @@ void SystemBridge::Initialize() {
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
-                InvokeIndirectCpu(funcAddr, &cpu);
-                count++;
+                try {
+                    InvokeIndirectCpu(funcAddr, &cpu);
+                    count++;
+                } catch (...) {
+                    RT_LOG(RT_TAG_RUNTIME) << "C++ exception invoking ctor 0x" << std::hex << funcAddr
+                              << std::dec << " - skipping." << std::endl;
+                }
             } else {
                 RT_LOG(RT_TAG_RUNTIME) << "SEH Exception caught invoking ctor 0x" << std::hex << funcAddr
                           << " code=0x" << g_sehLastExceptionCode

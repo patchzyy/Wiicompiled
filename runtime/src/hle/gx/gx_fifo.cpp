@@ -461,8 +461,14 @@ static void HleFifoWriteGeneral(u32 val, uint32_t sizeBytes) {
         const uint8_t opcode = cmd & GX_OPCODE_MASK_CMD;
         u32 sink = 0;
 
-        if (cmd == GX_NOP_CMD || opcode == GX_CMD_INVL_VC_CMD) {
+        if (cmd == GX_NOP_CMD) {
             if (!consumeBytes(1, sink)) break;
+            continue;
+        }
+
+        if (opcode == GX_CMD_INVL_VC_CMD) {
+            if (!consumeBytes(1, sink)) break;
+            GXInvalidateVtxCache();
             continue;
         }
 

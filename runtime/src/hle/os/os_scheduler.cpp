@@ -103,10 +103,12 @@ static void TryInvokeSwitchCallback(uint32_t oldCtx, uint32_t newCtx, CpuContext
         }
 
         if (TranslatedFunctionRegistry::FindByAddressPtr(callbackAddr)) {
-            CpuContext* ctx = cpu ? cpu : &GetPersistentCpuContext();
-            ctx->gpr[3] = oldCtx;
-            ctx->gpr[4] = newCtx;
-            InvokeIndirectCpu(callbackAddr, ctx);
+            const CpuContext* live = cpu ? cpu : &GetPersistentCpuContext();
+            CpuContext callbackCpu = *live;
+            callbackCpu.gpr[3] = oldCtx;
+            callbackCpu.gpr[4] = newCtx;
+            CpuContextScope scope(&callbackCpu);
+            InvokeIndirectCpu(callbackAddr, &callbackCpu);
             return;
         }
 
