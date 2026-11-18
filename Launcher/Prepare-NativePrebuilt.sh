@@ -233,6 +233,7 @@ echo "Prepare-NativePrebuilt.sh: configuring the aurora/third-party staging buil
     -DCMAKE_C_COMPILER="$cc" -DCMAKE_CXX_COMPILER="$cxx" \
     -DCMAKE_MAKE_PROGRAM="$ninja_bin" \
     -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+    -DMKW_AURORA_DIR="$aurora_source" \
     -DMKW_NATIVE_PREBUILT_EXPORT_DIR="$export_dir"
 
 meta_path="$export_dir/meta.txt"

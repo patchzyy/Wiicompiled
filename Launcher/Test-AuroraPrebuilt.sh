@@ -18,6 +18,17 @@ fingerprint=$(
 mkdir -p .git extern build
 touch .git/config extern/dependency build/object
 cd ../..
+if command -v shasum >/dev/null 2>&1; then
+    mkdir fallback-tools
+    for tool in shasum awk find sort xargs; do
+        ln -s "$(command -v "$tool")" "fallback-tools/$tool"
+    done
+    (
+        PATH="$PWD/fallback-tools"
+        source "$launcher/build-cache.sh"
+        [[ $(mkw_fingerprint_tree workspace/aurora-main extern build) == "$fingerprint" ]]
+    )
+fi
 touch package/native_prebuilt.cmake
 args=(--workspace workspace --output-dir output --translator-bin unused
     --cc true --cxx true --ninja true --x86-cpu-profile v2 --native-prebuilt-dir package)
