@@ -35,9 +35,12 @@ expect_error() {
 expect_error 'Native prebuilt provenance is missing'
 printf '{"AuroraSourceFingerprint":"%s"}\n' "$fingerprint" > package/provenance.json
 expect_error 'Extracted main.dol'
-printf 'edited\n' >> 'workspace/aurora-main/include/a header.h'
+mv workspace 'workspace[old]'
+args[1]='workspace[old]'
+expect_error 'Extracted main.dol'
+printf 'edited\n' >> 'workspace[old]/aurora-main/include/a header.h'
 expect_error 'does not match the Aurora sources'
-printf 'header\n' > 'workspace/aurora-main/include/a header.h'
+printf 'header\n' > 'workspace[old]/aurora-main/include/a header.h'
 for invalid in '{}' 'null' 'not json' '{"AuroraSourceFingerprint":false}' \
     "{\"nested\":{\"AuroraSourceFingerprint\":\"$fingerprint\"}}"; do
     printf '%s\n' "$invalid" > package/provenance.json

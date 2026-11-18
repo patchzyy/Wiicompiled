@@ -203,7 +203,9 @@ if [[ -n "$native_prebuilt_dir" ]]; then
     assert_file "$native_prebuilt_dir/native_prebuilt.cmake" "Native prebuilt package"
     assert_file "$native_prebuilt_dir/provenance.json" "Native prebuilt provenance"
     native_prebuilt_dir=$(cd "$native_prebuilt_dir" && pwd)
-    "$cmake_bin" "-DAURORA_DIR=$workspace/aurora-main" "-DPROVENANCE_FILE=$native_prebuilt_dir/provenance.json" \
+    assert_file "$workspace/aurora-main/CMakeLists.txt" "Aurora source tree"
+    aurora_fingerprint=$(mkw_fingerprint_tree "$workspace/aurora-main" extern build)
+    "$cmake_bin" "-DAURORA_FINGERPRINT=$aurora_fingerprint" "-DPROVENANCE_FILE=$native_prebuilt_dir/provenance.json" \
         -P "$script_dir/../runtime/cmake/AuroraFingerprint.cmake"
 fi
 
