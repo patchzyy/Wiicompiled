@@ -213,18 +213,21 @@ if(TARGET gx_fifo_tests)
     add_test(NAME mkw_gx_dl_cache_tests COMMAND mkw_gx_dl_cache_tests)
 endif()
 
-add_executable(mkw_ax_mix_kernels_tests "${MKW_TEST_RUNTIME_DIR}/tests/ax_mix_kernels_tests.cpp")
-target_include_directories(mkw_ax_mix_kernels_tests PRIVATE
-    "${MKW_TEST_RUNTIME_DIR}/include"
-    "${MKW_TEST_RUNTIME_DIR}/src/hle/audio")
-target_compile_features(mkw_ax_mix_kernels_tests PRIVATE cxx_std_17)
+function(mkw_add_ax_mix_test target)
+    add_executable(${target} "${MKW_TEST_RUNTIME_DIR}/tests/ax_mix_kernels_tests.cpp")
+    target_include_directories(${target} PRIVATE
+        "${MKW_TEST_RUNTIME_DIR}/include" "${MKW_TEST_RUNTIME_DIR}/src/hle/audio")
+    target_compile_features(${target} PRIVATE cxx_std_17)
+    set_target_properties(${target} PROPERTIES UNITY_BUILD OFF)
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+mkw_add_ax_mix_test(mkw_ax_mix_kernels_tests)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
     target_compile_definitions(mkw_ax_mix_kernels_tests PRIVATE MKW_AX_MIX_REQUIRE_NEON=1)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
-    target_compile_options(mkw_ax_mix_kernels_tests PRIVATE -march=x86-64-${MKW_X86_CPU_PROFILE})
+    target_compile_options(mkw_ax_mix_kernels_tests PRIVATE -march=x86-64-v2)
 endif()
-set_target_properties(mkw_ax_mix_kernels_tests PROPERTIES UNITY_BUILD OFF)
-add_test(NAME mkw_ax_mix_kernels_tests COMMAND mkw_ax_mix_kernels_tests)
 
 add_executable(mkw_fiber_manager_tests
   "${MKW_TEST_RUNTIME_DIR}/tests/fiber_manager_tests.cpp"
@@ -357,6 +360,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
         ]=] MKW_HOST_SUPPORTS_X86_V3)
         cmake_pop_check_state()
     endif()
+    if((NOT CMAKE_CROSSCOMPILING OR CMAKE_CROSSCOMPILING_EMULATOR) AND MKW_HOST_SUPPORTS_X86_V3)
+        mkw_add_ax_mix_test(mkw_ax_mix_kernels_v3_tests)
+        target_compile_options(mkw_ax_mix_kernels_v3_tests PRIVATE -march=x86-64-v3)
+    endif()
+
     # Compile the same oracle cases for both paths. The v2 binary proves the
     # scalar fallback stays free of FMA; the v3 binary checks the existing
     # vector intrinsic path against the same strict result.
