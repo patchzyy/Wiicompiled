@@ -201,6 +201,10 @@ require_command "$cxx_bin" cxx
 
 if [[ -n "$native_prebuilt_dir" ]]; then
     assert_file "$native_prebuilt_dir/native_prebuilt.cmake" "Native prebuilt package"
+    assert_file "$native_prebuilt_dir/provenance.json" "Native prebuilt provenance"
+    native_prebuilt_dir=$(cd "$native_prebuilt_dir" && pwd)
+    "$cmake_bin" "-DAURORA_DIR=$workspace/aurora-main" "-DPROVENANCE_FILE=$native_prebuilt_dir/provenance.json" \
+        -P "$script_dir/../runtime/cmake/AuroraFingerprint.cmake"
 fi
 
 host_supports_x86_64_v3() {
@@ -497,7 +501,9 @@ if [[ -n "$fuse_ld_override" ]]; then
     configure_args+=(-DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=$fuse_ld_quoted")
 fi
 if [[ -n "$native_prebuilt_dir" ]]; then
-    configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir")
+    configure_args+=(-DMKW_NATIVE_PREBUILT_DIR="$native_prebuilt_dir" -DMKW_AURORA_DIR="$workspace/aurora-main")
+else
+    configure_args+=(-UMKW_NATIVE_PREBUILT_DIR)
 fi
 if [[ -n "$sysroot" ]]; then
     configure_args+=(-DCMAKE_SYSROOT="$sysroot")
