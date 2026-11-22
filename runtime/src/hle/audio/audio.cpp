@@ -31,6 +31,10 @@ const uint32_t kAIDmaCallbackAddr = MKW_GADDR(80386480);
 constexpr int kMaxBlocksPerTick = 4;
 // Backlog (in blocks) tolerated before a catch-up block waits on an in-flight mix.
 constexpr double kMaxDeferredBlocks = 2.0;
+// Most wall-clock time the AI catches up after a host stall or debugger pause. It bounds each
+// poll and the total backlog: a stall that lands while an earlier one is still draining adds to
+// what is owed, and owing more than the 120 ms output queue holds only drops the surplus there.
+constexpr std::chrono::microseconds kMaxCatchUp{100'000};
 
 struct AIDmaState {
     std::mutex mutex;
@@ -372,7 +376,9 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         if (enabled && startAddr != 0 && length != 0 && sampleRate != 0) {
             // SoundThread can hit the idle scheduler before the outer AXOut frame finishes;
             // retain elapsed time here rather than recursively entering the singleton AI/AX device.
-            g_ai.accumulatorSeconds += static_cast<double>(deltaMicros) / 1'000'000.0;
+            g_ai.accumulatorSeconds = std::min(
+                g_ai.accumulatorSeconds + static_cast<double>(deltaMicros) / 1'000'000.0,
+                std::chrono::duration<double>(kMaxCatchUp).count());
             if (g_ai.tickActive) {
                 return;
             }
@@ -503,16 +509,14 @@ int64_t ConsumeAudioPollDeltaMicros()
     using Clock = std::chrono::steady_clock;
     static thread_local Clock::time_point lastPoll = Clock::now();
 
-    // Cap the catch-up interval after a debugger pause or host stall; backlog drains via
-    // kMaxBlocksPerTick per pass. Never return early on a zero delta: two scheduler passes
-    // can land in the same microsecond and the backlog still needs servicing.
-    constexpr std::chrono::microseconds kMaxPollDelta{100'000};
-
+    // Cap the catch-up interval (kMaxCatchUp); backlog drains via kMaxBlocksPerTick per pass.
+    // Never return early on a zero delta: two scheduler passes can land in the same
+    // microsecond and the backlog still needs servicing.
     const Clock::time_point now = Clock::now();
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(now - lastPoll);
-    if (elapsed.count() < 0 || elapsed > kMaxPollDelta) {
+    if (elapsed.count() < 0 || elapsed > kMaxCatchUp) {
         lastPoll = now;
-        return elapsed.count() < 0 ? 0 : kMaxPollDelta.count();
+        return elapsed.count() < 0 ? 0 : kMaxCatchUp.count();
     }
     // Keep the sub-microsecond remainder for the next poll.
     lastPoll += elapsed;
