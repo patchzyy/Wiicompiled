@@ -93,8 +93,22 @@ namespace {
 // Defined below, beside the fatal-log machinery.
 std::string FormatHostStackTrace(unsigned framesToSkip = 0);
 
+// Set only on the thread running guest code, while it runs. Guest fibers switch on this thread.
+constinit thread_local bool t_runningGuest = false;
+
+struct GuestThreadScope {
+    GuestThreadScope() { t_runningGuest = true; }
+    ~GuestThreadScope() { t_runningGuest = false; }
+    GuestThreadScope(const GuestThreadScope&) = delete;
+    GuestThreadScope& operator=(const GuestThreadScope&) = delete;
+};
+
 void ServiceGuestTimingDuringAuroraFrameWait() {
-    if (GxWorker::OnWorker()) {
+    // Aurora calls this from any thread that blocks on its render worker, including its FIFO
+    // processor and the GX worker. The pumps below run guest callbacks on the guest stack and
+    // touch the alarm queue and other single-threaded guest state, so only the guest thread may
+    // run them.
+    if (!t_runningGuest) {
         return;
     }
     // Aurora can block inside FIFO drains before control returns to GX HLE, for as long as a
@@ -1525,7 +1539,10 @@ int RuntimeMain(int argc, char** argv) {
         currentEntryLabel = label;
         g_lastEntryLabel = currentEntryLabel;
 
-        InvokeIndirectCpu(entry->address, &cpu);
+        {
+            GuestThreadScope guestThreadScope;
+            InvokeIndirectCpu(entry->address, &cpu);
+        }
         const uint32_t result = cpu.gpr[3];
         RT_LOG(RT_TAG_RUNTIME) << label << " => 0x" << std::hex << result << std::dec << " (" << result << ")" << std::endl;
         
