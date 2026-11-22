@@ -364,6 +364,7 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
     uint32_t callback = 0;
     uint32_t sampleRate = kDefaultSampleRate;
     bool enabled = false;
+    double blockDuration = 0.0;
 
     {
         std::lock_guard<std::mutex> lock(g_ai.mutex);
@@ -374,11 +375,15 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         sampleRate = g_ai.sampleRate;
 
         if (enabled && startAddr != 0 && length != 0 && sampleRate != 0) {
+            const double bytesPerSecond = static_cast<double>(sampleRate) * kAudioChannels * kBytesPerSample;
+            blockDuration = static_cast<double>(length) / bytesPerSecond;
             // SoundThread can hit the idle scheduler before the outer AXOut frame finishes;
             // retain elapsed time here rather than recursively entering the singleton AI/AX device.
+            // The cap never drops below one block, so a DMA block longer than kMaxCatchUp can
+            // still accumulate enough time to complete.
             g_ai.accumulatorSeconds = std::min(
                 g_ai.accumulatorSeconds + static_cast<double>(deltaMicros) / 1'000'000.0,
-                std::chrono::duration<double>(kMaxCatchUp).count());
+                std::max(std::chrono::duration<double>(kMaxCatchUp).count(), blockDuration));
             if (g_ai.tickActive) {
                 return;
             }
@@ -404,8 +409,6 @@ void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros)
         }
     } activeTickReset;
 
-    const double bytesPerSecond = static_cast<double>(sampleRate) * kAudioChannels * kBytesPerSample;
-    const double blockDuration = static_cast<double>(length) / bytesPerSecond;
     if (blockDuration <= 0.0) {
         return;
     }
