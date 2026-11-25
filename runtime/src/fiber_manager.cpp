@@ -3,9 +3,12 @@
 #include "abi_bridge.h"
 #include "hle_stubs.h"
 #include "host_context.h"
+#include "guest_callback_state.h"
 #include "runtime_log.h"
 
-// Defined in hle/os/os_sleep.cpp; the sleep-timer table is file-local there.
+extern "C" void OSExitThread_HLE_801aa0f0(CpuContext* ctx);
+extern "C" int32_t OS__RestoreInterrupts_801a65d4(int32_t level);
+void OS_HLE_RestoreInterruptMirror(bool enabled) noexcept;
 
 #include <algorithm>
 #include <chrono>
@@ -18,11 +21,28 @@ namespace Fiber {
 
 std::mutex GuestFiberManager::s_mutex;
 std::unordered_map<uint32_t, GuestFiber> GuestFiberManager::s_fibers;
+std::unordered_map<uint32_t, uint64_t> GuestFiberManager::s_threadGenerations;
+uint64_t GuestFiberManager::s_nextThreadGeneration = 1;
 std::vector<void*> GuestFiberManager::s_fibersPendingDelete;
 void* GuestFiberManager::s_schedulerFiber = nullptr;
 uint32_t GuestFiberManager::s_currentGuestThread = 0;
 bool GuestFiberManager::s_initialized = false;
-thread_local CpuContext* GuestFiberManager::s_cpuContext = nullptr;
+
+namespace {
+void SwitchKeepingAmbientContext(void* target) {
+    CpuContext* const ambient = TryGetCpuContext();
+    const uint32_t fpControl = MkwGetHostFpControl();
+    const bool nandDraining = GuestCallbacks::nandDraining;
+    HostContext::Switch(target);
+    GuestCallbacks::nandDraining = nandDraining;
+    g_currentCpuContext = ambient;
+    if (ambient) {
+        MkwApplyHostNiMode(ambient->fpscr);
+    } else {
+        MkwRestoreHostMxcsr(fpControl);
+    }
+}
+} // namespace
 
 void GuestFiberManager::PurgePendingFibers() {
     std::vector<void*> toDelete;
@@ -30,10 +50,17 @@ void GuestFiberManager::PurgePendingFibers() {
         std::lock_guard<std::mutex> lock(s_mutex);
         toDelete.swap(s_fibersPendingDelete);
     }
+    std::vector<void*> stillRunning;
     for (void* f : toDelete) {
-        if (f && !HostContext::IsCurrent(f)) {
+        if (f && HostContext::IsCurrent(f)) {
+            stillRunning.push_back(f);
+        } else if (f) {
             HostContext::Destroy(f);
         }
+    }
+    if (!stillRunning.empty()) {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        s_fibersPendingDelete.insert(s_fibersPendingDelete.end(), stillRunning.begin(), stillRunning.end());
     }
 }
 
@@ -46,10 +73,10 @@ std::atomic<uint32_t> g_viRetracePendingCount{0};
 namespace {
 constexpr uint32_t kOSCurrentContextAddr = 0x800000d4u;
 constexpr uint32_t kOSRunningContextAddr = 0x800000e4u;  // OSGetCurrentThread reads this
-constexpr uint32_t kThreadQueueArrayAddr = 0x803477b0u;
-constexpr uint32_t kSchedulerPendingFlagAddr = 0x80386920u;
-constexpr uint32_t kSchedulerReschedCounterAddr = 0x8038691cu;
-constexpr uint32_t kSchedulerIdleFlagAddr = 0x80386918u;
+const uint32_t kThreadQueueArrayAddr = MKW_GADDR(803477b0);
+const uint32_t kSchedulerPendingFlagAddr = MKW_GADDR(80386920);
+const uint32_t kSchedulerReschedCounterAddr = MKW_GADDR(8038691c);
+const uint32_t kSchedulerIdleFlagAddr = MKW_GADDR(80386918);
 
 // OSThread structure offsets
 constexpr uint32_t kThreadStateOffset = 0x2C8u;
@@ -199,6 +226,7 @@ void GuestFiberManager::Initialize() {
 }
 
 void GuestFiberManager::Shutdown() {
+    PurgePendingFibers();
     std::lock_guard<std::mutex> lock(s_mutex);
 
     for (auto& [addr, fiber] : s_fibers) {
@@ -208,6 +236,7 @@ void GuestFiberManager::Shutdown() {
         }
     }
     s_fibers.clear();
+    s_threadGenerations.clear();
 
     if (s_schedulerFiber) {
         HostContext::ShutdownScheduler(s_schedulerFiber);
@@ -231,11 +260,17 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     std::lock_guard<std::mutex> lock(s_mutex);
     
     // Check if fiber already exists for this thread - if so, reset it
+    s_threadGenerations.erase(guestThreadAddr);
     auto existingIt = s_fibers.find(guestThreadAddr);
     if (existingIt != s_fibers.end()) {
         // Delete the old fiber if it exists and is not the scheduler fiber
         if (existingIt->second.fiber && !existingIt->second.isSchedulerFiber) {
-            HostContext::Destroy(existingIt->second.fiber);
+            if (HostContext::IsCurrent(existingIt->second.fiber)) {
+                s_fibersPendingDelete.push_back(existingIt->second.fiber);
+                s_currentGuestThread = 0;
+            } else {
+                HostContext::Destroy(existingIt->second.fiber);
+            }
         }
         s_fibers.erase(existingIt);
     }
@@ -310,6 +345,7 @@ void GuestFiberManager::SuspendGuestThread(uint32_t guestThreadAddr) {
 
 void GuestFiberManager::ExitGuestThread(uint32_t guestThreadAddr, ThreadState finalState) {
     std::lock_guard<std::mutex> lock(s_mutex);
+    s_threadGenerations.erase(guestThreadAddr);
     
     auto it = s_fibers.find(guestThreadAddr);
     if (it == s_fibers.end()) {
@@ -338,6 +374,22 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
         RT_LOG(RT_TAG_OS) << "SwitchToThread called before initialization!" << std::endl;
         return;
     }
+
+    if (!cpu) {
+        cpu = TryGetCpuContext();
+        if (!cpu) {
+            cpu = &GetPersistentCpuContext();
+        }
+    }
+    CpuContext* const threadFile = &GetPersistentCpuContext();
+    // Callback scratch registers do not replace the interrupted register file.
+    const bool fromScratch = cpu != threadFile;
+    CpuContext interruptedFile{};
+    if (fromScratch) {
+        interruptedFile = *threadFile;
+    }
+    const bool interruptsEnabledAtSwitch = OS_HLE_InterruptsEnabled();
+    const uint32_t hostFpControl = MkwGetHostFpControl();
     
     void* fiberHandle = nullptr;
     uint32_t previousThread = 0;
@@ -389,9 +441,6 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
         }
     }
     
-    // Store CPU context pointer for the target fiber to use
-    s_cpuContext = cpu;
-    
     // Check if we're already on the target fiber (e.g., switching to main thread
     // when we're already on the scheduler fiber)
     if (HostContext::IsCurrent(fiberHandle)) {
@@ -403,19 +452,24 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
     }
 
     if (cpu && haveTargetContext) {
-        *cpu = targetContext;
+        *threadFile = targetContext;
         // FPSCR travels with the guest-thread context, and its NI bit is
         // modeled through the per-host-thread MXCSR; every context restore
         // must re-mirror it.
-        MkwApplyHostNiMode(cpu->fpscr);
+        MkwApplyHostNiMode(targetContext.fpscr);
     }
 
     // Switch to the target fiber (the target fiber will load its own context)
-    HostContext::Switch(fiberHandle);
+    SwitchKeepingAmbientContext(fiberHandle);
+
+    if (fromScratch) {
+        *threadFile = interruptedFile;
+    }
 
     // When we return here, the fiber that issued SwitchToThread has resumed.
     // That does not automatically mean the previous guest thread became runnable
     // again; a different thread may simply have yielded back to the scheduler.
+    bool resumedPreviousThread = false;
     {
         std::lock_guard<std::mutex> lock(s_mutex);
         uint32_t runningContext = 0;
@@ -428,7 +482,7 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
             currentContext = 0;
         }
 
-        const bool resumedPreviousThread =
+        resumedPreviousThread =
             previousThread != 0 &&
             runningContext == previousThread &&
             currentContext == previousThread;
@@ -451,6 +505,37 @@ void GuestFiberManager::SwitchToThread(uint32_t guestThreadAddr, CpuContext* cpu
             s_currentGuestThread = 0;
         }
     }
+    if (resumedPreviousThread) {
+        OS__RestoreInterrupts_801a65d4(interruptsEnabledAtSwitch ? 1 : 0);
+    } else {
+        OS_HLE_RestoreInterruptMirror(interruptsEnabledAtSwitch);
+    }
+    if (CpuContext* ambient = TryGetCpuContext()) {
+        MkwApplyHostNiMode(ambient->fpscr);
+    } else {
+        MkwRestoreHostMxcsr(hostFpControl);
+    }
+    PurgePendingFibers();
+}
+
+void GuestFiberManager::SwitchToScheduler() {
+    CpuContext* const cpu = TryGetCpuContext();
+    CpuContext* const threadFile = &GetPersistentCpuContext();
+    const CpuContext savedThreadFile = *threadFile;
+    const CpuContext savedContext = cpu ? *cpu : savedThreadFile;
+    const uint32_t previousThread = s_currentGuestThread;
+    const bool interruptsEnabledAtSwitch = OS_HLE_InterruptsEnabled();
+
+    SwitchKeepingAmbientContext(s_schedulerFiber);
+
+    *threadFile = savedThreadFile;
+    if (cpu) {
+        *cpu = savedContext;
+        MkwApplyHostNiMode(cpu->fpscr);
+    }
+    s_currentGuestThread = previousThread;
+    OS__RestoreInterrupts_801a65d4(interruptsEnabledAtSwitch ? 1 : 0);
+    PurgePendingFibers();
 }
 
 uint32_t GuestFiberManager::GetCurrentGuestThread() {
@@ -472,6 +557,16 @@ bool GuestFiberManager::IsTerminated(uint32_t guestThreadAddr) {
     std::lock_guard<std::mutex> lock(s_mutex);
     auto it = s_fibers.find(guestThreadAddr);
     return it != s_fibers.end() && it->second.terminated;
+}
+
+uint64_t GuestFiberManager::GetThreadGeneration(uint32_t guestThreadAddr) {
+    std::lock_guard<std::mutex> lock(s_mutex);
+    auto [it, inserted] = s_threadGenerations.try_emplace(guestThreadAddr, 0);
+    if (inserted) {
+        if (s_nextThreadGeneration == 0) std::abort();
+        it->second = s_nextThreadGeneration++;
+    }
+    return it->second;
 }
 
 bool GuestFiberManager::RegisterMainThreadAsFiber(uint32_t guestThreadAddr, CpuContext* cpu) {
@@ -535,7 +630,7 @@ void GuestFiberManager::FiberProc(void* param)
 
 
     // Get our fiber info
-    GuestFiber* fiber = nullptr;
+    void* fiberHandle = nullptr;
     uint32_t entryPoint = 0;
     uint32_t entryArg = 0;
     
@@ -544,19 +639,19 @@ void GuestFiberManager::FiberProc(void* param)
         auto it = s_fibers.find(guestThreadAddr);
         if (it == s_fibers.end()) {
             RT_LOG(RT_TAG_OS) << "FiberProc: fiber not found!" << std::endl;
-            HostContext::Switch(s_schedulerFiber);
-            return;
+        } else {
+            fiberHandle = it->second.fiber;
+            entryPoint = it->second.entryPoint;
+            entryArg = it->second.entryArg;
         }
-        fiber = &it->second;
-        entryPoint = fiber->entryPoint;
-        entryArg = fiber->entryArg;
+    }
+    if (!fiberHandle) {
+        SwitchToScheduler();
+        std::abort();
     }
     
     // Get the CPU context
-    CpuContext* cpu = s_cpuContext;
-    if (!cpu) {
-        cpu = &GetPersistentCpuContext();
-    }
+    CpuContext* cpu = &GetPersistentCpuContext();
     
     // Guest OSContext: r2 (TOC/SDA2) at 0x08, r13 (SDA) at 0x34. Both must load correctly or
     // translated code loses access to global/static data.
@@ -569,6 +664,7 @@ void GuestFiberManager::FiberProc(void* param)
         cpu->gpr[1] = Memory::Read32(guestThreadAddr + 0x04u);
         // Load saved LR
         cpu->lr = Memory::Read32(guestThreadAddr + 0x84u);
+        cpu->srr1 = Memory::Read32(guestThreadAddr + kCtxSrr1Offset);
         
     } catch (const Memory::AccessViolation& e) {
         RT_LOG(RT_TAG_OS) << "Failed to load guest context from 0x" << std::hex << guestThreadAddr
@@ -581,10 +677,15 @@ void GuestFiberManager::FiberProc(void* param)
     cpu->srr0 = entryPoint;
     
     // Create a CpuContextScope for this fiber
+    // A new host stack has no enclosing CPU scope.
+    g_currentCpuContext = nullptr;
+    GuestCallbacks::nandDraining = false;
     CpuContextScope scope(cpu);
+    OS__RestoreInterrupts_801a65d4((cpu->srr1 & 0x8000u) != 0 ? 1 : 0);
+    PurgePendingFibers();
     
     int startDeferAttempts = 0;
-    while (entryPoint == 0x8024373c) { // EGG::Thread::start
+    while (entryPoint == MKW_GADDR(8024373c)) { // EGG::Thread::start
         uint32_t vtable = 0;
         uint32_t startFn = 0;
         try {
@@ -607,11 +708,9 @@ void GuestFiberManager::FiberProc(void* param)
                       << ", fn=0x" << startFn << ") after retries; continuing anyway." << std::dec << std::endl;
             break;
         }
-        HostContext::Switch(s_schedulerFiber);
+        SwitchToScheduler();
     }
 
-    // The deferral loop above yields to the scheduler and therefore can resume
-    // with registers from a different guest fiber in the shared CpuContext.
     cpu->gpr[3] = entryArg;
     cpu->pc = entryPoint;
     cpu->srr0 = entryPoint;
@@ -626,20 +725,45 @@ void GuestFiberManager::FiberProc(void* param)
                   << " not found in registry!" << std::dec << std::endl;
     }
     
-    // Thread entry functions normally return into OSExitThread on hardware.
-    // Our host fiber call boundary observes the return directly, so complete the
-    // guest OSThread lifecycle here before handing control back to the scheduler.
+    bool ownsThread = false;
+    bool alreadyTerminated = false;
+    {
+        std::lock_guard<std::mutex> lock(s_mutex);
+        const auto it = s_fibers.find(guestThreadAddr);
+        ownsThread = it != s_fibers.end() && it->second.fiber == fiberHandle;
+        alreadyTerminated = it != s_fibers.end() && it->second.terminated;
+    }
+    // A reused OSThread belongs to its replacement, even while this stack retires.
+    if (!ownsThread && !alreadyTerminated) {
+        SwitchToScheduler();
+        std::abort();
+    }
+
+    const uint32_t returnValue = cpu->gpr[3];
+    bool isRunningThread = false;
+    if (!alreadyTerminated) {
+        try {
+            isRunningThread = Memory::Read32(kOSRunningContextAddr) == guestThreadAddr;
+        } catch (const Memory::AccessViolation&) {
+        }
+    }
+    if (isRunningThread) {
+        OSExitThread_HLE_801aa0f0(cpu);
+    }
 
     try {
-        RemoveGuestThreadFromQueue(guestThreadAddr);
-        const uint16_t attributes = Memory::Read16(guestThreadAddr + kThreadAttrOffset);
-        const bool detached = (attributes & 1u) != 0;
-        const uint16_t finalState = detached ? 0u : static_cast<uint16_t>(ThreadState::MORIBUND);
-        if (!detached) {
-            Memory::Write32(guestThreadAddr + kThreadExitValueOffset, 0);
+        if (!isRunningThread && !alreadyTerminated) {
+            RemoveGuestThreadFromQueue(guestThreadAddr);
+            const uint16_t attributes = Memory::Read16(guestThreadAddr + kThreadAttrOffset);
+            const bool detached = (attributes & 1u) != 0;
+            const uint16_t finalState = detached ? 0u : static_cast<uint16_t>(ThreadState::MORIBUND);
+            if (!detached) {
+                Memory::Write32(guestThreadAddr + kThreadExitValueOffset, returnValue);
+            }
+            Memory::Write16(guestThreadAddr + kThreadStateOffset, finalState);
+            WakeGuestThreadsOnQueueNoSwitch(guestThreadAddr + kThreadJoinQueueOffset);
+            ExitGuestThread(guestThreadAddr, detached ? ThreadState::WAITING : ThreadState::MORIBUND);
         }
-        Memory::Write16(guestThreadAddr + kThreadStateOffset, finalState);
-        WakeGuestThreadsOnQueueNoSwitch(guestThreadAddr + kThreadJoinQueueOffset);
         if (Memory::Read32(kOSRunningContextAddr) == guestThreadAddr) {
             Memory::Write32(kOSRunningContextAddr, 0);
         }
@@ -653,18 +777,9 @@ void GuestFiberManager::FiberProc(void* param)
                   << " (" << e.reason() << ")" << std::endl;
     }
     
-    {
-        std::lock_guard<std::mutex> lock(s_mutex);
-        auto it = s_fibers.find(guestThreadAddr);
-        if (it != s_fibers.end()) {
-            it->second.terminated = true;
-            it->second.state = ThreadState::MORIBUND;
-        }
-        s_currentGuestThread = 0;
-    }
-    
     // Return to scheduler
-    HostContext::Switch(s_schedulerFiber);
+    SwitchToScheduler();
+    std::abort();
 }
 
 } // namespace Fiber

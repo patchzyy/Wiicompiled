@@ -11,6 +11,7 @@
   <a href="#building-from-source"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
   <a href="#retro-rewind"><img alt="Retro Rewind supported" src="https://img.shields.io/badge/Retro%20Rewind-supported-FF375F"></a>
   <a href="https://github.com/TeamWheelWizard/WheelWizard/releases"><img alt="Install with Wheel Wizard" src="https://img.shields.io/badge/install%20with-Wheel%20Wizard-8B5CF6"></a>
+  <a href="https://github.com/patchzyy/Wiicompiled/releases"><img alt="Total downloads" src="https://img.shields.io/github/downloads/patchzyy/Wiicompiled/total?color=00B8D9&amp;logo=github"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2EA44F?logo=gnu&amp;logoColor=white"></a>
 </p>
 
@@ -21,7 +22,7 @@ anywhere at runtime.
 
 > [!IMPORTANT]
 > There is no Nintendo code, no assets and no game data anywhere in this project or its releases.
-> You need your own legally dumped copy of the PAL version of the game. Setup only ships the
+> You need your own legally dumped copy of the PAL, NTSC-U, or NTSC-J version of the game. Setup only ships the
 > toolchain, the translation runs on your machine against your disc image, and nothing ever gets
 > uploaded.
 
@@ -52,12 +53,16 @@ Play at several times the console's resolution.
 **Music ducking.** 
 Start playing something else, Spotify, a YouTube video, and
 the game automatically mutes its own music until the other audio stops. Optional, if you'd
-rather it didn't. All audio that shows in your display media controls on your windows pc fall under this.
+rather it didn't. Windows uses system media controls and Linux uses MPRIS players.
+On macOS 14.2 or later, this detects other apps with active audio output and excludes
+the game's own audio. Apps that keep an output stream running silently can keep
+game music muted even when nothing is audible.
 
 **An in-game settings bar.** 
 Press **F10** while the game window has focus:
 - Internal resolution
 - FPS counter
+- MetalFX spatial upscaling on supported macOS GPUs
 - Controller assignment for all four ports
 - Full per-controller button mapping, including the bumpers
 - Dolphin-syntax input expressions and GCPadNew.ini import
@@ -96,16 +101,15 @@ Known limitations of the Wii Remote path:
 - GPU: GTX 1650 / RX 6400 / Arc A310 or higher
 - CPU: Intel Core i5-8400 / AMD Ryzen 5 2600 (4c/6c, ~3.5GHz+) or higher
 - About 20 GB of free disk space during installation (Final game size ~5 GB)
-- macOS 14 (Sonoma) or later on Apple Silicon
-- On macOS, Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
-- A clean, unmodified **PAL `RMCP01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
+- macOS 12 (Monterey) or later on Apple Silicon (`arm64`) or Intel (`x86_64-v3`); pre-Haswell Intel CPUs are unsupported
+- On macOS, a Metal-capable GPU and Apple Xcode Command Line Tools (Setup opens Apple's installer when they are missing)
+- A clean, unmodified **PAL `RMCP01`**, **NTSC-U `RMCE01`**, or **NTSC-J `RMCJ01`** disc image of Mario Kart Wii, dumped by you. ISO, GCM,
   GCZ, CISO, WBFS, WIA and RVZ are accepted.
 
 > [!NOTE]
 > GPU/CPU minimums are set by driver support and D3D12/Vulkan feature requirements, not by the game's actual demands.
 
-Only the clean PAL revision will work. Anything else (other
-regions, patched executables) is rejected outright.
+Only the clean PAL, NTSC-U, and NTSC-J revisions will work. Anything else (NTSC-K, patched executables) is rejected outright.
 
 > [!NOTE]
 > Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
@@ -113,11 +117,26 @@ regions, patched executables) is rejected outright.
 
 ## Installing
 
-For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`
+For an easy experience, use [Wheel Wizard](https://github.com/TeamWheelWizard/WheelWizard). Pick your clean PAL `RMCP01`, NTSC-U `RMCE01`, or NTSC-J `RMCJ01`
 image under Settings, turn on **WiiCompiled (beta)**, and hit install from the Home page.
 Wheel Wizard downloads the setup tool from this repo and walks you through install, updates and
 launching. The backend itself is deliberately command-line only, Wheel Wizard is a wrapper around it.
 
+### macOS
+
+Download `WiiCompiled-Setup.pkg` from this repository's Releases page and open it. The universal
+package selects the appropriate bundled tools for the host architecture, supporting both Apple Silicon (`arm64`)
+and Intel (`x86_64`) Macs. It installs **WiiCompiled Setup** in Applications; open that app, choose
+your clean PAL `RMCP01`, NTSC-U `RMCE01`, or NTSC-J `RMCJ01` disc image, and select either the base game or Retro Rewind. For Retro Rewind, choose the `RetroRewind6` folder
+or its parent folder.
+
+Setup verifies and extracts the image locally, then translates and compiles the native app on your
+Mac. On a first run it may ask macOS to install Xcode Command Line Tools; complete Apple's installer,
+then open Setup again. When the build completes, Setup asks for administrator approval once to install
+`WiiCompiled.app` (and, if selected, `RetroRewind.app`) in `/Applications`.
+
+Setup opens Terminal while it works, so the extraction and build progress—and any error that needs
+reporting—remain visible.
 
 > [!CAUTION]
 > Only take builds from this repository's
@@ -176,7 +195,7 @@ don't want to risk it right now, setup has to run a static recompiler over the w
 and then throw a C++ compiler at the result. It's a **one-time cost** on your machine.
 
 **Which game version works?**
-Clean PAL `RMCP01`. Other regions and modified executables are **rejected**. Translating
+Clean PAL `RMCP01`, NTSC-U `RMCE01`, and NTSC-J `RMCJ01`. NTSC-K `RMCK01` and modified executables are **rejected**. Translating
 them against the wrong manifest would give you a subtly broken game that's miserable to debug for us.
 
 **Can I recompile other GameCube/Wii games with it?**
@@ -235,7 +254,7 @@ WiiCompiled is distributed in the hope that it will be useful, but WITHOUT ANY W
 even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
 General Public License for more details.
 
-Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0.
+Any mkwii distribution making use of WiiCompiled must be licensed under GPL v3.0 or a more permissable license
 
 Not affiliated with, endorsed by, or associated with Nintendo. Mario Kart Wii is a trademark of
 Nintendo. No Nintendo intellectual property is contained in, distributed with, or obtainable

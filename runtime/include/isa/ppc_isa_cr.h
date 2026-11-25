@@ -46,7 +46,7 @@ inline uint32_t PpcCrLogicalResident(
         case 3: result = ~(a & b) & 1u; break;
         case 4: result = a & b; break;
         case 5: result = ~(a ^ b) & 1u; break;
-        case 6: result = (~a & 1u) | b; break;
+        case 6: result = a | (~b & 1u); break;
         case 7: result = a | b; break;
     }
     return PpcCrSetBitResident(cr, bt, result);

@@ -339,7 +339,13 @@ public sealed partial class CxxLinearCodeGenerator
             if (effective >= remap.LinkBase && effective < linkEnd)
             {
                 var relocated = checked(remap.GuestBase + (effective - remap.LinkBase));
-                return $"0x{relocated:X8}u";
+                if (!remap.GuardAgainstResume)
+                {
+                    return $"0x{relocated:X8}u";
+                }
+
+                var runtime = Address(addr, types);
+                return $"(static_cast<uint32_t>({runtime}) == 0x{effective:X8}u ? 0x{relocated:X8}u : static_cast<uint32_t>({runtime}))";
             }
         }
 

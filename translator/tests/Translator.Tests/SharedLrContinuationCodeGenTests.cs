@@ -9,6 +9,33 @@ namespace Translator.Tests;
 
 public class SharedLrContinuationCodeGenTests
 {
+    [Fact]
+    public void OnlyLocalLinkRegisterContinuationsCountTowardSharedDispatch()
+    {
+        var function = new IrFunction("single_lr_continuation", "0x80001000", new[]
+        {
+            new IrBasicBlock("0x80001000", new IrInstruction[]
+            {
+                new IrCall(string.Empty, "0x81800000", Array.Empty<IrValue>()),
+                new IrAssign("lr", IrValue.Imm(unchecked((int)0x80001004u))),
+                new IrCall(string.Empty, "0x81800000", Array.Empty<IrValue>()),
+                new IrReturn(null)
+            })
+        });
+        var types = new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>
+        {
+            ["lr"] = ValueRepresentation.UInt32
+        });
+
+        var code = new CxxLinearCodeGenerator().Emit(0x80001000,
+            new SsaTransformer().Convert(function),
+            new FunctionAbiClassification("single_lr_continuation", ValueRepresentation.Void), types,
+            lrContinuationCallTargets: new HashSet<uint> { 0x81800000u });
+
+        Assert.DoesNotContain("lr_continuation_dispatch:", code);
+        Assert.DoesNotContain("goto lr_continuation_dispatch;", code);
+    }
+
     [Theory]
     [InlineData(2)]
     [InlineData(20)]

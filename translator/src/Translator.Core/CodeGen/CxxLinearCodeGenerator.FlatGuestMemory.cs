@@ -84,6 +84,14 @@ public sealed partial class CxxLinearCodeGenerator
     private static string GuestLoadHelper(int sizeBytes, bool isFloat) =>
         FlatReadHelper(Bits(sizeBytes), isFloat);
 
+    private static string CheckedMmioLoadHelper(int sizeBytes) => Bits(sizeBytes) switch
+    {
+        8 => "Memory::Read8",
+        16 => "Memory::Read16",
+        64 => "Memory::Read64",
+        _ => "Memory::Read32"
+    };
+
     private static string GuestStoreHelper(int sizeBytes, bool isFloat) =>
         FlatWriteHelper(Bits(sizeBytes), isFloat);
 

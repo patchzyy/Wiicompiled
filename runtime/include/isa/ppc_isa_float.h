@@ -22,7 +22,7 @@
 // the psq_l/psq_st tier that does lives in ppc_isa_quantized.h.
 
 #include "ppc_isa_config.h"
-#include "ppc_isa_context.h"
+#include "guest_abi/cpu_context.h"
 
 #include <array>
 #include <cmath>
@@ -191,7 +191,7 @@ inline bool MkwHostNiActiveInline() noexcept
     return g_mkwHostNiActive;
 }
 
-inline float PpcForceSingleValueInline(double value)
+inline float PpcForceSingleValueSlowInline(double value)
 {
     // FPSCR[NI] flushes an exact pre-round single-subnormal even when rounding would promote it
     // to the smallest normal. g_mkwNiFlushThreshold (2^-126 active, 0.0 inactive) turns the
@@ -214,6 +214,18 @@ inline float PpcForceSingleValueInline(double value)
     const uint64x1_t kept = vbsl_u64(flush, signOnly, vreinterpret_u64_f64(v));
     return static_cast<float>(vget_lane_f64(vreinterpret_f64_u64(kept), 0));
 #endif
+}
+
+inline float PpcForceSingleValueInline(double value)
+{
+    // Convert first and take the exact pre-round check above only for a +-FLT_MIN or subnormal
+    // result. A larger magnitude means |value| was at least 2^-126 (no rounding mode carries a
+    // smaller one past FLT_MIN), +-0 is what the flush produces anyway, and NaN/infinity never
+    // flush, so every other result matches. This keeps the mask off each single op's dependency chain.
+    const float converted = static_cast<float>(value);
+    if ((PpcBitCastToU32Inline(converted) & 0x7FFFFFFFu) - 1u < 0x00800000u) [[unlikely]]
+        return PpcForceSingleValueSlowInline(value);
+    return converted;
 }
 
 inline float PpcFlushSingleForNiInline(float value)
@@ -607,7 +619,18 @@ inline double PPC_PsMulNoNiInline(double lhs, double rhs)
 inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multiplier, PpcPairVec addend)
 {
 #if defined(__x86_64__)
+#if defined(__FMA__)
     return _mm_fmadd_ps(multiplicand, multiplier, addend);
+#else
+    // x86-64-v2 has SSE4.2 but no FMA. Preserve the one rounding point per
+    // lane through the scalar C++ FMA rather than decomposing into mul+add.
+    const double a = PpcM128ToPsInline(multiplicand);
+    const double c = PpcM128ToPsInline(multiplier);
+    const double b = PpcM128ToPsInline(addend);
+    return PpcPsToM128Inline(PpcPackPairedInline(
+        PpcAccuratePsMaddLaneNoNiInline<false>(PpcGetPs0Inline(a), PpcGetPs0Inline(c), PpcGetPs0Inline(b)),
+        PpcAccuratePsMaddLaneNoNiInline<false>(PpcGetPs1Inline(a), PpcGetPs1Inline(c), PpcGetPs1Inline(b))));
+#endif
 #elif defined(__aarch64__)
     const PpcPairVec result = vfma_f32(addend, multiplicand, multiplier);
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]
@@ -619,7 +642,16 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
 inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multiplier, PpcPairVec subtractor)
 {
 #if defined(__x86_64__)
+#if defined(__FMA__)
     return _mm_fmsub_ps(multiplicand, multiplier, subtractor);
+#else
+    const double a = PpcM128ToPsInline(multiplicand);
+    const double c = PpcM128ToPsInline(multiplier);
+    const double b = PpcM128ToPsInline(subtractor);
+    return PpcPsToM128Inline(PpcPackPairedInline(
+        PpcAccuratePsMaddLaneNoNiInline<true>(PpcGetPs0Inline(a), PpcGetPs0Inline(c), PpcGetPs0Inline(b)),
+        PpcAccuratePsMaddLaneNoNiInline<true>(PpcGetPs1Inline(a), PpcGetPs1Inline(c), PpcGetPs1Inline(b))));
+#endif
 #elif defined(__aarch64__)
     const PpcPairVec result = vfma_f32(vneg_f32(subtractor), multiplicand, multiplier);
     if (PpcPairNanLaneBitsInline(result) != 0) [[unlikely]]

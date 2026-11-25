@@ -13,6 +13,7 @@
 namespace MkwDynamicAspect {
 
 inline constexpr float kPresentationAspect169 = 16.0f / 9.0f;
+inline constexpr float kPresentationAspect43 = 4.0f / 3.0f;
 inline constexpr float kEggFramebufferWidth = 608.0f;
 inline constexpr uint32_t kEggScreenHeight = 456u;
 inline constexpr uint32_t kEggRecordWidth43 = 608u;
@@ -31,32 +32,35 @@ inline float SurfaceAspect(uint32_t width, uint32_t height) noexcept {
         static_cast<float>(width) / static_cast<float>(height));
 }
 
-// surfaceAspect / (16:9). Above 1 the surface is wider than 16:9, below 1 it
-// is tighter (4:3, portrait).
-inline float AspectRatioFactor(uint32_t width, uint32_t height) noexcept {
-    return SurfaceAspect(width, height) / kPresentationAspect169;
+// surfaceAspect / referenceAspect. Above 1 the surface is wider than the
+// reference, below 1 it is tighter (4:3, portrait).
+inline float AspectRatioFactor(uint32_t width, uint32_t height,
+                               float referenceAspect = kPresentationAspect169) noexcept {
+    return SurfaceAspect(width, height) / referenceAspect;
 }
 
-// Hor+ factor, clamped at 1 so a tighter-than-16:9 surface never narrows the
-// canvas (that would crop away scene the 16:9 view showed).
-inline float HorizontalExpansion(uint32_t width, uint32_t height) noexcept {
-    return std::max(1.0f, AspectRatioFactor(width, height));
+// Hor+ factor, clamped at 1 so a tighter surface never narrows the canvas
+// (that would crop away scene the reference view showed).
+inline float HorizontalExpansion(uint32_t width, uint32_t height,
+                                 float referenceAspect = kPresentationAspect169) noexcept {
+    return std::max(1.0f, AspectRatioFactor(width, height, referenceAspect));
 }
 
-// Vert+ factor, clamped at 1 so a wider-than-16:9 surface never shortens the
-// frustum. Exactly one of the two expansions is ever greater than 1.
-inline float VerticalExpansion(uint32_t width, uint32_t height) noexcept {
-    const float factor = AspectRatioFactor(width, height);
+// Vert+ factor, clamped at 1 so a wider surface never shortens the frustum.
+// Exactly one of the two expansions is ever greater than 1.
+inline float VerticalExpansion(uint32_t width, uint32_t height,
+                               float referenceAspect = kPresentationAspect169) noexcept {
+    const float factor = AspectRatioFactor(width, height, referenceAspect);
     if (!(factor > 0.0f)) {
         return 1.0f;
     }
     return std::clamp(1.0f / factor, 1.0f, kMaxVerticalExpansion);
 }
 
-inline uint32_t EggRecordWidth(uint32_t baseWidth, uint32_t surfaceWidth,
-                               uint32_t surfaceHeight) noexcept {
-    const float scaledWidth =
-        static_cast<float>(baseWidth) * HorizontalExpansion(surfaceWidth, surfaceHeight);
+inline uint32_t EggRecordWidth(uint32_t baseWidth, uint32_t surfaceWidth, uint32_t surfaceHeight,
+                               float referenceAspect = kPresentationAspect169) noexcept {
+    const float scaledWidth = static_cast<float>(baseWidth) *
+                              HorizontalExpansion(surfaceWidth, surfaceHeight, referenceAspect);
     return std::clamp<uint32_t>(
         static_cast<uint32_t>(std::lround(scaledWidth / 4.0f)) * 4u, 4u, 0xFFFCu);
 }

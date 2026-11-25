@@ -77,6 +77,9 @@ target_compile_features(mkw_np_probe PRIVATE cxx_std_20)
 target_link_libraries(mkw_np_probe PRIVATE
     aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx
     mkw::cryptopp)
+if(NOT MKW_PLATFORM_WINDOWS)
+    target_link_libraries(mkw_np_probe PRIVATE mkw::mbedtls)
+endif()
 
 get_filename_component(_mkw_np_aurora_dir "${MKW_AURORA_DIR}" ABSOLUTE)
 mkw_collect_buildsystem_targets("${_mkw_np_aurora_dir}" _mkw_np_all_targets)
@@ -84,6 +87,30 @@ mkw_collect_buildsystem_targets("${_mkw_np_aurora_dir}" _mkw_np_all_targets)
 # the scan above cannot see it; it is appended explicitly. The type and closure
 # checks below still apply to it.
 list(APPEND _mkw_np_all_targets "mkw_cryptopp")
+# The game-independent runtime archive (RuntimeLibrary.cmake). It is outside the
+# probe closure, so it ships only when the harvester builds it explicitly.
+if(TARGET mkw_runtime)
+    list(APPEND _mkw_np_all_targets "mkw_runtime")
+endif()
+if(NOT MKW_PLATFORM_WINDOWS)
+    set(_mkw_np_mbedtls_targets mbedtls mbedx509 mbedcrypto)
+    # mbedcrypto links these third-party archives when upstream defines them.
+    # Keep dependencies after mbedcrypto for static linking on the consumer side.
+    foreach(_t everest p256m)
+        if(TARGET ${_t})
+            list(APPEND _mkw_np_mbedtls_targets ${_t})
+        endif()
+    endforeach()
+    list(APPEND _mkw_np_all_targets ${_mkw_np_mbedtls_targets})
+    # Keep the complete TLS archive set separate from aurora's aggregate link interface.
+    set(_mkw_np_mbedtls_lines "")
+    foreach(_t IN LISTS _mkw_np_mbedtls_targets)
+        string(APPEND _mkw_np_mbedtls_lines
+            "${_t}|$<TARGET_LINKER_FILE:${_t}>\n")
+    endforeach()
+    file(GENERATE OUTPUT "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/mbedtls.txt"
+        CONTENT "${_mkw_np_mbedtls_lines}")
+endif()
 if(NOT _mkw_np_all_targets)
     message(FATAL_ERROR "No buildsystem targets were found under ${_mkw_np_aurora_dir}")
 endif()
@@ -136,6 +163,7 @@ string(REPLACE ";" "," _mkw_np_lib_targets_csv "${_mkw_np_lib_targets}")
 file(WRITE "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/meta.txt"
     "aurora_dir=${_mkw_np_aurora_dir}\n"
     "runtime_dir=${CMAKE_CURRENT_SOURCE_DIR}\n"
+    "mbedtls_source_dir=${mkw_mbedtls_upstream_SOURCE_DIR}\n"
     "binary_dir=${CMAKE_BINARY_DIR}\n"
     "dawn_config_dir=${_mkw_np_dawn_config_dir}\n"
     "dawn_prebuilt_source_dir=${dawn_prebuilt_SOURCE_DIR}\n"
@@ -145,5 +173,12 @@ file(WRITE "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/meta.txt"
     "cxx_compiler=${CMAKE_CXX_COMPILER}\n"
     "cxx_compiler_version=${CMAKE_CXX_COMPILER_VERSION}\n"
     "library_targets=${_mkw_np_lib_targets_csv}\n")
+if(TARGET mkw_runtime)
+    mkw_runtime_fingerprint(_mkw_np_runtime_fingerprint "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${MKW_CPPWINRT_INCLUDE_DIR}" "${MKW_X86_CPU_PROFILE}")
+    file(APPEND "${MKW_NATIVE_PREBUILT_EXPORT_DIR}/meta.txt"
+        "runtime_fingerprint=${_mkw_np_runtime_fingerprint}\n"
+        "runtime_cpu_profile=${MKW_X86_CPU_PROFILE}\n")
+endif()
 
 message(STATUS "Native prebuilt export: ${MKW_NATIVE_PREBUILT_EXPORT_DIR}")

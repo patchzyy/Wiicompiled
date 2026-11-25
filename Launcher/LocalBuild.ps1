@@ -21,7 +21,8 @@ param(
     # Discards every cache first. Used when a product was reported broken/blocked, so a possibly
     # corrupted translation or build directory can never contribute to the repaired product.
     [switch]$ForceCleanBuild,
-    [int]$Parallel = 0
+    [int]$Parallel = 0,
+    [ValidateSet('v2', 'v3')] [string]$X86CpuProfile = 'v3'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -32,65 +33,6 @@ Set-StrictMode -Version 3.0
 # archives and the objects compiled here can never be produced with different settings.
 # See NativeBuildFlags.ps1; Build-Installer.ps1 stages it beside this script.
 . (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1')
-
-function Resolve-NativePrebuiltDirectory([string]$DependenciesDirectory, [string]$ToolchainBin, [string]$AuroraDirectory, [string]$ThirdPartyDirectory) {
-    <#
-    The shipped precompiled aurora/third-party package, verified against its recorded provenance
-    (exact compiler, exact flags) before use. Anything unexpected falls back to building from source.
-    #>
-    $package = Join-Path $DependenciesDirectory 'native_prebuilt'
-    $provenancePath = Join-Path $package 'provenance.json'
-    if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
-        Write-Host 'MKWCBUILD: No precompiled aurora package was shipped; building it from source'
-        return ''
-    }
-    try {
-        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
-        $compiler = Join-Path $ToolchainBin 'clang-22.exe'
-        $compilerHash = Get-MkwFileSha256 $compiler
-        if ($provenance.CompilerSha256 -ne $compilerHash) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built by a different compiler; building it from source'
-            return ''
-        }
-        if ($provenance.FlagFingerprint -ne (Get-MkwNativeFlagFingerprint)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built with different flags; building it from source'
-            return ''
-        }
-        # The archives embed Dawn's headers and link its import library, so a
-        # dawn_prebuilt tree that is not the one they were harvested against is
-        # an ABI mismatch that only shows up as a crash inside the GPU backend.
-        $recordedDawn = $provenance.PSObject.Properties['DawnRuntimeSha256']
-        if ($null -eq $recordedDawn -or
-            $recordedDawn.Value -ne (Get-MkwDawnRuntimeSha256 $DependenciesDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built against a different Dawn; building it from source'
-            return ''
-        }
-        # The archives are aurora; the runtime compiled here calls its headers.
-        # If this workspace's aurora sources are not the ones that were harvested
-        # (a newer toolkit, or a locally modified tree), linking the package would
-        # mix two versions of aurora, so build it from source instead.
-        $recordedAurora = $provenance.PSObject.Properties['AuroraSourceFingerprint']
-        if ($null -eq $recordedAurora -or
-            $recordedAurora.Value -ne (Get-MkwAuroraSourceFingerprint $AuroraDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different aurora sources; building it from source'
-            return ''
-        }
-        # Same reasoning for the vendored Crypto++ the package also carries:
-        # first-party TUs compile against this workspace's third_party headers,
-        # so a package harvested from an older tree must not be linked here.
-        $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
-        if ($null -eq $recordedThirdParty -or
-            $recordedThirdParty.Value -ne (Get-MkwThirdPartySourceFingerprint $ThirdPartyDirectory)) {
-            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different vendored third-party sources; building it from source'
-            return ''
-        }
-    } catch {
-        Write-Host "MKWCBUILD: The precompiled aurora package could not be validated ($($_.Exception.Message)); building it from source"
-        return ''
-    }
-    Write-Host 'MKWCBUILD: Using the precompiled aurora and third-party libraries'
-    return $package
-}
 
 function Write-MkwBuildStep([string]$StepId, [string]$Message) {
     <#
@@ -103,7 +45,7 @@ function Write-MkwBuildStep([string]$StepId, [string]$Message) {
 function Reset-LocalDirectory([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetFullPath($Workspace).TrimEnd('\') + '\'
-    $installRoot = [IO.Path]::GetFullPath((Split-Path -Parent $Workspace)).TrimEnd('\') + '\'
+    $installRoot = [IO.Path]::GetFullPath((Split-Path -Parent $realWorkspace)).TrimEnd('\') + '\'
     # The caller-supplied output destinations are legitimate reset targets by
     # definition, wherever the caller placed them: a fresh install's operation
     # scratch lives beside the installation directory rather than inside it.
@@ -150,15 +92,24 @@ if ($Profile -eq 'both' -and [string]::IsNullOrWhiteSpace($BaseOutputDirectory))
 if ($Profile -ne 'both' -and -not [string]::IsNullOrWhiteSpace($BaseOutputDirectory)) {
     throw '-BaseOutputDirectory is valid only with -Profile both.'
 }
+$realWorkspace = $Workspace.TrimEnd('\')
+$Workspace = Get-MkwBuildSafePath $realWorkspace 'workspace' 'runtime\CMakeLists.txt'
+# A selected package inside the install may also name the same Code.pul through the real path.
+# Give it the workspace spelling before comparing it with the staged copy.
+if (-not [string]::IsNullOrWhiteSpace($RetroRewindPackageDirectory) -and
+    $RetroRewindPackageDirectory.StartsWith($realWorkspace + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $RetroRewindPackageDirectory = $Workspace + $RetroRewindPackageDirectory.Substring($realWorkspace.Length)
+}
 $translator = Join-Path $Toolkit 'Translator\Translator.Cli.exe'
-$toolchain = Get-MkwShellSafeToolchainRoot $Toolkit
+# A translator step takes 3-19 s on 16 threads; past this it has hung, and failing lets the clean retry run.
+$translatorTimeoutSeconds = 1800
+$toolchain = Get-MkwBuildSafePath $Toolkit 'toolchain' 'CMake\bin\cmake.exe'
 $cmake = Join-Path $toolchain 'CMake\bin\cmake.exe'
 $ninja = Join-Path $toolchain 'Ninja\ninja.exe'
 $toolchainBin = Join-Path $toolchain 'llvm-mingw\bin'
 $cc = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang.exe'
 $cxx = Join-Path $toolchainBin 'x86_64-w64-mingw32-clang++.exe'
 $windres = Join-Path $toolchainBin 'x86_64-w64-mingw32-windres.exe'
-$project = Join-Path $Workspace 'projects\mkwii\recomp.yml'
 $assets = Join-Path $Workspace 'Assets'
 $generated = Join-Path $Workspace 'generated'
 $functions = Join-Path $generated 'functions'
@@ -175,14 +126,18 @@ $retroRoot = if ([string]::IsNullOrWhiteSpace($RetroRewindPackageDirectory)) {
 
 foreach ($required in @(
     @($translator, 'Bundled translator'), @($cmake, 'Bundled CMake'), @($ninja, 'Bundled Ninja'),
-    @($cc, 'Bundled C compiler'), @($cxx, 'Bundled C++ compiler'), @($windres, 'Bundled resource compiler'), @($project, 'Translation project'),
+    @($cc, 'Bundled C compiler'), @($cxx, 'Bundled C++ compiler'), @($windres, 'Bundled resource compiler'),
     @((Join-Path $assets 'main.dol'), 'Extracted main.dol'), @((Join-Path $assets 'StaticR.rel'), 'Extracted StaticR.rel')
 )) { Assert-File $required[0] $required[1] }
 
 # Everything Mario-Kart-specific this script needs is read from the project file rather than
 # restated here: the translation entry point below, and (through the retro-rewind profile the
-# translator loads itself) the module guest/link bases the mod translation uses.
-$pins = Get-MkwProjectPins $project
+# translator loads itself) the module guest/link bases the mod translation uses. The project is
+# the one pinned to the extracted main.dol, which decides the region.
+$selectedProject = Resolve-MkwProjectForAssets $Workspace $assets
+$project = $selectedProject.Path
+$pins = $selectedProject.Pins
+$retroWfcPayloadFile = "binary\payload.$(($pins.RetroWfcPayloadUri -split 'g=')[-1]).bin"
 
 # Three independent knobs: $translatorThreads (the translator's own worker threads; peak memory is
 # one heap that barely moves with thread count, so clamping it only slows translation), $translatedJobs
@@ -196,8 +151,9 @@ if ($Parallel -gt 0) {
     $globalJobs = $Parallel
 } else {
     $translatorThreads = [math]::Max(1, [math]::Min([Environment]::ProcessorCount, 16))
+    # A translated TU peaks around 0.26 GB in clang; 0.5 GiB each after a 2 GiB reserve.
     $translatedJobs = [math]::Max(1, [math]::Min([Environment]::ProcessorCount,
-        [math]::Floor($memoryGiB / 2)))
+        [math]::Floor(($memoryGiB - 2) / 0.5)))
     $globalJobs = [math]::Max($translatedJobs, [Environment]::ProcessorCount)
 }
 
@@ -235,7 +191,8 @@ try {
         # outputs plus --prune-stale mean Ninja only recompiles shards whose bytes actually moved.
         $reuseBase = $false
         if (-not $ForceCleanBuild -and -not [string]::IsNullOrWhiteSpace($TranslationFingerprint) -and
-            (Get-RecordedFingerprint $translationProvenance 'TranslationFingerprint') -eq $TranslationFingerprint) {
+            (Get-RecordedFingerprint $translationProvenance 'TranslationFingerprint') -eq $TranslationFingerprint -and
+            (Get-RecordedFingerprint $translationProvenance 'DolSha256') -eq $pins.DolSha256) {
             $artifacts = @($baseMetadata, $baseManifest, (Join-Path $generated 'base_translation_sources.bin'),
                 (Join-Path $generated 'base_translation_mod_awareness.json'))
             $reuseBase = -not ($artifacts | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
@@ -273,11 +230,18 @@ try {
                 # same translated functions produces the same base tree. Only the translator can
                 # decide that - it takes parsing the Kamek patch set against the recorded translated
                 # function ranges - and it fails closed, so anything but exit 0 retranslates.
-                & $translator @(
-                    'check-base-mod-awareness', '--project', $project, '--profile', 'retro-rewind',
-                    '--translation-output-metadata', $baseMetadata, '--code-pul', $retroCodePul
-                ) | Write-Host
-                if ($LASTEXITCODE -ne 0) {
+                $modAware = $true
+                try {
+                    Invoke-Checked $translator @(
+                        'check-base-mod-awareness', '--project', $project, '--profile', 'retro-rewind',
+                        '--translation-output-metadata', $baseMetadata, '--code-pul', $retroCodePul
+                    ) 'Checking whether the base translation covers the new Code.pul' `
+                        -TimeoutSeconds $translatorTimeoutSeconds
+                } catch {
+                    Write-Host "MKWCBUILD: $($_.Exception.Message)"
+                    $modAware = $false
+                }
+                if (-not $modAware) {
                     Write-MkwBuildStep 'retranslate-base' 'The base translation is stale; retranslating the base game for the new Code.pul'
                     $reuseBase = $false
                 }
@@ -300,15 +264,17 @@ try {
                 '--outdir', $functions, '--output-metadata', $baseMetadata,
                 '--production-source-bundle', (Join-Path $generated 'base_translation_sources.bin'),
                 '--no-function-files', '--prune-stale', '--threads', $translatorThreads
-            ) 'Translating the user-owned base game' -StepId 'translate-base'
+            ) 'Translating the user-owned base game' -StepId 'translate-base' `
+                -TimeoutSeconds $translatorTimeoutSeconds
 
             Invoke-Checked $translator @(
                 'emit-base-manifest', '--project', $project, '--out', $baseManifestDir,
-                '--functions-dir', $functions, '--translation-output-metadata', $baseMetadata, '--region', 'P'
-            ) 'Creating the local base translation manifest' -StepId 'emit-base-manifest'
+                '--functions-dir', $functions, '--translation-output-metadata', $baseMetadata, '--region', $pins.Region
+            ) 'Creating the local base translation manifest' -StepId 'emit-base-manifest' `
+                -TimeoutSeconds $translatorTimeoutSeconds
 
             if (-not [string]::IsNullOrWhiteSpace($TranslationFingerprint)) {
-                [ordered]@{ SchemaVersion = 1; TranslationFingerprint = $TranslationFingerprint } |
+                [ordered]@{ SchemaVersion = 1; TranslationFingerprint = $TranslationFingerprint; DolSha256 = $pins.DolSha256 } |
                     ConvertTo-Json | Set-Content -LiteralPath $translationProvenance -Encoding UTF8
             }
         }
@@ -321,25 +287,26 @@ try {
                 'translate-mod', '--project', $project, '--profile', 'retro-rewind',
                 '--base-manifest', $baseManifest, '--base-translation-output-metadata', $baseMetadata,
                 '--code-pul', $codePul, '--mod-root', $retroRoot, '--mod-name', 'Retro Rewind',
-                '--region', 'P', '--out', $retroOut, '--prefer-cached-inputs', '--emit-cpp',
+                '--region', $pins.Region, '--out', $retroOut, '--prefer-cached-inputs', '--emit-cpp',
                 '--threads', $translatorThreads
             )
             if ($SkipRetroWfcPayload) {
                 $translateModArguments += '--skip-retro-wfc'
             } elseif (-not [string]::IsNullOrWhiteSpace($RetroWfcOfflineDirectory)) {
                 $offlineRoot = [IO.Path]::GetFullPath($RetroWfcOfflineDirectory)
-                $offlinePayload = Join-Path $offlineRoot 'binary\payload.RMCPD00.bin'
+                $offlinePayload = Join-Path $offlineRoot $retroWfcPayloadFile
                 Assert-File $offlinePayload 'Offline Retro-WFC shared payload'
                 $translateModArguments += @('--retro-wfc-payload', $offlinePayload)
             } else {
                 throw 'Retro Rewind requires either -RetroWfcOfflineDirectory or -SkipRetroWfcPayload.'
             }
             Invoke-Checked $translator $translateModArguments 'Translating the selected Retro Rewind Code.pul' `
-                -StepId 'translate-mod'
+                -StepId 'translate-mod' -TimeoutSeconds $translatorTimeoutSeconds
         }
 
         Invoke-Checked $translator @('generate-data-init', '--project', $project) `
-            'Generating local game data initialization' -StepId 'generate-data-init'
+            'Generating local game data initialization' -StepId 'generate-data-init' `
+            -TimeoutSeconds $translatorTimeoutSeconds
 
         $shardArgs = @(
             'emit-build-shards', '--project', $project, '--base-metadata', $baseMetadata,
@@ -351,7 +318,8 @@ try {
             $shardArgs += @('--resolved-profile', (Join-Path $retroOut 'resolved_dispatch_profile.json'),
                 '--retro-cpp-dir', (Join-Path $retroOut 'cpp'))
         }
-        Invoke-Checked $translator $shardArgs 'Preparing local native build shards' -StepId 'emit-build-shards'
+        Invoke-Checked $translator $shardArgs 'Preparing local native build shards' -StepId 'emit-build-shards' `
+            -TimeoutSeconds $translatorTimeoutSeconds
 
         # The build directory is kept whenever the exact toolchain that filled it is the one
         # installed now and its CMake cache still belongs to this workspace path. Object files are
@@ -383,13 +351,16 @@ try {
             }
         }
         $dependencies = Join-Path $Workspace 'Dependencies'
-        $nativePrebuilt = Resolve-NativePrebuiltDirectory $dependencies $toolchainBin `
+        $nativePrebuilt = Resolve-MkwNativePrebuiltDirectory $dependencies $toolchainBin `
             (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
+        if ($X86CpuProfile -eq 'v2') {
+            Write-Host 'MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2'
+        }
         $configure = Get-MkwNativeConfigureArguments `
             -SourceDirectory (Join-Path $Workspace 'runtime') -BuildDirectory $build `
             -Ninja $ninja -CCompiler $cc -CxxCompiler $cxx -ResourceCompiler $windres `
             -DependenciesDirectory $dependencies -NativePrebuiltDirectory $nativePrebuilt `
-            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs")
+            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
         Invoke-Checked $cmake $configure 'Configuring the bundled native toolchain' -StepId 'configure-native'
         if (-not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint)) {
             [ordered]@{ SchemaVersion = 1; NativeToolchainFingerprint = $NativeToolchainFingerprint } |
@@ -415,13 +386,14 @@ try {
             $exe = Join-Path $build "$Target.exe"
             Assert-File $exe 'Locally compiled game executable'
             Copy-Item -LiteralPath $exe -Destination (Join-Path $Destination "$Target.exe")
-            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
+            foreach ($name in @('dxcompiler.dll','dxil.dll','libc++.dll','libpng16.dll','libunwind.dll','libz.dll','libzlib1.dll','SDL3.dll','sqlite3.dll','webgpu_dawn.dll','z.dll','noshaders.zip','dsp_coef.bin','initial_pipeline_cache.db')) {
                 $file = Join-Path $build $name
                 if (Test-Path -LiteralPath $file -PathType Leaf) { Copy-Item -LiteralPath $file -Destination $Destination }
             }
             $redist = Join-Path $Toolkit 'Redist'
             if (Test-Path -LiteralPath $redist -PathType Container) {
-                Copy-Item -Path (Join-Path $redist '*.dll') -Destination $Destination -Force
+                Get-ChildItem -LiteralPath $redist -Filter '*.dll' -File |
+                    Copy-Item -Destination $Destination -Force
             }
             foreach ($name in @('config','wii_bootstrap')) {
                 $directory = Join-Path $build $name
@@ -438,8 +410,8 @@ try {
                 RelSha256 = $relSha
                 CodePulSha256 = if ($isRetro) { Get-MkwFileSha256 (Join-Path $retroRoot 'Binaries\Code.pul') } else { $null }
                 RetroWfcPayloadMode = if (-not $isRetro) { $null } elseif ($SkipRetroWfcPayload) { 'skipped' } else { $RetroWfcPayloadOrigin }
-                RetroWfcPayloadSha256 = if ($isRetro -and -not $SkipRetroWfcPayload) { Get-MkwFileSha256 (Join-Path $RetroWfcOfflineDirectory 'binary\payload.RMCPD00.bin') } else { $null }
-                RetroWfcPayloadLength = if ($isRetro -and -not $SkipRetroWfcPayload) { (Get-Item -LiteralPath (Join-Path $RetroWfcOfflineDirectory 'binary\payload.RMCPD00.bin')).Length } else { $null }
+                RetroWfcPayloadSha256 = if ($isRetro -and -not $SkipRetroWfcPayload) { Get-MkwFileSha256 (Join-Path $RetroWfcOfflineDirectory $retroWfcPayloadFile) } else { $null }
+                RetroWfcPayloadLength = if ($isRetro -and -not $SkipRetroWfcPayload) { (Get-Item -LiteralPath (Join-Path $RetroWfcOfflineDirectory $retroWfcPayloadFile)).Length } else { $null }
                 Compiler = "llvm-mingw clang-22 sha256:$compilerSha"
             }
             $provenance | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $Destination 'local-build.json') -Encoding UTF8

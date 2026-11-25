@@ -1,0 +1,13 @@
+foreach(operation load store)
+    foreach(type 1 2 3)
+        foreach(lanes 0 1)
+            foreach(route resolved null)
+                execute_process(COMMAND "${PSQ_TEST_EXECUTABLE}" ${operation} ${type} ${lanes} ${route}
+                    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+                if(NOT result EQUAL 86)
+                    message(FATAL_ERROR "Reserved PSQ ${operation}/${type}/${lanes}/${route}: ${result} ${output} ${error}")
+                endif()
+            endforeach()
+        endforeach()
+    endforeach()
+endforeach()

@@ -142,7 +142,7 @@ std::vector<MappedRegion>& MappedRegions() {
 
 struct GuardedRange {
     uint32_t start = 0;
-    uint32_t end = 0;
+    uint64_t end = 0;
 };
 
 std::vector<GuardedRange>& ExecutableRanges() {
@@ -633,8 +633,8 @@ uint8_t* HostPointer(uint32_t guestAddress) {
 
 void ProtectDeferredRange(uint32_t address, size_t length) {
     if (RequiresCheckedAccess() || !g_initialized || length == 0) return;
+    if (length > kGuestSpaceSize - address) return;
     const uint64_t end = static_cast<uint64_t>(address) + length;
-    if (end > kGuestSpaceSize) return;
     std::lock_guard<std::mutex> lock(StateMutex());
     const uint64_t first = static_cast<uint64_t>(address) & ~(kHostPageSize - 1u);
     const uint64_t last = RoundUp(end, kHostPageSize);
@@ -643,16 +643,17 @@ void ProtectDeferredRange(uint32_t address, size_t length) {
         // clears the readable bias, so nothing silently reads stale bytes.
         return;
     }
-    DeferredRanges().push_back(GuardedRange{address, static_cast<uint32_t>(end)});
+    DeferredRanges().push_back(GuardedRange{address, end});
 }
 
 void UnprotectDeferredRange(uint32_t address, size_t length) {
     if (RequiresCheckedAccess() || !g_initialized || length == 0) return;
+    if (length > kGuestSpaceSize - address) return;
     std::lock_guard<std::mutex> lock(StateMutex());
     auto& ranges = DeferredRanges();
     const uint64_t end = static_cast<uint64_t>(address) + length;
     const auto it = std::find_if(ranges.begin(), ranges.end(), [&](const GuardedRange& range) {
-        return range.start == address && range.end == static_cast<uint32_t>(end);
+        return range.start == address && range.end == end;
     });
     if (it == ranges.end()) return;
     ranges.erase(it);
@@ -721,7 +722,7 @@ bool HandleAccessViolation(void* faultAddress, bool isWrite) noexcept {
     {
         bool covered = false;
         uint32_t rangeStart = 0;
-        uint32_t rangeEnd = 0;
+        uint64_t rangeEnd = 0;
         uint64_t spanFirst = 0;
         uint64_t spanLast = 0;
         {

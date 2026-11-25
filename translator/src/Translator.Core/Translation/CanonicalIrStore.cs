@@ -30,6 +30,14 @@ public sealed class CanonicalIrStore : ICanonicalIrProvider
         }
     }
 
+    public void Remove(uint entryPoint)
+    {
+        lock (_gate)
+        {
+            _entries.Remove(entryPoint);
+        }
+    }
+
     public bool TryGet(uint entryPoint, out IrFunction function)
     {
         byte[]? encoded;
@@ -55,12 +63,16 @@ internal static class CanonicalIrBinaryCodec
         IndirectJump, JumpTable, Return, Comment, TracePpc, Undefined
     }
 
+    // Reused per thread so encoding doesn't regrow (and re-fault) a fresh buffer per function.
+    [ThreadStatic] private static MemoryStream? _encodeStream;
+
     public static byte[] Encode(IrFunction function)
     {
         var strings = BuildStringTable(function);
         var ids = strings.Select((value, index) => (value, index))
             .ToDictionary(static pair => pair.value, static pair => pair.index, StringComparer.Ordinal);
-        using var stream = new MemoryStream();
+        var stream = _encodeStream ??= new MemoryStream();
+        stream.SetLength(0);
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
         writer.Write(Magic);
         WriteVarUInt(writer, (uint)CanonicalIrStore.FormatVersion);
@@ -85,9 +97,11 @@ internal static class CanonicalIrBinaryCodec
         return stream.ToArray();
     }
 
-    public static IrFunction Decode(ReadOnlySpan<byte> encoded)
+    public static IrFunction Decode(ReadOnlySpan<byte> encoded) => Decode(encoded.ToArray());
+
+    public static IrFunction Decode(byte[] encoded)
     {
-        using var stream = new MemoryStream(encoded.ToArray(), writable: false);
+        using var stream = new MemoryStream(encoded, writable: false);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic) ||
             ReadVarUInt(reader) != CanonicalIrStore.FormatVersion)

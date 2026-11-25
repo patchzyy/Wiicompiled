@@ -564,6 +564,7 @@ public class PpcLifterCoverageTests
         Assert.Equal("beq", beqlrlBranch.Condition);
         Assert.Equal("cr3", beqlrlBranch.ConditionRegister);
         Assert.Contains("call_lr_80000000_80000004", beqlrlBranch.TrueLabel, StringComparison.Ordinal);
+        Assert.Equal("link_branch_80000004_80000004", beqlrlBranch.FalseLabel);
 
         var bgtlrl = Instruction(0, "bgtlrl");
         var bgtlrlBranch = Assert.IsType<IrBranch>(Assert.Single(Assert.Single(lifter.Lift(new[] { bgtlrl })).Ir));

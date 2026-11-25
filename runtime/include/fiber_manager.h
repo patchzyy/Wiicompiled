@@ -96,6 +96,8 @@ public:
     // Check if a fiber exists for a guest thread
     static bool HasFiber(uint32_t guestThreadAddr);
     static bool IsTerminated(uint32_t guestThreadAddr);
+    // May be captured before the default thread is registered as a fiber.
+    static uint64_t GetThreadGeneration(uint32_t guestThreadAddr);
 
 private:
     // The fiber entry point wrapper
@@ -104,24 +106,20 @@ private:
 #else
     static void FiberProc(void* param);
 #endif
-    // Switch from whichever fiber is currently active straight to the scheduler fiber, without
-    // the SwitchToThread bookkeeping (CPU context save/restore, s_currentGuestThread). Used for
-    // in-fiber yields that aren't a real guest thread switch: waiting out the EGG::Thread::start
-    // deferral loop, and returning control on natural thread exit.
+    // Yield to the scheduler while preserving this host frame's registers and ambient state.
     static void SwitchToScheduler();
 
     // Internal state
     static std::mutex s_mutex;
     static std::unordered_map<uint32_t, GuestFiber> s_fibers;
+    static std::unordered_map<uint32_t, uint64_t> s_threadGenerations;
+    static uint64_t s_nextThreadGeneration;
     static std::vector<void*> s_fibersPendingDelete;
     // The scheduler's own host context. Its opaque handle is supplied by the
     // active HostContext backend, so one field serves every supported host.
     static void* s_schedulerFiber;
     static uint32_t s_currentGuestThread;
     static bool s_initialized;
-    // Stored CPU context pointer for fiber switches
-    static thread_local CpuContext* s_cpuContext;
-
     static void PurgePendingFibers();
 };
 

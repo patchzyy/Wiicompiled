@@ -25,6 +25,9 @@ void ServiceDeferredCallbacks();
 // Cheap when the mix already finished (the normal case).
 void JoinMixWorker();
 
+// True while a deferred mix is queued or still running.
+bool MixWorkerBusy();
+
 // Joins and tears down the mix worker thread. Call before the guest memory map
 // is destroyed or re-created.
 void ShutdownMixWorker();

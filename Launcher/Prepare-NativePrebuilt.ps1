@@ -1,7 +1,8 @@
 # Builds the redistributable precompiled aurora + third-party package: aurora (~43% of local build
 # CPU time) and vendored Crypto++ are identical for every user, so this configures runtime/ like
-# LocalBuild.ps1 (both dot-source NativeBuildFlags.ps1), builds just that closure, and harvests the
-# archives plus a generated CMake description into launcher/artifacts/dependencies/native_prebuilt.
+# LocalBuild.ps1 (both dot-source NativeBuildFlags.ps1), builds just that closure plus the
+# game-independent runtime archive, and harvests the archives and a generated CMake description
+# into launcher/artifacts/dependencies/native_prebuilt.
 [CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$PortableToolsDirectory = 'launcher/artifacts/portable-tools',
@@ -87,24 +88,29 @@ try {
         -AdditionalArguments @("-DMKW_NATIVE_PREBUILT_EXPORT_DIR=$(ConvertTo-MkwCMakePath $exportDirectory)")
     Invoke-Checked $cmake $configure 'Configuring the aurora/third-party staging build' -LogPrefix 'MKWNP'
 
+    $metaPath = Join-Path $exportDirectory 'meta.txt'
+    Assert-File $metaPath 'Native prebuilt export metadata'
+    $meta = @{}
+    foreach ($line in Get-Content -LiteralPath $metaPath) {
+        if ($line -match '^([a-z0-9_]+)=(.*)$') { $meta[$Matches[1]] = $Matches[2] }
+    }
+    # The game-independent runtime ships precompiled too; it is outside the probe closure.
+    if (-not $meta.ContainsKey('runtime_fingerprint')) {
+        throw 'The staging configure exported no runtime_fingerprint; the x86_64 package must carry the runtime archive.'
+    }
+
     # mkw_np_probe links exactly what mkw_runtime_common and the public products
     # link, so building it compiles the whole redistributable closure and nothing
     # else - and a successful link proves the harvested archives are complete.
-    Invoke-Checked $cmake @('--build', $stage, '--target', 'mkw_np_probe', '--parallel', "$Parallel") `
-        'Building the aurora/third-party closure' -LogPrefix 'MKWNP'
+    Invoke-Checked $cmake @('--build', $stage, '--target', 'mkw_np_probe', '--target', 'mkw_runtime',
+        '--parallel', "$Parallel") 'Building the aurora/third-party closure and the runtime' -LogPrefix 'MKWNP'
 } finally {
     $env:PATH = $oldPath
 }
 
 # ---------------------------------------------------------------------------
-# Read the description CMake wrote, plus the resolved command lines Ninja holds.
+# Read the resolved command lines Ninja holds.
 # ---------------------------------------------------------------------------
-$metaPath = Join-Path $exportDirectory 'meta.txt'
-Assert-File $metaPath 'Native prebuilt export metadata'
-$meta = @{}
-foreach ($line in Get-Content -LiteralPath $metaPath) {
-    if ($line -match '^([a-z0-9_]+)=(.*)$') { $meta[$Matches[1]] = $Matches[2] }
-}
 
 $buildNinja = Join-Path $stage 'build.ninja'
 Assert-File $buildNinja 'Generated build.ninja'
@@ -234,6 +240,12 @@ foreach ($name in ($targets.Keys | Sort-Object)) {
 }
 if ($sharedImports.Count -eq 0) { throw 'No shared libraries were harvested; the SDL/zlib/libpng DLLs would be missing.' }
 if ($dawnLinkerFile) { $linkerFileToReference[$dawnLinkerFile] = 'dawn::webgpu_dawn' }
+$runtimeTarget = $targets['mkw_runtime']
+if ($null -eq $runtimeTarget -or $runtimeTarget.Type -ne 'STATIC_LIBRARY' -or
+    -not $linkerFileToReference.ContainsKey($runtimeTarget.LinkerFile)) {
+    throw 'The runtime archive (mkw_runtime) was not built and harvested.'
+}
+$runtimeArchiveReference = $linkerFileToReference[$runtimeTarget.LinkerFile]
 
 # ---------------------------------------------------------------------------
 # Rewrite the compile/link interface into workspace-relative tokens.
@@ -297,6 +309,9 @@ $packageLinkItems = @($linkItems | ForEach-Object {
     if (StartsWithPath $absolute $dependencyRoot) { return "`@DEPS`@/$(RelativeTo $absolute $dependencyRoot)" }
     throw "Link item is neither a system library nor a harvested archive: $item"
 })
+if ($packageLinkItems -contains $runtimeArchiveReference) {
+    throw 'The runtime archive leaked into the aurora link interface.'
+}
 
 # fmt's `-include cstdlib` (and anything like it) is recorded from a C++ compile
 # line, so re-scope it to C++. The runtime also assembles generated .S blobs
@@ -332,6 +347,11 @@ $generated.Add((Format-CMakeBlock 'MKW_NP_AURORA_TARGETS' @('aurora::gx','aurora
 $generated.Add('')
 $generated.Add("set(MKW_NP_DAWN_CONFIG_DIR `"$(ConvertTo-Token $meta['dawn_config_dir'] 'dawn')`")")
 $generated.Add("set(MKW_NP_DAWN_VERSION `"$($meta['aurora_dawn_version'])`")")
+$generated.Add('')
+$generated.Add('# The precompiled game-independent runtime; RuntimeLibrary.cmake decides whether it applies.')
+$generated.Add("set(MKW_NP_RUNTIME_ARCHIVE `"$runtimeArchiveReference`")")
+$generated.Add("set(MKW_NP_RUNTIME_FINGERPRINT `"$($meta['runtime_fingerprint'])`")")
+$generated.Add("set(MKW_NP_RUNTIME_CPU_PROFILE `"$($meta['runtime_cpu_profile'])`")")
 $generated.Add('')
 $generated.Add('# Shared third-party libraries keep imported SHARED targets so that')
 $generated.Add('# $<TARGET_RUNTIME_DLLS> still copies them next to the game executable.')
@@ -393,6 +413,9 @@ $provenance = [ordered]@{
     # release build and the local build can refuse a package aurora has outgrown.
     AuroraSourceFingerprint = $auroraSourceFingerprint
     ThirdPartySourceFingerprint = $thirdPartySourceFingerprint
+    # runtime/cmake/RuntimeFingerprint.cmake over the runtime sources the archive was built from.
+    RuntimeSourceFingerprint = $meta['runtime_fingerprint']
+    RuntimeCpuProfile = $meta['runtime_cpu_profile']
     Sdl3Target = $meta['aurora_sdl3_target']
     HarvestedLibraryCount = @($linkerFileToReference.Keys).Count
     Contents = $contents

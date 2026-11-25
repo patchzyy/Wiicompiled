@@ -1,0 +1,72 @@
+schema_version: 1
+workspace_root: ../..
+
+# Mario Kart Wii NTSC-U (RMCE01). The same translation surface as projects/mkwii/recomp.yml, with
+# the facts that differ per region: the small-data bases the DOL's __init_registers installs, the
+# StaticR.rel load address and the clean-input digests. The function map is the PAL map ported
+# through the community region table and validated against these binaries.
+project:
+  id: mkwii-rmce01
+  display_name: Mario Kart Wii NTSC-U
+  game_id: RMCE01
+  region: E
+  base_manifest_format: mkwii-recomp-base-manifest
+  base_manifest_stem: mkwii_base
+
+memory:
+  base: 0x80000000
+  size: 0x01A00000
+  sda_base: 0x80388880
+  sda2_base: 0x8038AC20
+
+inputs:
+  dol:
+    path: Assets/main.dol
+    sha256: d2beec1b1645fcd134efe9e7e63774b546667764ed8d431029daccd725995694
+
+  rel:
+    path: Assets/StaticR.rel
+    load_address: 0x8050BF60
+    sha256: 1168107f8fdef27a356df76036db55afe4fbf7752606dbac991726701133a617
+
+translation:
+  entry_points:
+    - 0x800060A4
+  function_map:
+    path: projects/mkwii-ntsc-u/MAP.txt
+  allow_unsupported_instructions: false
+
+runtime:
+  native_registration_root: runtime/src
+  native_abi_directories:
+    - runtime/src/hle/gx
+
+output:
+  root: generated
+  functions: functions
+  runtime_config: RuntimeConfig.h
+  data_initializer: data_sections_init.cpp
+  base_manifest: ../build/base/mkwii_base_manifest.json
+
+# Code.pul carries a separate chunk for this region. The regional link base determines
+# the branch bytes checked at startup; execution is remapped to module_guest_base.
+profiles:
+  retro-rewind:
+    enabled: true
+    requires_game_id: RMCE01
+    requires_dol_sha256: d2beec1b1645fcd134efe9e7e63774b546667764ed8d431029daccd725995694
+    code_pul: PulsarPacks/completed/RetroRewind/RetroRewind6/Binaries/Code.pul
+    mod_root: PulsarPacks/completed/RetroRewind/RetroRewind6
+    region: E
+    module_guest_base: 0x81800000
+    module_link_base: 0x80394F60
+    output: build/mods/retro_rewind_full_cpp
+    enable_retro_wfc: true
+    retro_wfc_payload: https://rwfc.net/api/wfc/payload?g=RMCED00
+    retro_wfc_legacy_bootstrap_hook: 0x800ED648
+    riivolution:
+      xml: xml/RetroRewind6.xml
+      options:
+        - section: Retro Rewind
+          option: Pack
+          choice: 1

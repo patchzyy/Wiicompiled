@@ -14,39 +14,38 @@ extern "C" int g_gxFrameCount;
 
 namespace {
 
-bool g_widescreenConfigured = false;
-bool g_widescreenSetting = false;
-bool g_forceAspect169 = false;
-std::atomic_bool g_requestedForceAspect169{false};
+bool g_widescreen = true;
+bool g_forceAspect = false;
+std::atomic_bool g_requestedForceAspect{false};
 bool g_policyDirty = false;
 uint32_t g_lastEggWidth43 = 0;
 uint32_t g_lastEggWidth169 = 0;
 
 // EGG::Screen's static canvas records (PAL). See gx_dynamic_aspect.h for the
 // record layout and the anamorphic presentation model.
-constexpr uint32_t kEggScreenRecord43 = 0x802A3EE8u;
-constexpr uint32_t kEggScreenRecord169 = 0x802A3EF4u;
-constexpr uint32_t kEggActiveScreenPtr = 0x80386F14u;
+const uint32_t kEggScreenRecord43 = MKW_GADDR(802A3EE8);
+const uint32_t kEggScreenRecord169 = MKW_GADDR(802A3EF4);
+const uint32_t kEggActiveScreenPtr = MKW_GADDR(80386F14);
 
-constexpr uint32_t kEggScreenProjScaleX = 0x80386F20u;
-constexpr uint32_t kEggScreenProjScaleY = 0x80386F24u;
+const uint32_t kEggScreenProjScaleX = MKW_GADDR(80386F20);
+const uint32_t kEggScreenProjScaleY = MKW_GADDR(80386F24);
 
-constexpr uint32_t kEggScreenAspectHandler = 0x8023E53Cu;
+const uint32_t kEggScreenAspectHandler = MKW_GADDR(8023E53C);
 
-constexpr uint32_t kMkwUpdateAllScreens = 0x805653D0u;
-constexpr uint32_t kMkwGfxDrawList = 0x809C1830u;
-constexpr uint32_t kSystemManagerInstance = 0x80386000u;
+const uint32_t kMkwUpdateAllScreens = MKW_GADDR(805653D0);
+const uint32_t kMkwGfxDrawList = MKW_GADDR(809C1830);
+const uint32_t kSystemManagerInstance = MKW_GADDR(80386000);
 
 // The draw list is an nw4r::ut::List: +0x00 head, +0x04 tail, +0x08 u16 count,
 // +0x0A u16 link offset, with next = *(node + linkOffset + 4) (List_GetNext,
 // 0x800AF180).
 constexpr uint32_t kMkwGfxDrawListLinkOffset = 0x0Au;
 
-constexpr uint32_t kMkwGfxOffscreenList = 0x809C183Cu;
+const uint32_t kMkwGfxOffscreenList = MKW_GADDR(809C183C);
 constexpr uint32_t kMkwGfxOffscreenNodeScreenSlot = 0x10u;
 constexpr uint32_t kEggScreenVTableOffset = 0x38u;
-constexpr uint32_t kEggScreenVTable = 0x802A3F0Cu;
-constexpr uint32_t kMkwScreenVTable = 0x808B4C20u;
+const uint32_t kEggScreenVTable = MKW_GADDR(802A3F0C);
+const uint32_t kMkwScreenVTable = MKW_GADDR(808B4C20);
 constexpr uint32_t kEggScreenFlagsOffset = 0x34u;
 constexpr uint16_t kEggScreenFlagFramebufferCanvas = 0x0008u;
 constexpr uint16_t kEggScreenFlagKeepFrustumScale = 0x0040u;
@@ -130,19 +129,20 @@ void WriteEggScreenRecord(uint32_t recordAddr, uint32_t width) {
 
 void ApplyEggScreenRecords(uint32_t surfaceWidth, uint32_t surfaceHeight) {
     using namespace MkwDynamicAspect;
+    if (g_forceAspect) {
+        surfaceWidth = g_widescreen ? 16u : 4u;
+        surfaceHeight = g_widescreen ? 9u : 3u;
+    }
+    const float referenceAspect = g_widescreen ? kPresentationAspect169 : kPresentationAspect43;
     const uint32_t width43 =
-        g_widescreenConfigured ? EggRecordWidth(kEggRecordWidth43, surfaceWidth, surfaceHeight)
-                               : kEggRecordWidth43;
+        EggRecordWidth(kEggRecordWidth43, surfaceWidth, surfaceHeight, referenceAspect);
     const uint32_t width169 =
-        g_widescreenConfigured ? EggRecordWidth(kEggRecordWidth169, surfaceWidth, surfaceHeight)
-                               : kEggRecordWidth169;
+        EggRecordWidth(kEggRecordWidth169, surfaceWidth, surfaceHeight);
     WriteEggScreenRecord(kEggScreenRecord43, width43);
     WriteEggScreenRecord(kEggScreenRecord169, width169);
     Memory::WriteFloat32(kEggScreenProjScaleX, 1.0f);
     Memory::WriteFloat32(kEggScreenProjScaleY,
-                         g_widescreenConfigured
-                             ? VerticalExpansion(surfaceWidth, surfaceHeight)
-                             : 1.0f);
+                         VerticalExpansion(surfaceWidth, surfaceHeight, referenceAspect));
     AssertOffscreenScreenBypass();
     if (width43 == g_lastEggWidth43 && width169 == g_lastEggWidth169) {
         return;
@@ -172,58 +172,38 @@ void AssertMkwOffscreenScreenBypass() {
 }
 
 void UpdateMkwDynamicAspectSurface(uint32_t surfaceWidth, uint32_t surfaceHeight) {
-    const bool requestedForceAspect169 = g_requestedForceAspect169.load(std::memory_order_acquire);
-    if (g_forceAspect169 != requestedForceAspect169) {
-        g_forceAspect169 = requestedForceAspect169;
-        g_widescreenConfigured = g_widescreenSetting || g_forceAspect169;
-        g_dynamicAspectRatioEnabled = g_widescreenConfigured;
+    const bool requestedForceAspect = g_requestedForceAspect.load(std::memory_order_acquire);
+    if (g_forceAspect != requestedForceAspect) {
+        g_forceAspect = requestedForceAspect;
         g_policyDirty = true;
     }
     if (surfaceWidth == 0 || surfaceHeight == 0) {
         return;
     }
-    if (!g_widescreenConfigured) {
-        if (g_policyDirty) {
+    if (g_policyDirty) {
+        if (g_forceAspect && !g_widescreen) {
             AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
             VILockAspectRatio(4, 3);
-            ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
-            g_policyDirty = false;
+        } else {
+            AuroraSetViewportPolicy(g_forceAspect ? AURORA_VIEWPORT_16_9 : AURORA_VIEWPORT_STRETCH);
+            VIUnlockAspectRatio();
         }
-        return;
-    }
-    if (g_policyDirty) {
-        VIUnlockAspectRatio();
         g_policyDirty = false;
     }
-    AuroraSetViewportPolicy(g_forceAspect169 ? AURORA_VIEWPORT_16_9 : AURORA_VIEWPORT_STRETCH);
-    ApplyEggScreenRecords(g_forceAspect169 ? 16u : surfaceWidth,
-                          g_forceAspect169 ? 9u : surfaceHeight);
+    ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
 }
 
-void SetMkwForceAspect169(bool enabled) {
-    g_requestedForceAspect169.store(enabled, std::memory_order_release);
+void SetMkwForceAspect(bool enabled) {
+    g_requestedForceAspect.store(enabled, std::memory_order_release);
 }
 
-bool MkwForceAspect169Requested() {
-    return g_requestedForceAspect169.load(std::memory_order_acquire);
-}
-
-void ConfigureMkwDynamicAspect(bool widescreen, bool forceAspect169, uint32_t surfaceWidth, uint32_t surfaceHeight) {
-    g_widescreenSetting = widescreen;
-    g_widescreenConfigured = widescreen || forceAspect169;
-    g_forceAspect169 = forceAspect169;
-    g_requestedForceAspect169.store(forceAspect169, std::memory_order_relaxed);
-    g_dynamicAspectRatioEnabled = g_widescreenConfigured;
+void ConfigureMkwDynamicAspect(bool widescreen, bool forceAspect, uint32_t surfaceWidth, uint32_t surfaceHeight) {
+    g_widescreen = widescreen;
+    g_forceAspect = forceAspect;
+    g_requestedForceAspect.store(forceAspect, std::memory_order_relaxed);
+    g_policyDirty = true;
+    g_dynamicAspectRatioEnabled = true;
     g_lastEggWidth43 = 0;
     g_lastEggWidth169 = 0;
-    if (g_widescreenConfigured) {
-        VIUnlockAspectRatio();
-        ApplyEggScreenRecords(forceAspect169 ? 16u : surfaceWidth,
-                              forceAspect169 ? 9u : surfaceHeight);
-        return;
-    }
-
-    AuroraSetViewportPolicy(AURORA_VIEWPORT_FIT);
-    VILockAspectRatio(4, 3);
     ApplyEggScreenRecords(surfaceWidth, surfaceHeight);
 }

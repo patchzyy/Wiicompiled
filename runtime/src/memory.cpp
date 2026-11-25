@@ -1,4 +1,5 @@
 #include "memory.h"
+#include "hle/hollywood_gpio.h"
 
 #include <algorithm>
 #include <array>
@@ -46,7 +47,9 @@ template uint8_t MemoryInline::ReadResolvedFallback<uint8_t>(uint32_t);
 template uint16_t MemoryInline::ReadResolvedFallback<uint16_t>(uint32_t);
 template uint32_t MemoryInline::ReadResolvedFallback<uint32_t>(uint32_t);
 template uint64_t MemoryInline::ReadResolvedFallback<uint64_t>(uint32_t);
-float MemoryInline::ReadResolvedFallbackFloat32(uint32_t addr) { return Memory::ReadFloat32(addr); }
+double MemoryInline::ReadResolvedFallbackFloat32(uint32_t addr) {
+    return PpcBitCastToDoubleInline(PpcConvertToDoubleBitsInline(Memory::Read32(addr)));
+}
 double MemoryInline::ReadResolvedFallbackFloat64(uint32_t addr) { return Memory::ReadFloat64(addr); }
 template <typename T>
 void MemoryInline::WriteResolvedFallback(uint32_t addr, T value) {
@@ -87,10 +90,11 @@ uint64_t& NextDeferredReadToken() {
 
 bool RangesOverlap(uint32_t firstStart, size_t firstLength,
                    uint32_t secondStart, size_t secondLength) {
-    const uint64_t firstEnd = static_cast<uint64_t>(firstStart) + firstLength;
-    const uint64_t secondEnd = static_cast<uint64_t>(secondStart) + secondLength;
-    return static_cast<uint64_t>(firstStart) < secondEnd &&
-           static_cast<uint64_t>(secondStart) < firstEnd;
+    if (firstLength == 0 || secondLength == 0)
+        return false;
+    return firstStart <= secondStart
+        ? static_cast<size_t>(secondStart - firstStart) < firstLength
+        : static_cast<size_t>(firstStart - secondStart) < secondLength;
 }
 
 void RefreshDeferredReadPage(uint32_t page) {
@@ -147,7 +151,7 @@ void ClearPageTable() {
 uint64_t Memory::RegisterDeferredRead(uint32_t addr, size_t length,
                                       DeferredReadCallback callback, void* user) {
     if (length == 0 || callback == nullptr ||
-        static_cast<uint64_t>(addr) + length > (uint64_t{1} << 32)) {
+        length > GuestFlat::kGuestSpaceSize - addr) {
         return 0;
     }
 
@@ -188,6 +192,8 @@ void Memory::ClearDeferredReads() {
 }
 
 bool MemoryInline::ResolveDeferredReads(uint32_t addr, size_t length) {
+    if (length > GuestFlat::kGuestSpaceSize - addr)
+        return false;
     std::vector<DeferredRead> matches;
     std::vector<uint32_t> affectedPages;
     {
@@ -323,8 +329,7 @@ Region* TryResolveRegion(uint32_t address, size_t length) {
         const uint64_t base = region.config.baseAddress;
         const uint64_t limit = base + region.storageSize;
         const uint64_t addr = address;
-        const uint64_t end = addr + length;
-        if (addr >= base && end <= limit) {
+        if (addr >= base && addr <= limit && length <= limit - addr) {
             return &region;
         }
     }
@@ -565,6 +570,11 @@ void Memory::Init(size_t mem1Size) {
 
 void Memory::Init(const Config& config) {
     std::lock_guard<std::mutex> lock(RegionMutex());
+    for (const auto& regionConfig : config.regions) {
+        if (regionConfig.sizeBytes > GuestFlat::kGuestSpaceSize - regionConfig.baseAddress) {
+            throw std::invalid_argument("Guest memory region exceeds the address space: " + regionConfig.name);
+        }
+    }
     auto& regions = Regions();
     regions.clear();
     ClearPageTable();
@@ -643,6 +653,9 @@ uint16_t MemoryInline::Read16Slow(uint32_t addr) {
 
 uint32_t MemoryInline::Read32Slow(uint32_t addr) {
     if (IsMmioAddress(addr)) {
+        if (uint32_t value = 0; HollywoodGpio_Read32(addr, value)) {
+            return value;
+        }
         ThrowMmioReadBlocked(addr, sizeof(uint32_t));
     }
     ResolveDeferredReads(addr, sizeof(uint32_t));
@@ -708,6 +721,9 @@ void MemoryInline::Write32Slow(uint32_t addr, uint32_t val) {
         return;
     }
     if (IsMmioAddress(addr)) {
+        if (HollywoodGpio_Write32(addr, val)) {
+            return;
+        }
         throw Memory::AccessViolation(addr, sizeof(val), "MMIO write blocked (non-GPU)");
     }
     WriteScalar(addr, val);

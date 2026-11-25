@@ -4,13 +4,16 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
-#include "generated/RuntimeConfig.h"
+#include "guest_function_imports.h"
+#include "guest_small_data.h"
 #include "runtime_log.h"
 
 // Nothing reads CpuContext by offset; these asserts just canary accidental field reordering
@@ -253,6 +256,41 @@ std::string ValidateGeneratedIndirectDispatchLocked() {
 }
 }
 
+uint32_t FilterScnRendererPathMaskOption(uint32_t pathMask) noexcept {
+    return RuntimeGameGraphicsOptions::FilterScnRendererPathMask(pathMask);
+}
+
+void ReportMissingIndirectJumpTarget(uint32_t target, CpuContext* cpu) {
+    // If not registered, this is likely a switch table jump to an intra-function label.
+    // The translator should have recognized this pattern and generated proper switch code.
+    RT_LOG(RT_TAG_RUNTIME) << "InvokeIndirectJump: target 0x"
+              << std::hex << target << std::dec
+              << " is not a registered function.\n"
+              << "This is likely a switch statement jump table that the translator\n"
+              << "failed to recognize. The function containing this bctr needs\n"
+              << "proper switch pattern recognition." << std::endl;
+    RT_LOG(RT_TAG_RUNTIME) << "Indirect jump context: pc=0x" << std::hex << cpu->pc
+              << " lr=0x" << cpu->lr << " ctr=0x" << cpu->ctr
+              << " r1=0x" << cpu->gpr[1] << " r3=0x" << cpu->gpr[3]
+              << " r29=0x" << cpu->gpr[29] << " r30=0x" << cpu->gpr[30]
+              << " r31=0x" << cpu->gpr[31] << std::dec << std::endl;
+    DumpHostStackTraceForRuntimeHelper();
+    std::fflush(stderr);
+    std::ostringstream message;
+    message << "The game stopped because an indirect jump targeted guest address 0x"
+            << std::hex << target
+            << ", but that address is not a registered translated function.\n\n"
+            << "The translator may have missed a switch/jump-table target.";
+    // Same artifact set as RuntimeCrash::FatalMissingGuestTarget, which is this
+    // path's sibling for indirect *calls*: MarkFatalErrorReported below stops the
+    // atexit reporter, so the crash log has to be written here.
+    RuntimeCrash::WriteCrashArtifacts("missing_jump_target", message.str(), &target);
+    SetRuntimeExitCode(EXIT_FAILURE);
+    ShowRuntimeFatalPopup("Missing indirect jump target", message.str());
+    MarkFatalErrorReported();
+    std::exit(EXIT_FAILURE);
+}
+
 void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* table) {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     if (RegistryFrozen().load(std::memory_order_acquire)) {
@@ -269,9 +307,6 @@ void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* tabl
         std::abort();
     }
     registered = table;
-    // Mirror into the header-visible atomic under the same lock, so the
-    // inlined miss path and this owning static can never disagree.
-    g_publishedStaticIndirectDispatchTable.store(table, std::memory_order_release);
 }
 
 void RegisterBulkTranslatedFunctions(const BulkTranslatedFunctionRecord* records, size_t count) {
@@ -360,6 +395,7 @@ void TranslatedFunctionRegistry::Finalize() {
             auto& addressEntries = AddressEntries();
             addressEntries.clear();
             addressEntries.rehash(0);
+            BuildRawDispatchTableLocked();
             RegistryFrozen().store(true, std::memory_order_release);
             lookupPublished_.store(true, std::memory_order_release);
         }
@@ -388,22 +424,94 @@ const TranslatedFunctionInfo* TranslatedFunctionRegistry::FindByAddressPtrSlow(u
     return nullptr;
 }
 
-const RawDispatchRecord* TranslatedFunctionRegistry::FindRawByAddressPtrSlow(uint32_t address) {
-    if (!RegistryFrozen().load(std::memory_order_acquire)) {
-        return nullptr;
-    }
-    if (const auto* generated = FindStaticIndirectDispatchEntry(GeneratedIndirectDispatchTable(), address)) {
-        return generated;
-    }
-    const auto& entries = DynamicRawDispatchEntries();
-    const auto it = std::lower_bound(entries.begin(), entries.end(), address,
-        [](const RawDispatchRecord& entry, uint32_t target) {
-            return entry.address < target;
-        });
-    return it != entries.end() && it->address == address ? &*it : nullptr;
+namespace {
+
+[[noreturn]] void ReportMissingGuestFunction(uint32_t address) {
+    RT_LOG(RT_TAG_RUNTIME) << "ERROR: no translation registered at 0x" << std::hex << address << std::dec
+                           << std::endl;
+    std::ostringstream message;
+    message << "The runtime calls the translated function at guest address 0x" << std::hex << address
+            << ", but it was not translated.";
+    RuntimeCrash::WriteCrashArtifacts("missing_guest_function", message.str(), &address);
+    SetRuntimeExitCode(EXIT_FAILURE);
+    ShowRuntimeFatalPopup("Missing translated function", message.str());
+    MarkFatalErrorReported();
+    std::exit(EXIT_FAILURE);
 }
 
-std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindByHostAddress(uintptr_t hostAddr) {
+} // namespace
+
+GuestFunctions::Entry GuestFunctions::BaseTranslation(uint32_t address) {
+    {
+        std::unique_lock<std::mutex> lock(RegistryMutex(), std::defer_lock);
+        if (!RegistryFrozen().load(std::memory_order_acquire)) {
+            lock.lock();
+        }
+        for (const auto& entry : Registry()) {
+            if (entry.address == address && entry.kind == FunctionKind::BaseTranslated && entry.rawCpuInvoker) {
+                return entry.rawCpuInvoker;
+            }
+        }
+    }
+    ReportMissingGuestFunction(address);
+}
+
+GuestFunctions::Entry GuestFunctions::NextTranslation(uint32_t address) {
+    {
+        std::unique_lock<std::mutex> lock(RegistryMutex(), std::defer_lock);
+        if (!RegistryFrozen().load(std::memory_order_acquire)) {
+            lock.lock();
+        }
+        const TranslatedFunctionInfo* best = nullptr;
+        for (const auto& entry : Registry()) {
+            if (entry.address == address && entry.kind != FunctionKind::Native && entry.rawCpuInvoker &&
+                (!best || IsBetterCandidate(entry, *best))) {
+                best = &entry;
+            }
+        }
+        if (best) {
+            return best->rawCpuInvoker;
+        }
+    }
+    ReportMissingGuestFunction(address);
+}
+
+void TranslatedFunctionRegistry::BuildRawDispatchTableLocked() {
+    const auto* generated = GeneratedIndirectDispatchTable();
+    const auto& dynamic = DynamicRawDispatchEntries();
+    const size_t generatedCount = generated != nullptr ? generated->entryCount : 0;
+    uint32_t bits = 10;
+    while ((size_t{1} << bits) < (generatedCount + dynamic.size()) * 2) {
+        ++bits;
+    }
+    static std::vector<RawDispatchHashSlot> slots;
+    static RawDispatchHashTable table;
+    slots.assign(size_t{1} << bits, RawDispatchHashSlot{0, nullptr});
+    table = {slots.data(), (1u << bits) - 1u, 32u - bits};
+    // The first record put at an address wins: the generated table, then the dynamic records in
+    // address order, the precedence the sorted lookups gave.
+    const auto put = [](const RawDispatchRecord& record) {
+        for (uint32_t index = RawDispatchHashIndex(table, record.address);; index = (index + 1) & table.mask) {
+            RawDispatchHashSlot& slot = slots[index];
+            if (slot.record == nullptr) {
+                slot = {record.address, &record};
+                return;
+            }
+            if (slot.address == record.address) {
+                return;
+            }
+        }
+    };
+    for (size_t i = 0; i < generatedCount; ++i) {
+        put(generated->entries[i]);
+    }
+    for (const auto& record : dynamic) {
+        put(record);
+    }
+    rawDispatchTable_.store(&table, std::memory_order_release);
+}
+
+std::optional<TranslatedFunctionInfo> FindTranslatedFunctionByHostAddress(uintptr_t hostAddr) {
     const bool frozen = RegistryFrozen().load(std::memory_order_acquire);
     if (!frozen) {
         std::lock_guard<std::mutex> lock(RegistryMutex());
@@ -439,7 +547,7 @@ std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindByHostAddr
     return std::nullopt;
 }
 
-std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindNearestByAddress(uint32_t address) {
+std::optional<TranslatedFunctionInfo> FindNearestTranslatedFunction(uint32_t address) {
     std::optional<TranslatedFunctionInfo> best;
     uint32_t bestDelta = UINT32_MAX;
     const auto scan = [&] {
@@ -478,9 +586,24 @@ void InitializePersistentCpuContext() {
     // seed the PowerPC ABI environmental registers if no one has yet:
     // r2 = _SDA2_BASE_ (read-only small data), r13 = _SDA_BASE_.
     if (g_persistentCpu.gpr[2] == 0) {
-        g_persistentCpu.gpr[2] = RuntimeConfig::SDA2_BASE;
+        g_persistentCpu.gpr[2] = GuestSmallData::kSda2Base;
     }
     if (g_persistentCpu.gpr[13] == 0) {
-        g_persistentCpu.gpr[13] = RuntimeConfig::SDA1_BASE;
+        g_persistentCpu.gpr[13] = GuestSmallData::kSda1Base;
     }
+}
+
+[[noreturn]] void PPC_Undefined(uint32_t pc, uint32_t rawInstruction, const char* details)
+{
+    std::fprintf(stderr,
+                 "[runtime] UNDEFINED guest instruction: pc=0x%08X raw=0x%08X %s\n",
+                 pc,
+                 rawInstruction,
+                 details ? details : "");
+    char message[256]{};
+    std::snprintf(message, sizeof(message),
+                  "The game stopped because it reached an unsupported guest instruction at PC 0x%08X (instruction 0x%08X).\n\n%s",
+                  pc, rawInstruction, details ? details : "No additional details were provided.");
+    ShowRuntimeFatalPopup("Unsupported guest instruction", message);
+    std::abort();
 }

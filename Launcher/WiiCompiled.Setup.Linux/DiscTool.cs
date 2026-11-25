@@ -11,23 +11,30 @@ namespace WiiCompiled.Setup.Linux;
 /// </summary>
 internal static class DiscTool
 {
-    public static async Task ValidateAndExtractAsync(
-        string isoPath, ProjectManifest manifest, string assetsDirectory, string workspace,
+    /// <summary>Validates and extracts the disc, returning the supported release it is.</summary>
+    public static async Task<ProjectManifest> ValidateAndExtractAsync(
+        string isoPath, IReadOnlyList<ProjectManifest> releases, string assetsDirectory, string workspace,
         string? nodToolBin, IInstallReporter reporter, CancellationToken cancellationToken)
     {
         var nodTool = nodToolBin ?? await NodToolProvider.ResolveAsync(workspace, cancellationToken);
 
         // `nodtool info` only decodes the disc/partition headers (milliseconds); `nodtool extract`
         // copies the whole data partition to disk (tens of seconds for a custom-track-heavy MKWii
-        // ISO). Checking the game ID first, before extracting, means a wrong disc fails fast -
-        // matching the original dolphin-tool `header` step this replaces.
+        // ISO). The game ID picks the release, so a wrong disc fails fast and an existing
+        // extraction is only reused for the same release.
         reporter.Progress(InstallStages.ExtractDisc, "Reading the disc header", 2);
         var info = NodToolInfoParser.Parse(await RunInfoAsync(nodTool, isoPath, cancellationToken));
-        if (!string.Equals(info.GameId, manifest.GameId, StringComparison.Ordinal))
+        var manifest = releases.FirstOrDefault(release =>
+                           string.Equals(info.GameId, release.GameId, StringComparison.Ordinal))
+                       ?? throw new InvalidOperationException(
+                           $"This disc is '{info.GameId}', which is not a supported Mario Kart Wii release " +
+                           $"({ProjectManifest.Describe(releases)}). " +
+                           "Only your own legally-owned copy of a supported game/region can be used.");
+
+        if (IsAlreadyExtracted(manifest, assetsDirectory))
         {
-            throw new InvalidOperationException(
-                $"This disc is '{info.GameId}', not the expected '{manifest.GameId}' (Mario Kart Wii, region {manifest.Region}). " +
-                "Only your own legally-owned copy of that exact game/region can be used.");
+            reporter.Progress(InstallStages.ExtractDisc, "Reusing the verified extracted disc", 6);
+            return manifest;
         }
 
         // Extracted straight into Assets/DATA (kept, not a scratch dir) - the runtime reads course/
@@ -35,6 +42,8 @@ internal static class DiscTool
         // time, so it has to survive past this install (see Program.cs, which points dvd_root here).
         reporter.Progress(InstallStages.ExtractDisc, "Extracting the disc image", 4);
         var dataDir = Path.Combine(assetsDirectory, "DATA");
+        Directory.CreateDirectory(assetsDirectory);
+        File.Delete(Path.Combine(assetsDirectory, ExtractionMarker));
         if (Directory.Exists(dataDir)) Directory.Delete(dataDir, recursive: true);
         await RunExtractAsync(nodTool, isoPath, dataDir, cancellationToken);
 
@@ -61,7 +70,24 @@ internal static class DiscTool
         Directory.CreateDirectory(assetsDirectory);
         File.Copy(dolPath, Path.Combine(assetsDirectory, "main.dol"), overwrite: true);
         File.Copy(relPath, Path.Combine(assetsDirectory, "StaticR.rel"), overwrite: true);
+        File.WriteAllText(Path.Combine(assetsDirectory, ExtractionMarker), ExtractionRecord(dolSha, dataDir));
         reporter.Progress(InstallStages.ExtractDisc, "Disc validated and extracted", 6);
+        return manifest;
+    }
+
+    /// <summary>The release already extracted into Assets, chosen by its main.dol like local-build.sh.</summary>
+    public static ProjectManifest SelectExtracted(IReadOnlyList<ProjectManifest> releases, string assetsDirectory)
+    {
+        var dolSha = Sha256Of(Path.Combine(assetsDirectory, "main.dol"));
+        var manifest = releases.FirstOrDefault(release => string.Equals(dolSha, release.DolSha256, StringComparison.Ordinal))
+                       ?? throw new InvalidOperationException(
+                           $"Assets/main.dol (sha256 {dolSha}) is not a supported clean Mario Kart Wii release " +
+                           $"({ProjectManifest.Describe(releases)}).");
+        var relSha = Sha256Of(Path.Combine(assetsDirectory, "StaticR.rel"));
+        if (!string.Equals(relSha, manifest.RelSha256, StringComparison.Ordinal))
+            throw new InvalidOperationException(
+                $"Assets/StaticR.rel does not match the clean {manifest.GameId} release of Assets/main.dol.");
+        return manifest;
     }
 
     private static async Task<string> RunInfoAsync(string nodTool, string isoPath, CancellationToken cancellationToken)
@@ -84,6 +110,36 @@ internal static class DiscTool
                 $"nodtool could not read this disc image (exit {process.ExitCode}): {stderr}{stdout}".Trim());
         }
         return stdout;
+    }
+
+    private const string ExtractionMarker = ".disc-extracted";
+
+    // Each release has one accepted revision, so a completed, verified extraction is identical to a fresh one.
+    private static bool IsAlreadyExtracted(ProjectManifest manifest, string assetsDirectory)
+    {
+        var marker = Path.Combine(assetsDirectory, ExtractionMarker);
+        var dol = Path.Combine(assetsDirectory, "main.dol");
+        var rel = Path.Combine(assetsDirectory, "StaticR.rel");
+        var dataDir = Path.Combine(assetsDirectory, "DATA");
+        if (!File.Exists(marker) || !File.Exists(dol) || !File.Exists(rel) ||
+            !Directory.Exists(Path.Combine(dataDir, "files")))
+            return false;
+        return string.Equals(File.ReadAllText(marker), ExtractionRecord(manifest.DolSha256, dataDir),
+                   StringComparison.Ordinal) &&
+               string.Equals(Sha256Of(dol), manifest.DolSha256, StringComparison.Ordinal) &&
+               string.Equals(Sha256Of(rel), manifest.RelSha256, StringComparison.Ordinal);
+    }
+
+    // The DOL hash plus every extracted file's path and size, so a later deletion or truncation inside
+    // DATA forces a fresh extraction.
+    private static string ExtractionRecord(string dolSha, string dataDir)
+    {
+        var record = new System.Text.StringBuilder(dolSha).Append('\n');
+        foreach (var path in Directory.EnumerateFiles(dataDir, "*", SearchOption.AllDirectories)
+                     .Select(path => Path.GetRelativePath(dataDir, path).Replace('\\', '/'))
+                     .Order(StringComparer.Ordinal))
+            record.Append(new FileInfo(Path.Combine(dataDir, path)).Length).Append(' ').Append(path).Append('\n');
+        return record.ToString();
     }
 
     private static string Sha256Of(string path)

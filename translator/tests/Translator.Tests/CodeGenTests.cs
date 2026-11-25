@@ -481,6 +481,41 @@ public class CodeGenTests
     }
 
     [Fact]
+    public void CodeGenerator_ReadsKnownMmioAddressesThroughCheckedHelper()
+    {
+        var function = new IrFunction(
+            "known_mmio_load",
+            "entry",
+            new[]
+            {
+                new IrBasicBlock("entry", new IrInstruction[]
+                {
+                    new IrAssign("r4", IrValue.Imm(unchecked((int)0xCD000000))),
+                    new IrLoad("r0", new IrAddress("r4", 0xC0), 4),
+                    new IrLoad("r5", new IrAddress("r3", 8), 4),
+                    new IrReturn(null)
+                })
+            });
+
+        var types = new RepresentationEnvironment(new Dictionary<string, ValueRepresentation>
+        {
+            ["r0"] = ValueRepresentation.UInt32,
+            ["r3"] = ValueRepresentation.UInt32,
+            ["r4"] = ValueRepresentation.UInt32,
+            ["r5"] = ValueRepresentation.UInt32
+        });
+        var signature = new FunctionAbiClassification(
+            "known_mmio_load",
+            ValueRepresentation.Void);
+
+        var ssa = new SsaTransformer().Convert(function);
+        var code = new CxxLinearCodeGenerator().Emit(0x80008020, ssa, signature, types);
+
+        Assert.Contains("= Memory::Read32(", code, StringComparison.Ordinal);
+        Assert.Contains("= MemoryInline::FlatRead32((ctx->gpr[3] + 8));", code, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CodeGenerator_ReusesFctiwzStackLowWordForMatchingLoad()
     {
         var function = new IrFunction(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hle_stubs.h"
+#include "guest_abi/guest_region.h"
 #include "memory.h"
 #include "gx_guest_write.h"
 #include "ppc_runtime.h"
@@ -34,6 +35,7 @@
 #include <vector>
 #include <type_traits>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <chrono>
 #include <cstddef>
@@ -54,13 +56,13 @@ bool is_offscreen() noexcept;
 }
 
 // --- Constants ---
-constexpr uint32_t kGXDataPtrAddr = 0x803886C8;
-constexpr uint32_t kDlFifoAddr = 0x80344090;
-constexpr uint32_t kDlWritePtrAddr = 0x803440A4;
-constexpr uint32_t kDlCountAddr = 0x803440AC;
+const uint32_t kGXDataPtrAddr = MKW_GADDR(803886C8);
+const uint32_t kDlFifoAddr = MKW_GADDR(80344090);
+const uint32_t kDlWritePtrAddr = MKW_GADDR(803440A4);
+const uint32_t kDlCountAddr = MKW_GADDR(803440AC);
 constexpr uint32_t kDlWrapFlagOffset = 0x20;
 constexpr uint32_t kMaxTluts = 20;
-constexpr uint32_t kGxDrawDoneFlagAddr = 0x803867d8;
+const uint32_t kGxDrawDoneFlagAddr = MKW_GADDR(803867d8);
 
 // --- External Declarations ---
 extern "C" void GXInitTexObjTlut(GXTexObj* obj, u32 tlut);
@@ -151,6 +153,8 @@ struct TexObjSlot : TexObjMeta {
     // texture binds on track reload. Re-comparing bytes per load is correct.
     uint64_t guestShadow[4] = {0, 0, 0, 0};
     bool hasGuestShadow = false;
+
+    GxTextureBindingContract::ValidatedLoad validatedLoad;
 
     // DCStoreRange interval-index bookkeeping: what this slot currently
     // contributes to g_texObjIntervals, so a pending update that turns out to
@@ -254,6 +258,10 @@ struct HleGxState {
     std::array<uint8_t, 4096> fifoBytes{};
     size_t fifoReadOffset = 0;
     size_t fifoByteCount = 0;
+    uint32_t fifoPendingDrawBytes = 0;
+    uint64_t fifoPendingDrawGeneration = 0;
+    uint32_t fifoDirectBytesRemaining = 0;
+    uint32_t fifoDirectVertexSize = 0;
 
     void ResetVertex();
     void InvalidateVtxLayoutHash() noexcept {
@@ -300,6 +308,9 @@ void EndDisplayListRecording();
 void WriteDisplayListData(uint32_t val, uint32_t sizeBytes);
 void BeginNextAuroraFrameWithRetry(std::chrono::milliseconds timeout = std::chrono::milliseconds(100));
 void EnsureAuroraFrameActive();
+void EnsureAuroraFrameForFifo();
+// Array base/stride as last set through GXSetArray on the game thread.
+bool ApiVtxArray(uint32_t attr, uint32_t& base, uint32_t& stride);
 
 GXColor DecodeGxColor(uint32_t colorWord);
 void WriteGuestFloat(uint32_t addr, float value, const char* label = nullptr);
@@ -342,6 +353,22 @@ bool ValidateTlutData(uint32_t objAddr, const TlutObjMeta& meta);
 TexObjMeta& GetTexObjMeta(uint32_t addr);
 TexObjMeta ExtractTexObjMetaFromGuest(uint32_t addr);
 bool TryGetOrExtractTexObjMeta(uint32_t addr, TexObjMeta& outMeta);
+// Lookup and publication require g_texObjMutex; reset acquires it itself.
+void RefreshTexObjDecodeShadow(TexObjSlot& slot) noexcept;
+TexObjSlot* TryGetValidatedTexObjSlot(uint32_t addr);
+void MarkTexObjLoadValidated(uint32_t addr);
+void InvalidateTexObjLoads();
+
+// Guest GXTexObj bytes captured on the game thread; while a scope is active on a thread, texobj
+// decoding for that address reads the captured bytes instead of live guest memory.
+using TexObjBytes = std::array<uint8_t, 32>;
+TexObjBytes CaptureTexObjBytes(uint32_t addr);
+struct TexObjSnapshotScope {
+    TexObjSnapshotScope(uint32_t addr, const TexObjBytes& bytes) noexcept;
+    ~TexObjSnapshotScope();
+    TexObjSnapshotScope(const TexObjSnapshotScope&) = delete;
+    TexObjSnapshotScope& operator=(const TexObjSnapshotScope&) = delete;
+};
 TlutObjMeta& GetTlutObjMeta(uint32_t addr);
 GXTexObj* GetHostTexObj(uint32_t addr);
 GXTexObj* TryGetHostTexObj(uint32_t addr);

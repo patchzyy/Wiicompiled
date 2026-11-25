@@ -230,6 +230,11 @@ public sealed class PpcDisassembler : IDisposable
                 {
                     foreach (var target in ins.BranchTargets)
                     {
+                        // A conditional call to another function returns to its fallthrough.
+                        if (ins.IsCall && IsKnownExternalFunctionEntry(target))
+                        {
+                            continue;
+                        }
                         localControlFlowTargets.Add(target);
                         if (!reachable.Contains(target))
                         {

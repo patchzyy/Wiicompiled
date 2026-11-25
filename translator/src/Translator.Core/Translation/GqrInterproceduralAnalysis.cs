@@ -338,7 +338,7 @@ public static class GqrInterproceduralAnalysis
                 for (var i = 0; i < blockPredecessors.Length; i++)
                 {
                     var predecessor = blockPredecessors[i];
-                    if (predecessor != blockIndex && outputInitialized[predecessor])
+                    if (outputInitialized[predecessor])
                         predecessors[predecessorCount++] = predecessor;
                 }
                 // An uninitialized predecessor is lattice top, not an empty
@@ -352,6 +352,7 @@ public static class GqrInterproceduralAnalysis
                     for (var slot = 0; slot < GqrCount; slot++)
                         if ((entryMask & (1 << slot)) != 0)
                             state[slot] = entryValues[entryBase + slot];
+                    CompactIntersectWith(output, predecessors, predecessorCount, state);
                 }
                 else
                 {
@@ -497,12 +498,52 @@ public static class GqrInterproceduralAnalysis
         return masks;
     }
 
+    /// <summary>
+    /// Unknown-entry roots that depend only on the final call graph, never on discovery order:
+    /// <paramref name="fixedRoots"/>, every candidate without a direct caller, then (ascending) any
+    /// candidate the roots still don't reach, so no candidate is left without an entry fact source.
+    /// </summary>
+    public static HashSet<uint> SelectUnknownEntryRoots(
+        IReadOnlyDictionary<uint, GqrFunctionSummary> functions,
+        IEnumerable<uint> fixedRoots,
+        IEnumerable<uint> candidates)
+    {
+        var called = new HashSet<uint>();
+        foreach (var summary in functions.Values)
+            foreach (var target in summary.DirectGuestTargets)
+                called.Add(target);
+        var ordered = candidates.Where(functions.ContainsKey).Distinct().OrderBy(static a => a).ToArray();
+        var roots = fixedRoots.Where(functions.ContainsKey).ToHashSet();
+        foreach (var address in ordered)
+            if (!called.Contains(address))
+                roots.Add(address);
+        var reachable = ComputeCompactReachable(functions, roots);
+        foreach (var address in ordered)
+        {
+            if (reachable.Contains(address)) continue;
+            roots.Add(address);
+            ExtendCompactReachable(functions, reachable, address);
+        }
+        return roots;
+    }
+
     private static HashSet<uint> ComputeCompactReachable(
         IReadOnlyDictionary<uint, GqrFunctionSummary> functions,
         IReadOnlySet<uint> roots)
     {
         var reachable = new HashSet<uint>();
-        var queue = new Queue<uint>(roots);
+        foreach (var root in roots)
+            ExtendCompactReachable(functions, reachable, root);
+        return reachable;
+    }
+
+    private static void ExtendCompactReachable(
+        IReadOnlyDictionary<uint, GqrFunctionSummary> functions,
+        HashSet<uint> reachable,
+        uint root)
+    {
+        var queue = new Queue<uint>();
+        queue.Enqueue(root);
         while (queue.TryDequeue(out var address))
         {
             if (!reachable.Add(address)) continue;
@@ -510,7 +551,6 @@ public static class GqrInterproceduralAnalysis
                 if (functions.ContainsKey(target) && !reachable.Contains(target))
                     queue.Enqueue(target);
         }
-        return reachable;
     }
 
     private static void TransferCompact(
@@ -658,6 +698,26 @@ public static class GqrInterproceduralAnalysis
             }
             if (keep) destination[pair.Key] = pair.Value;
         }
+    }
+
+    private static void CompactIntersectWith(
+        Dictionary<int, uint>[] output,
+        int[] predecessors,
+        int predecessorCount,
+        Dictionary<int, uint> state)
+    {
+        List<int>? removed = null;
+        foreach (var pair in state)
+        {
+            for (var i = 0; i < predecessorCount; i++)
+            {
+                if (output[predecessors[i]].TryGetValue(pair.Key, out var value) && value == pair.Value) continue;
+                (removed ??= new List<int>()).Add(pair.Key);
+                break;
+            }
+        }
+        if (removed is null) return;
+        foreach (var key in removed) state.Remove(key);
     }
 
     private static bool CompactSame(

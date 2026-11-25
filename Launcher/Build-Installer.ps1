@@ -23,12 +23,23 @@ $publish = Join-Path $workRoot 'publish'
 $payloadRoot = Join-Path $workRoot 'payload'
 $setupProject = Join-Path $PSScriptRoot 'WiiCompiled.Setup.Windows\WiiCompiled.Setup.Windows.csproj'
 $translatorProject = Join-Path $repoRoot 'translator\src\Translator.Cli\Translator.Cli.csproj'
-$projectFile = Join-Path $repoRoot 'projects\mkwii\recomp.yml'
 
-# Everything Mario-Kart-specific in the manifest below is read from the project file rather than
-# restated here, and Test-PinnedFacts.ps1 checks the copies that cannot read it (the C++ entry
-# address, the C# endpoint constant, the lists this script and the installed host both carry).
-$pins = Get-MkwProjectPins $projectFile
+# Every supported release is one projects/<name>/recomp.yml. Everything Mario-Kart-specific in the
+# manifest below is read from those files rather than restated here, and Test-PinnedFacts.ps1
+# checks the copies that cannot read them (the C++ entry address, the C# Retro-WFC table, the
+# lists this script and the installed host both carry).
+$releaseProjects = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'projects') -Directory |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'recomp.yml') -PathType Leaf } |
+    Sort-Object Name)
+if ($releaseProjects.Count -eq 0) { throw 'No translation project defines a supported release.' }
+$supportedReleases = @(foreach ($releaseProject in $releaseProjects) {
+    $pins = Get-MkwProjectPins (Join-Path $releaseProject.FullName 'recomp.yml')
+    [ordered]@{ GameId = $pins.GameId; DolSha256 = $pins.DolSha256; RelSha256 = $pins.RelSha256 }
+})
+foreach ($key in @('GameId', 'DolSha256')) {
+    $duplicates = @($supportedReleases | Group-Object { $_[$key] } | Where-Object Count -gt 1)
+    if ($duplicates.Count -gt 0) { throw "Two translation projects pin the same $($key): $($duplicates[0].Name)." }
+}
 # The audit reports by throwing, which aborts this run; nothing native has been invoked yet, so
 # there is no exit code to inspect.
 & (Join-Path $PSScriptRoot 'Test-PinnedFacts.ps1') -RepositoryRoot $repoRoot
@@ -73,7 +84,16 @@ function Resolve-VcRuntimeDirectory([string]$RequestedPath) {
 function Copy-Directory([string]$Source, [string]$Destination) {
     Assert-Directory $Source "Source directory"
     [IO.Directory]::CreateDirectory($Destination) | Out-Null
-    Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
+    # Source payloads are materialized trees, independent of Git checkout metadata.
+    foreach ($entry in Get-ChildItem -LiteralPath $Source -Force) {
+        if ($entry.Name -eq '.git') { continue }
+        $target = Join-Path $Destination $entry.Name
+        if ($entry.PSIsContainer) {
+            Copy-Directory $entry.FullName $target
+        } else {
+            Copy-Item -LiteralPath $entry.FullName -Destination $target -Force
+        }
+    }
 }
 function Compress-Zip([string]$Source, [string]$Destination, [string[]]$Entries) {
     $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
@@ -112,6 +132,20 @@ Assert-Directory $dependencySources 'Pinned offline dependency sources'
 # back to compiling aurora from source, which is what this package exists to
 # avoid - and a mismatched one would be an ABI hazard.
 $portableClangHash = Get-MkwFileSha256 (Join-Path $portableTools 'llvm-mingw\bin\clang-22.exe')
+# The identity the runtime build compares against the package's runtime archive.
+function Get-RuntimeSourceFingerprint([string]$RuntimeDirectory, [string]$DependenciesDirectory) {
+    $arguments = @("-DMKW_RUNTIME_DIR=$(ConvertTo-MkwCMakePath $RuntimeDirectory)")
+    $cppWinRt = Join-Path $DependenciesDirectory 'cppwinrt'
+    if (Test-Path -LiteralPath (Join-Path $cppWinRt 'winrt\base.h') -PathType Leaf) {
+        $arguments += "-DMKW_CPPWINRT_INCLUDE_DIR=$(ConvertTo-MkwCMakePath $cppWinRt)"
+    }
+    $arguments += @('-P', (ConvertTo-MkwCMakePath (Join-Path $RuntimeDirectory 'cmake\RuntimeFingerprint.cmake')))
+    $output = @(& (Join-Path $portableTools 'CMake\bin\cmake.exe') @arguments)
+    if ($LASTEXITCODE -ne 0) { throw "Runtime fingerprinting failed with exit code $LASTEXITCODE." }
+    $line = $output | Where-Object { "$_" -match '^runtime_fingerprint=[0-9a-f]{64}$' } | Select-Object -First 1
+    if (-not $line) { throw "RuntimeFingerprint.cmake printed no fingerprint: $($output -join ' ')" }
+    return "$line".Substring('runtime_fingerprint='.Length)
+}
 function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
     $provenancePath = Join-Path $PackageDirectory 'provenance.json'
     if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) { return $false }
@@ -129,6 +163,9 @@ function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
     # release ships runtime/third_party sources that first-party TUs compile
     # against, so archives harvested before a vendored change are stale.
     $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
+    # The precompiled runtime archive must be from these runtime sources; a package without one
+    # would make every installation compile the runtime itself.
+    $recordedRuntime = $provenance.PSObject.Properties['RuntimeSourceFingerprint']
     return ($provenance.CompilerSha256 -eq $portableClangHash) -and
            ($provenance.FlagFingerprint -eq (Get-MkwNativeFlagFingerprint)) -and
            ($null -ne $recordedDawn) -and
@@ -136,11 +173,13 @@ function Test-NativePrebuiltCurrent([string]$PackageDirectory) {
            ($null -ne $recordedAurora) -and
            ($recordedAurora.Value -eq (Get-MkwAuroraSourceFingerprint (Join-Path $repoRoot 'aurora-main'))) -and
            ($null -ne $recordedThirdParty) -and
-           ($recordedThirdParty.Value -eq (Get-MkwThirdPartySourceFingerprint (Join-Path $repoRoot 'runtime\third_party')))
+           ($recordedThirdParty.Value -eq (Get-MkwThirdPartySourceFingerprint (Join-Path $repoRoot 'runtime\third_party'))) -and
+           ($null -ne $recordedRuntime) -and
+           ($recordedRuntime.Value -eq (Get-RuntimeSourceFingerprint (Join-Path $repoRoot 'runtime') $dependencySources))
 }
 $nativePrebuiltPackage = Join-Path $dependencySources 'native_prebuilt'
 if (-not (Test-NativePrebuiltCurrent $nativePrebuiltPackage)) {
-    Write-Host '[0/6] Building the precompiled aurora and third-party package...'
+    Write-Host '[0/6] Building the precompiled aurora, third-party and runtime package...'
     & (Join-Path $PSScriptRoot 'Prepare-NativePrebuilt.ps1') `
         -PortableToolsDirectory $portableTools -DependencySourceDirectory $dependencySources
     if ($LASTEXITCODE -ne 0) { throw 'Precompiled aurora package preparation failed.' }
@@ -215,12 +254,48 @@ if (Test-Path -LiteralPath $runtimeDeveloperBuild) {
 }
 $auroraExtern = Join-Path $workspace 'aurora-main\extern'
 Get-ChildItem -LiteralPath $auroraExtern -Directory -Force | Remove-Item -Recurse -Force
-Copy-Directory (Join-Path $repoRoot 'projects\mkwii') (Join-Path $workspace 'projects\mkwii')
+foreach ($releaseProject in $releaseProjects) {
+    Copy-Directory $releaseProject.FullName (Join-Path $workspace "projects\$($releaseProject.Name)")
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LocalBuild.ps1') -Destination (Join-Path $workspace 'LocalBuild.ps1')
 # LocalBuild.ps1 dot-sources the canonical configure flags from this sibling.
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1') -Destination (Join-Path $workspace 'NativeBuildFlags.ps1')
 [IO.Directory]::CreateDirectory((Join-Path $workspace 'Dependencies')) | Out-Null
 foreach ($name in $requiredDependencies) { Copy-Directory (Join-Path $dependencySources $name) (Join-Path $workspace "Dependencies\$name") }
+
+# The translation identity covers the runtime's native registrations through this index (see
+# ToolkitFingerprint), so it is extracted from exactly the staged runtime sources.
+$nativeIndex = Join-Path $workspace 'runtime\native-index.json'
+# The payload has no game inputs, so the project file (which validates them) cannot be loaded here.
+& $translator emit-native-index --native-source-dir (Join-Path $workspace 'runtime\src') --out $nativeIndex
+if ($LASTEXITCODE -ne 0) { throw "Native index extraction failed with exit code $LASTEXITCODE." }
+Assert-File $nativeIndex 'Runtime native index'
+# A staged runtime that fingerprints differently from the shipped archive would make every
+# installation silently compile the runtime from source.
+$stagedRuntimeFingerprint = Get-RuntimeSourceFingerprint (Join-Path $workspace 'runtime') (Join-Path $workspace 'Dependencies')
+$packagedRuntimeFingerprint = (Get-Content -LiteralPath (Join-Path $workspace 'Dependencies\native_prebuilt\provenance.json') -Raw |
+    ConvertFrom-Json).RuntimeSourceFingerprint
+if ($stagedRuntimeFingerprint -ne $packagedRuntimeFingerprint) {
+    throw "The staged runtime ($stagedRuntimeFingerprint) does not match the precompiled runtime archive ($packagedRuntimeFingerprint)."
+}
+# Users' builds run LocalBuild.ps1 under Windows PowerShell 5.1, whatever shell built this
+# installer, so the staged package is accepted (or not) exactly the way theirs will be.
+$prebuiltGate = Join-Path $workRoot 'native-prebuilt-gate.ps1'
+@'
+param([string]$Workspace, [string]$Toolkit)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version 3.0
+. (Join-Path $Workspace 'NativeBuildFlags.ps1')
+$package = Resolve-MkwNativePrebuiltDirectory (Join-Path $Workspace 'Dependencies') `
+    (Join-Path $Toolkit 'llvm-mingw\bin') (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
+if (-not $package) { exit 3 }
+'@ | Set-Content -LiteralPath $prebuiltGate -Encoding UTF8
+& (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -NoLogo -NoProfile -NonInteractive `
+    -ExecutionPolicy Bypass -File $prebuiltGate -Workspace $workspace -Toolkit $toolkit
+if ($LASTEXITCODE -ne 0) {
+    throw "Windows PowerShell rejects the staged precompiled aurora package (exit $LASTEXITCODE); every installation would build aurora from source."
+}
+Remove-Item -LiteralPath $prebuiltGate -Force
 
 [IO.Directory]::CreateDirectory((Join-Path $payloadRoot 'host')) | Out-Null
 Copy-Item $setupHost (Join-Path $payloadRoot 'host\WiiCompiled-Setup.exe')
@@ -279,22 +354,23 @@ foreach ($required in @('ToolkitFingerprint','TranslationFingerprint','NativeToo
     if ([string]::IsNullOrWhiteSpace($identities.$required)) { throw "Payload identity output is missing $required." }
 }
 
+$productVersion = ((& $setupHost --version) -join '').Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($productVersion)) { throw 'The setup host did not report its version.' }
+
+# Schema 3 replaced schema 2's single Expected* release fields with SupportedReleases.
 $manifest = [ordered]@{
-    SchemaVersion = 2
-    ProductVersion = '0.2.32'
-    ExpectedGameId = $pins.GameId
-    ExpectedDolSha256 = $pins.DolSha256
-    ExpectedRelSha256 = $pins.RelSha256
+    SchemaVersion = 3
+    ProductVersion = $productVersion
+    SupportedReleases = $supportedReleases
     ToolkitReleaseTag = if ($ToolkitReleaseTag) { $ToolkitReleaseTag } else { '' }
     BuildModel = 'local-translation-and-compilation'
-    RetroWfcPayloadUri = $pins.RetroWfcPayloadUri
     ToolkitFingerprint = $identities.ToolkitFingerprint
     ToolkitPackageFingerprint = $identities.ToolkitPackageFingerprint
     RuntimeAssetsFingerprint = $identities.RuntimeAssetsFingerprint
     TranslationFingerprint = $identities.TranslationFingerprint
     NativeToolchainFingerprint = $identities.NativeToolchainFingerprint
 }
-$manifest | ConvertTo-Json | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
+$manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
 
 Write-Host '[4/6] Enforcing the copyright and generated-code boundary...'
 # Both audits are PowerShell scripts that throw directly on failure (Test-PayloadBoundary.ps1

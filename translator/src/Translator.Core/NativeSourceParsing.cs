@@ -12,20 +12,29 @@ internal static class NativeSourceParsing
     public static IReadOnlyList<NativeSourceFile> ReadDirectory(string directory)
     {
         var root = Path.GetFullPath(directory);
+        return EnumerateSourcePaths(root)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .Select(path => new NativeSourceFile(
+                path,
+                RelativePath(root, path),
+                StripCommentsAndLiterals(File.ReadAllText(path))))
+            .ToArray();
+    }
+
+    /// <summary>Every file the scanner reads; the native index digest covers exactly this set.</summary>
+    public static IEnumerable<string> EnumerateSourcePaths(string root)
+    {
         if (!Directory.Exists(root))
             return [];
 
         return Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories)
             .Where(static path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
                                   path.EndsWith(".h", StringComparison.OrdinalIgnoreCase) ||
-                                  path.EndsWith(".hpp", StringComparison.OrdinalIgnoreCase))
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .Select(path => new NativeSourceFile(
-                path,
-                Path.GetRelativePath(root, path).Replace('\\', '/'),
-                StripCommentsAndLiterals(File.ReadAllText(path))))
-            .ToArray();
+                                  path.EndsWith(".hpp", StringComparison.OrdinalIgnoreCase));
     }
+
+    public static string RelativePath(string root, string path) =>
+        Path.GetRelativePath(root, path).Replace('\\', '/');
 
     public static IEnumerable<string> SplitArguments(string arguments)
     {

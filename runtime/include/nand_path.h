@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime_config.h"
+#include "guest_abi/guest_region.h"
 #include "nand_settings.h"
 #include "runtime_log.h"
 #include "system_bridge.h"
@@ -184,7 +185,9 @@ inline std::filesystem::path DiscoverNandRootPath() {
     static const auto root = [] {
         const auto resolved = ResolveNandRootPath();
         std::string error;
-        if (!RuntimeNandSettings::Ensure(resolved, error)) {
+        const auto& facts = ::GuestRegion::CurrentFacts();
+        if (!RuntimeNandSettings::Ensure(resolved, error,
+                {facts.area, facts.model, facts.productCode, facts.video, facts.gameRegion})) {
             FailNandRoot(error.c_str(), RuntimeNandSettings::FilePath(resolved));
         }
         return resolved;

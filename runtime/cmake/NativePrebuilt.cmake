@@ -3,10 +3,10 @@
 #
 # Produced by launcher/Prepare-NativePrebuilt.ps1 with the same toolchain and the
 # same canonical flag set the consuming build uses, which is what makes a single
-# package valid for every user. Nothing about this project's own code changes:
-# the runtime, the translated shards and the products still compile locally and
-# still link targets named aurora::gx / aurora::pad / aurora::si / aurora::vi /
-# aurora::mtx, so cmake/PublicProducts.cmake needs no prebuilt-specific branch.
+# package valid for every user. The translated shards and the products still
+# compile locally and still link targets named aurora::gx / aurora::pad /
+# aurora::si / aurora::vi / aurora::mtx. The package may also carry the native
+# runtime archive; cmake/RuntimeLibrary.cmake decides whether it can be used.
 #
 # The aurora and dependency source trees are still present in the workspace - the
 # runtime includes aurora headers directly - so the package records include
@@ -42,6 +42,32 @@ endfunction()
 mkw_np_resolve(_mkw_np_includes ${MKW_NP_INCLUDE_DIRECTORIES})
 mkw_np_resolve(_mkw_np_links ${MKW_NP_LINK_LIBRARIES})
 mkw_np_resolve(_mkw_np_dawn_config ${MKW_NP_DAWN_CONFIG_DIR})
+set(MKW_NP_RUNTIME_ARCHIVE_PATH "")
+if(MKW_NP_RUNTIME_ARCHIVE)
+    mkw_np_resolve(MKW_NP_RUNTIME_ARCHIVE_PATH "${MKW_NP_RUNTIME_ARCHIVE}")
+endif()
+if(NOT MKW_PLATFORM_WINDOWS)
+    if(NOT MKW_NP_MBEDTLS_LIBRARIES OR NOT MKW_NP_MBEDTLS_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "The Linux native prebuilt package has no Mbed TLS archives; regenerate it with Prepare-NativePrebuilt.sh")
+    endif()
+    file(SHA256 "${CMAKE_CURRENT_LIST_DIR}/MbedTLSPin.cmake" _mkw_np_current_mbedtls_fingerprint)
+    if(NOT MKW_NP_MBEDTLS_FINGERPRINT STREQUAL _mkw_np_current_mbedtls_fingerprint)
+        message(FATAL_ERROR "The native prebuilt Mbed TLS version differs from this workspace; regenerate the package")
+    endif()
+    mkw_np_resolve(_mkw_np_mbedtls_links ${MKW_NP_MBEDTLS_LIBRARIES})
+    mkw_np_resolve(_mkw_np_mbedtls_include ${MKW_NP_MBEDTLS_INCLUDE_DIR})
+    foreach(_archive IN LISTS _mkw_np_mbedtls_links)
+        if(NOT EXISTS "${_archive}")
+            message(FATAL_ERROR "The native prebuilt package is missing Mbed TLS archive: ${_archive}")
+        endif()
+    endforeach()
+    if(NOT IS_DIRECTORY "${_mkw_np_mbedtls_include}")
+        message(FATAL_ERROR "The native prebuilt package is missing Mbed TLS headers: ${_mkw_np_mbedtls_include}")
+    endif()
+    target_include_directories(mkw_mbedtls SYSTEM INTERFACE "${_mkw_np_mbedtls_include}")
+    target_link_libraries(mkw_mbedtls INTERFACE ${_mkw_np_mbedtls_links})
+endif()
 
 foreach(_dir IN LISTS _mkw_np_includes)
     if(NOT IS_DIRECTORY "${_dir}")

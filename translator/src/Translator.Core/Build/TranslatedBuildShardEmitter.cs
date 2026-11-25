@@ -18,7 +18,8 @@ public sealed record TranslatedBuildShardOptions(
     int BaseShardCount = 72,
     int ModShardCount = 48,
     int RegistrationShardCount = 16,
-    RuntimeNativeIndex? NativeIndex = null);
+    RuntimeNativeIndex? NativeIndex = null,
+    GuestRegion Region = GuestRegion.Pal);
 
 /// <summary>
 /// Per-shard compile-cost spread for one partition. Frozen membership does not
@@ -247,6 +248,7 @@ public static partial class TranslatedBuildShardEmitter
         WriteCMakeManifest(
             cmakeManifestPath,
             outputRoot,
+            options.Region,
             commonBase.Length,
             portableCommonBase.Length,
             activeBase.Length,
@@ -288,10 +290,10 @@ public static partial class TranslatedBuildShardEmitter
         {
             throw new FileNotFoundException("Required shard input is missing.", options.BaseMetadataPath);
         }
-        foreach (var path in new[] { options.BaseFunctionsDirectory, options.NativeSourceDirectory })
-        {
-            if (!Directory.Exists(path)) throw new DirectoryNotFoundException(path);
-        }
+        if (!Directory.Exists(options.BaseFunctionsDirectory))
+            throw new DirectoryNotFoundException(options.BaseFunctionsDirectory);
+        if (options.NativeIndex is null && !Directory.Exists(options.NativeSourceDirectory))
+            throw new DirectoryNotFoundException(options.NativeSourceDirectory);
         if (options.BaseShardCount < 1 || options.ModShardCount < 1 || options.RegistrationShardCount < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "Shard counts must be positive.");
@@ -629,7 +631,7 @@ public static partial class TranslatedBuildShardEmitter
             var traitsPath = Path.Combine(directory, $"shard_{hash[..24]}_traits.h");
             var source = new StringBuilder();
             source.AppendLine("// Translator-owned content-addressed aggregate shard; do not edit.");
-            source.AppendLine("#include \"abi_bridge.h\"");
+            source.AppendLine("#include \"guest_abi/guest_abi.h\"");
             // Quoted include resolves the sibling traits header on every toolchain and keeps
             // the shard text free of the emitting machine's absolute paths.
             source.AppendLine($"#include \"{Path.GetFileName(traitsPath)}\"");
@@ -909,7 +911,7 @@ public static partial class TranslatedBuildShardEmitter
             var path = Path.Combine(directory, $"registration_{index:D2}_{hash[..16]}.cpp");
             var source = new StringBuilder();
             source.AppendLine("// Translator-owned bulk registration; do not edit.");
-            source.AppendLine("#include \"abi_bridge.h\"");
+            source.AppendLine("#include \"guest_abi/guest_abi.h\"");
             source.AppendLine("#include <cstddef>");
             foreach (var symbol in group.Select(static record => record.Symbol).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
             {
@@ -955,7 +957,7 @@ public static partial class TranslatedBuildShardEmitter
         var path = Path.Combine(directory, $"indirect_dispatch_{hash[..16]}.cpp");
         var source = new StringBuilder();
         source.AppendLine("// Translator-owned immutable indirect dispatch table; do not edit.");
-        source.AppendLine("#include \"abi_bridge.h\"");
+        source.AppendLine("#include \"guest_abi/guest_abi.h\"");
         source.AppendLine("#include <iterator>");
         foreach (var symbol in entries.Select(static pair => pair.Value.WinnerSymbol!)
                      .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
@@ -1039,6 +1041,7 @@ public static partial class TranslatedBuildShardEmitter
     private static void WriteCMakeManifest(
         string path,
         string outputRoot,
+        GuestRegion region,
         int sharedBaseCount,
         int portableSharedBaseCount,
         int activeBaseCount,
@@ -1053,6 +1056,7 @@ public static partial class TranslatedBuildShardEmitter
         var output = new StringBuilder();
         output.AppendLine("# Translator-owned stable shard graph; do not edit.");
         output.AppendLine($"set(MKW_TRANSLATED_SHARD_ROOT \"{CMakePath(outputRoot)}\")");
+        output.AppendLine($"set(MKW_TRANSLATED_GUEST_REGION {(int)region})");
         output.AppendLine($"set(MKW_BASE_FUNCTION_COUNT {activeBaseCount})");
         output.AppendLine($"set(MKW_SHARED_BASE_FUNCTION_COUNT {sharedBaseCount})");
         output.AppendLine($"set(MKW_PORTABLE_SHARED_BASE_FUNCTION_COUNT {portableSharedBaseCount})");

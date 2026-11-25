@@ -7,14 +7,23 @@ extern "C" void __GXSetSUTexRegs();
 // FIFO Write Helpers
 // ============================================================================
 
-extern "C" void GX_HLE_FIFO_WriteFloat(float val) {
-    u32 raw; std::memcpy(&raw, &val, 4);
-    try { HleFifoWrite(raw, 4); } catch (...) { RT_LOGF(RT_TAG_GX, "FIFO write float failed\n"); }
+static void FifoWrite(u32 val, uint32_t sizeBytes) {
+    if (GxWorker::ShouldDefer()) {
+        EnsureAuroraFrameForFifo();
+        GxWorker::FifoWrite(val, sizeBytes);
+        return;
+    }
+    HleFifoWrite(val, sizeBytes);
 }
 
-extern "C" void GX_HLE_FIFO_Write32(uint32_t val) { HleFifoWrite(val, 4); }
-extern "C" void GX_HLE_FIFO_Write16(uint16_t val) { HleFifoWrite(static_cast<u32>(val), 2); }
-extern "C" void GX_HLE_FIFO_Write8(uint8_t val) { HleFifoWrite(static_cast<u32>(val), 1); }
+extern "C" void GX_HLE_FIFO_WriteFloat(float val) {
+    u32 raw; std::memcpy(&raw, &val, 4);
+    try { FifoWrite(raw, 4); } catch (...) { RT_LOGF(RT_TAG_GX, "FIFO write float failed\n"); }
+}
+
+extern "C" void GX_HLE_FIFO_Write32(uint32_t val) { FifoWrite(val, 4); }
+extern "C" void GX_HLE_FIFO_Write16(uint16_t val) { FifoWrite(static_cast<u32>(val), 2); }
+extern "C" void GX_HLE_FIFO_Write8(uint8_t val) { FifoWrite(static_cast<u32>(val), 1); }
 
 extern "C" void GX__SetDrawSync_8016ed08(uint32_t token) {
     (void)token;
@@ -37,6 +46,7 @@ extern "C" void GX__FinishInterruptHandler_8016ed94() {
 PPC_NATIVE_OVERRIDE_VOID(8016ed94, GX__FinishInterruptHandler_8016ed94, (), ());
 
 extern "C" void GX__DrawDone_8016eab0() {
+    GX_SYNC_INLINE();
     try { Memory::Write8(kGxDrawDoneFlagAddr, 0); } catch (...) {}
     GXDrawDone(); GX__FinishInterruptHandler_8016ed94();
 }
@@ -44,7 +54,7 @@ PPC_NATIVE_OVERRIDE_VOID(8016eab0, GX__DrawDone_8016eab0, (), ());
 
 extern "C" void GX__PixModeSync_8016eb70() {
     try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}
-    GXPixModeSync();
+    GxWorker::Run([] { GXPixModeSync(); });
 }
 PPC_NATIVE_OVERRIDE_VOID(8016eb70, GX__PixModeSync_8016eb70, (), ());
 
@@ -60,7 +70,7 @@ PPC_NATIVE_OVERRIDE_VOID(8016b720, __GX__InitRevisionBits_8016b720, (), ());
 // ============================================================================
 
 extern "C" void __GX__SetSUTexRegs_801712f0() {
-    __GXSetSUTexRegs();
+    GxWorker::Run([] { __GXSetSUTexRegs(); });
     try { uint32_t gd = Memory::Read32(kGXDataPtrAddr); if (gd) Memory::Write16(gd + 2, 0); } catch (...) {}
 }
 PPC_NATIVE_OVERRIDE_VOID(801712f0, __GX__SetSUTexRegs_801712f0, (), ());
@@ -82,7 +92,7 @@ PPC_NATIVE_OVERRIDE_VOID(80171c28, __GX__FlushTextureState_80171c28, (), ());
 // ============================================================================
 
 extern "C" void GX__SetDispCopyFrame2Field_8016f5f8(uint32_t f) {
-    GXSetDispCopyFrame2Field(f);
+    GxWorker::Run([f] { GXSetDispCopyFrame2Field(f); });
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) {
@@ -94,7 +104,7 @@ extern "C" void GX__SetDispCopyFrame2Field_8016f5f8(uint32_t f) {
 PPC_NATIVE_OVERRIDE_VOID(8016f5f8, GX__SetDispCopyFrame2Field_8016f5f8, (uint32_t f), (f));
 
 extern "C" void GX__SetCopyClamp_8016f618(uint32_t c) {
-    GXSetCopyClamp(static_cast<GXFBClamp>(c));
+    GxWorker::Run([c] { GXSetCopyClamp(static_cast<GXFBClamp>(c)); });
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) {
@@ -107,7 +117,7 @@ extern "C" void GX__SetCopyClamp_8016f618(uint32_t c) {
 PPC_NATIVE_OVERRIDE_VOID(8016f618, GX__SetCopyClamp_8016f618, (uint32_t c), (c));
 
 extern "C" void GX__ClearBoundingBox_8016fecc() {
-    GXClearBoundingBox();
+    GxWorker::Run([] { GXClearBoundingBox(); });
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) Memory::Write16(gd + 2, 0);

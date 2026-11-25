@@ -23,7 +23,8 @@ internal sealed class LocalBuildService
     /// </summary>
     public async Task BuildAsync(string installStaging, BuildProfile profile, string outputDirectory,
         RetroWfcPayloadMode retroWfcPayloadMode, string? retroWfcOfflinePayloadDirectory,
-        CancellationToken cancellationToken, ToolkitFingerprintComponents? toolkitComponents = null,
+        string? retroWfcGameId, CancellationToken cancellationToken,
+        ToolkitFingerprintComponents? toolkitComponents = null,
         bool forceCleanBuild = false, BuildProgressWindow? progress = null,
         string? retroRewindPackageDirectory = null, string? baseOutputDirectory = null)
     {
@@ -45,8 +46,9 @@ internal sealed class LocalBuildService
             retroRewindPackageDirectory = RetroRewindSource.ResolveRetroRewind6(
                 retroRewindPackageDirectory);
         if (retroWfcPayloadMode == RetroWfcPayloadMode.Online)
-            retroWfcOfflinePayloadDirectory =
-                InputValidation.ValidateStagedRetroWfcPayloadDirectory(retroWfcOfflinePayloadDirectory!);
+            retroWfcOfflinePayloadDirectory = InputValidation.ValidateStagedRetroWfcPayloadDirectory(
+                retroWfcOfflinePayloadDirectory!,
+                retroWfcGameId ?? throw new ArgumentException("The Retro-WFC payload needs its game id."));
 
         var arguments = new List<string>
         {
@@ -58,7 +60,8 @@ internal sealed class LocalBuildService
                 BuildProfile.RetroRewind => "retro-rewind",
                 _ => "both"
             },
-            "-OutputDirectory", outputDirectory
+            "-OutputDirectory", outputDirectory,
+            "-X86CpuProfile", HostCpuRequirement.SelectBuildProfile() == X86CpuProfile.V2 ? "v2" : "v3"
         };
         if (baseOutputDirectory is not null)
         {

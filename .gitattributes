@@ -4,3 +4,9 @@
 # Patch files must stay LF: git apply matches context bytes against LF upstream sources
 *.patch -text
 translator/tests/Translator.Tests/TestAssets/**/*.bin binary
+
+# Region tables
+projects/mkwii-ntsc-*/MAP.txt linguist-generated=true
+projects/mkwii-ntsc-*/region_port.json linguist-generated=true
+projects/mkwii-ntsc-j/data_addresses.txt linguist-generated=true
+runtime/include/guest_abi/guest_versions.inc linguist-generated=true

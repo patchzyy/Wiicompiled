@@ -33,16 +33,23 @@ internal sealed class InstallOptions
     public bool HasRetroRewind => RetroDirectoryPath is not null;
 }
 
+/// <summary>A clean retail release the payload installs, as pinned by its projects/*/recomp.yml.</summary>
+internal sealed class GameRelease
+{
+    public string GameId { get; set; } = "";
+    public string DolSha256 { get; set; } = "";
+    public string RelSha256 { get; set; } = "";
+}
+
 internal sealed class PayloadManifest
 {
+    public const int CurrentSchemaVersion = 3;
+
     public int SchemaVersion { get; set; }
     public string ProductVersion { get; set; } = "";
-    public string ExpectedGameId { get; set; } = "RMCP01";
-    public string ExpectedDolSha256 { get; set; } = "";
-    public string ExpectedRelSha256 { get; set; } = "";
+    public List<GameRelease> SupportedReleases { get; set; } = [];
     public string ToolkitReleaseTag { get; set; } = "";
     public string BuildModel { get; set; } = "";
-    public string RetroWfcPayloadUri { get; set; } = "";
 
     /// <summary>
     /// Content identities computed once at release-build time (<c>Build-Installer.ps1 --emit-payload-identities</c>)

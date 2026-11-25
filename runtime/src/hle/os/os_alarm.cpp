@@ -10,12 +10,11 @@
 #include "hle_stubs.h"
 #include "ppc_runtime.h"
 #include "runtime_log.h"
+#include "hle/bluetooth_hle.h"
 #include "hle/net/network.h"
-#include "generated/RuntimeConfig.h"
+#include "guest_small_data.h"
 #include "os_internal.h"
-
-extern "C" void func_801AADE0(CpuContext* ctx);
-extern "C" void func_801A0620(CpuContext* ctx);
+#include "guest_function_imports.h"
 
 // ============================================================================
 // Alarm queue helpers
@@ -41,7 +40,7 @@ struct AlarmProcessScope {
 // the other call sites have never logged.
 void EnsureSda1Base(CpuContext* cpu, bool logOnce = false)
 {
-    if (cpu->gpr[13] == RuntimeConfig::SDA1_BASE) {
+    if (cpu->gpr[13] == GuestSmallData::kSda1Base) {
         return;
     }
 
@@ -51,7 +50,7 @@ void EnsureSda1Base(CpuContext* cpu, bool logOnce = false)
             RT_LOG(RT_TAG_OS) << "OS_HLE_ProcessAlarms: fixing r13 to SDA1 base" << std::endl;
         });
     }
-    cpu->gpr[13] = RuntimeConfig::SDA1_BASE;
+    cpu->gpr[13] = GuestSmallData::kSda1Base;
 }
 
 void IncrementSchedulerDisableCount()
@@ -99,7 +98,7 @@ void SanitizeAlarmQueue(CpuContext* cpu)
         return;
     }
 
-    const uint32_t queueBase = cpu->gpr[13] - kAlarmQueueOffsetFromR13;
+    const uint32_t queueBase = kAlarmQueueAddr;
     try {
         const uint32_t head = ::Memory::Read32(queueBase);
         const uint32_t tail = ::Memory::Read32(queueBase + 4u);
@@ -168,7 +167,7 @@ bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
     {
         AlarmProcessScope alarmProcessScope;
         SanitizeAlarmQueue(cpu);
-        const uint32_t queueBase = cpu->gpr[13] - kAlarmQueueOffsetFromR13;
+        const uint32_t queueBase = kAlarmQueueAddr;
 
         try {
             for (int i = 0; i < maxToProcess; ++i) {
@@ -208,7 +207,7 @@ bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
                     cpu->gpr[5] = 0;
                     cpu->gpr[6] = 0;
                     cpu->gpr[7] = handler;
-                    func_801A0620(cpu);
+                    MKW_GUEST_FUNC(801A0620)(cpu);
                 }
 
                 if (handler != 0) {
@@ -234,6 +233,10 @@ bool ProcessAlarmQueue(CpuContext* cpu, int maxToProcess)
     // callbacks before the callback drain below.
     bool completionNeedsReschedule = handledAny;
     if (Network_HLE_ProcessCompletions(cpu)) {
+        handledAny = true;
+        completionNeedsReschedule = true;
+    }
+    if (Bluetooth_HLE_ProcessCompletions(cpu)) {
         handledAny = true;
         completionNeedsReschedule = true;
     }
@@ -304,7 +307,7 @@ extern "C" void OSSetAlarm_HLE_801a0870(CpuContext* ctx)
         return;
     }
 
-    const uint32_t queueBase = cpu->gpr[13] - kAlarmQueueOffsetFromR13;
+    const uint32_t queueBase = kAlarmQueueAddr;
     try {
         const uint32_t head = ::Memory::Read32(queueBase);
         if (head == 0) {
@@ -422,7 +425,7 @@ extern "C" void OS__SetPeriodicAlarm_801a08e0(CpuContext* ctx)
 
     cpu->gpr[3] = startHi;
     cpu->gpr[4] = startLo;
-    func_801AADE0(cpu);
+    MKW_GUEST_FUNC(801AADE0)(cpu);
     Memory::Write32(alarm + 0x20u, cpu->gpr[3]);
     Memory::Write32(alarm + 0x24u, cpu->gpr[4]);
 
@@ -430,7 +433,7 @@ extern "C" void OS__SetPeriodicAlarm_801a08e0(CpuContext* ctx)
     cpu->gpr[5] = 0;
     cpu->gpr[6] = 0;
     cpu->gpr[7] = handler;
-    func_801A0620(cpu);
+    MKW_GUEST_FUNC(801A0620)(cpu);
 
     cpu->gpr[3] = static_cast<uint32_t>(OS__RestoreInterrupts_801a65d4(level));
 }
@@ -459,7 +462,7 @@ extern "C" uint32_t RFLiIsWorking_HLE_800bd860()
     DecrementSchedulerDisableCount();
 
     // Now return the actual "working" status
-    constexpr uint32_t kRflManagerPtrAddr = 0x80386298u;
+    const uint32_t kRflManagerPtrAddr = MKW_GADDR(80386298);
     constexpr uint32_t kWorkingFlagOffset = 0x1b34u;
 
     try {

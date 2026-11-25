@@ -8,6 +8,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <ServerGarbageCollection>true</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <TieredPGO>false</TieredPGO>
     <VersionPrefix>0.5.0</VersionPrefix>
     <Company>WiiCompiled</Company>
     <Product>Mario Kart Wii Static Translator</Product>

@@ -83,9 +83,11 @@ public static partial class GeneratedMarkers
 
     /// <summary>
     /// <c>REGISTER_NATIVE_FUNCTION(0x…, symbol)</c> and its <c>_AS</c> alias form;
-    /// the <c>as</c> group tells the two apart.
+    /// the <c>as</c> group tells the two apart. <c>REGISTER_NATIVE_WRAPPER_AS</c> and
+    /// <c>REGISTER_NATIVE_REPLACEMENT_AS</c> are alias forms too, named by the
+    /// <c>modOverlay</c> group.
     /// </summary>
-    [GeneratedRegex(@"REGISTER_NATIVE_FUNCTION(?<as>_AS)?\s*\(\s*0x(?<address>[0-9A-Fa-f]{8})\s*,\s*(?<symbol>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.CultureInvariant)]
+    [GeneratedRegex(@"REGISTER_NATIVE_(?:FUNCTION(?<as>_AS)?|(?<modOverlay>WRAPPER|REPLACEMENT)_AS)\s*\(\s*0x(?<address>[0-9A-Fa-f]{8})\s*,\s*(?<symbol>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.CultureInvariant)]
     public static partial Regex NativeFunctionRegistrationPattern();
 
     [GeneratedRegex(@"REGISTER_TRANSLATED_FUNCTION\s*\(\s*0x(?<address>[0-9A-Fa-f]{8})\s*,\s*(?<symbol>[A-Za-z_][A-Za-z0-9_]*)", RegexOptions.CultureInvariant)]
