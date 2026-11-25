@@ -393,6 +393,7 @@ void ReportUnparkableSleep(uint32_t queuePtr, uint32_t thread)
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
+    VI_HLE_NoteGuestWait();
     const uint32_t queuePtr = cpu->gpr[3];
     
     if (queuePtr == 0) {

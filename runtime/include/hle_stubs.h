@@ -16,6 +16,11 @@ void VI_HLE_WaitForNextRetracePoll();
 // to the VI retrace boundary, pre-warm the next frame). paceToRetrace is true
 // for the GXCopyDisp producer path and false for retrace-context presents.
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace);
+// Late tick start (see late_tick_start.h): hold each tick until shortly before the retrace it waits for.
+void VI_HLE_SetLateTickStart(bool enabled);
+// GXDrawDone reports the drawing thread; OSSleepThread reports every guest wait.
+void VI_HLE_NoteDrawThread();
+void VI_HLE_NoteGuestWait();
 bool VI_HLE_IsAdvancingRetrace();
 void VI_HLE_SetXfbReady(uint32_t xfbAddr); // Called by GXCopyDisp to signal EFB→XFB copy
 void Audio_HLE_Tick(CpuContext* ctx, uint32_t deltaMicros);

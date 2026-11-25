@@ -114,6 +114,7 @@ bool g_skipUnreadyPipelines = RuntimeConfigFile::SkipUnreadyPipelines(true);
 bool g_vsync = RuntimeConfigFile::Vsync();
 bool g_disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
 bool g_showFps = RuntimeConfigFile::ShowFps(true);
+bool g_lateTickStart = RuntimeConfigFile::LateTickStart(false);
 bool g_forceAspect = RuntimeConfigFile::ForceAspectEnabled();
 bool g_widescreen = RuntimeConfigFile::WidescreenEnabled(true);
 #if defined(__APPLE__)
@@ -1290,6 +1291,14 @@ void DrawGraphicsSettings() {
     if (ImGui::Checkbox("Show FPS", &g_showFps)) {
         RuntimeConfigFile::SetShowFps(g_showFps);
     }
+    if (ImGui::Checkbox("Late tick start (lower input lag)", &g_lateTickStart)) {
+        VI_HLE_SetLateTickStart(g_lateTickStart);
+        RuntimeConfigFile::SetLateTickStart(g_lateTickStart);
+    }
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 380.0f);
+    ImGui::TextDisabled("Starts each game tick just before the game needs your input, so it shows up about "
+                        "12 ms sooner. Turn it off if you see stutter.");
+    ImGui::PopTextWrapPos();
     ImGui::Separator();
     ImGui::Text("Graphics API: %s", GraphicsApiDisplayName());
 }
@@ -1642,6 +1651,7 @@ void InitializeRuntimeSettings() noexcept {
     g_displayMode = static_cast<int>(aurora_get_display_mode());
     aurora_set_disable_copy_filter(g_disableCopyFilter);
     aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
+    VI_HLE_SetLateTickStart(g_lateTickStart);
     g_strapInputAccepted.store(false, std::memory_order_relaxed);
     g_startupDismissFrame.store(UINT64_MAX, std::memory_order_relaxed);
     g_bootShadersReady.store(false, std::memory_order_relaxed);

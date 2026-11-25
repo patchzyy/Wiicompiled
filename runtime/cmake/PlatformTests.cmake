@@ -296,6 +296,13 @@ target_compile_features(mkw_motion_trick_tests PRIVATE cxx_std_17)
 target_compile_options(mkw_motion_trick_tests PRIVATE $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffast-math>)
 add_test(NAME mkw_motion_trick_tests COMMAND mkw_motion_trick_tests)
 
+add_executable(mkw_late_tick_start_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/late_tick_start_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/late_tick_start.cpp")
+target_include_directories(mkw_late_tick_start_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_late_tick_start_tests PRIVATE cxx_std_20)
+add_test(NAME mkw_late_tick_start_tests COMMAND mkw_late_tick_start_tests)
+
 # The emulated Bluetooth controller is pure host code.
 add_executable(mkw_bluetooth_controller_tests
     "${MKW_TEST_RUNTIME_DIR}/tests/bluetooth_controller_tests.cpp"
