@@ -431,22 +431,74 @@ inline double PpcPackIntegerWordInline(int32_t value)
         static_cast<uint64_t>(static_cast<uint32_t>(value)));
 }
 
+// Bit-identical std::fma(float) without an FMA instruction: a float product is exact in double.
+// Halfway sums, results <= FLT_MIN and subnormal/non-finite operands fall back to std::fma.
+inline float PpcFusedMultiplyAddFloatViaDoubleInline(float a, float c, float b)
+{
+    const auto isNormalOrZero = [](float value) {
+        const uint32_t absBits = PpcBitCastToU32Inline(value) & 0x7FFFFFFFu;
+        return absBits == 0u || (absBits - 0x00800000u) < 0x7F000000u;
+    };
+    if (isNormalOrZero(a) && isNormalOrZero(c) && isNormalOrZero(b)) [[likely]] {
+        const double sum =
+            static_cast<double>(a) * static_cast<double>(c) + static_cast<double>(b);
+        const uint64_t bits = PpcBitCastToU64Inline(sum);
+        const uint64_t magnitude = bits & 0x7FFFFFFFFFFFFFFFULL;
+        constexpr uint64_t kFloatMinNormal = 0x3810000000000000ULL;
+        // Double bits below a normal float's LSB, and the halfway pattern within them.
+        constexpr uint64_t kBelowFloatLsbMask = 0x1FFFFFFFULL;
+        constexpr uint64_t kFloatHalfway = 0x10000000ULL;
+        if ((magnitude == 0 || magnitude > kFloatMinNormal) &&
+            (bits & kBelowFloatLsbMask) != kFloatHalfway) [[likely]]
+            return static_cast<float>(sum);
+    }
+    return std::fma(a, c, b);
+}
+
+// On v2, std::fma is a CRT call that is ~12x slower in software without hardware FMA (THP decode).
+// Use the double path there; CPUs with FMA3/FMA4 keep the CRT's hardware path.
+inline float PpcFusedMultiplyAddFloatInline(float a, float c, float b)
+{
+#if defined(__x86_64__) && !defined(__FMA__) && !(defined(__GLIBC__) && defined(__FMA4__))
+    bool crtHasHardwareFma = __builtin_cpu_supports("fma");
+#if defined(__GLIBC__)
+    // glibc's fmaf also dispatches to FMA4.
+    crtHasHardwareFma = crtHasHardwareFma ||
+                        (__builtin_cpu_supports("fma4") && __builtin_cpu_supports("avx"));
+#endif
+    if (!crtHasHardwareFma)
+        return PpcFusedMultiplyAddFloatViaDoubleInline(a, c, b);
+#endif
+    return std::fma(a, c, b);
+}
+
+// The addend a lane FMA sees; a NaN subtractor stays unnegated so its sign matches Gekko/vfmsub.
+template <bool Subtract>
+inline float PpcPsMaddLaneAddendInline(float b)
+{
+    if constexpr (Subtract) {
+        if ((PpcBitCastToU32Inline(b) & 0x7FFFFFFFu) <= 0x7F800000u)
+            return -b;
+    }
+    return b;
+}
+
 template <bool Subtract>
 inline float PpcAccuratePsMaddLaneInline(float a, float c, float b)
 {
-    const float signedB = Subtract ? -b : b;
+    const float signedB = PpcPsMaddLaneAddendInline<Subtract>(b);
     // Paired values are stored as exact float32 lanes in this runtime.  An
     // explicit float FMA therefore matches Gekko's single rounding point;
     // multiplying and adding separately can differ by an ULP on ordinary
     // vector and matrix workloads.
-    return PpcFlushSingleForNiInline(std::fma(a, c, signedB));
+    return PpcFlushSingleForNiInline(PpcFusedMultiplyAddFloatInline(a, c, signedB));
 }
 
 template <bool Subtract>
 inline float PpcAccuratePsMaddLaneNoNiInline(float a, float c, float b)
 {
-    const float signedB = Subtract ? -b : b;
-    return std::fma(a, c, signedB);
+    const float signedB = PpcPsMaddLaneAddendInline<Subtract>(b);
+    return PpcFusedMultiplyAddFloatInline(a, c, signedB);
 }
 
 template <bool Subtract>
@@ -643,7 +695,14 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
 {
 #if defined(__x86_64__)
 #if defined(__FMA__)
-    return _mm_fmsub_ps(multiplicand, multiplier, subtractor);
+    // Asm, not _mm_fmsub_ps: Clang can fold that into vfmadd and flip a NaN subtractor's sign.
+    // Volatile + memory clobber keeps it ordered against MXCSR (NI mode) and fenv calls.
+    PpcPairVec result = multiplicand;
+    __asm__ __volatile__("vfmsub213ps {%2, %1, %0|%0, %1, %2}"
+                         : "+x"(result)
+                         : "x"(multiplier), "x"(subtractor)
+                         : "memory");
+    return result;
 #else
     const double a = PpcM128ToPsInline(multiplicand);
     const double c = PpcM128ToPsInline(multiplier);
