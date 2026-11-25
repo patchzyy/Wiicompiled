@@ -534,8 +534,8 @@ uint32_t CurrentGuestThread() {
 }
 
 // Starts the next tick late enough that its controller read lands shortly before the retrace the
-// game will wait for. `intervalNanos`/`retracesElapsed` describe the frame just sealed.
-void HoldForLateTickStart(uint64_t intervalNanos, uint32_t retracesElapsed) {
+// game will wait for. `retracesElapsed` describes the frame just sealed.
+void HoldForLateTickStart(uint32_t retracesElapsed) {
     double workP99Ms = 0.0;
     bool haveWork = false;
     {
@@ -543,14 +543,21 @@ void HoldForLateTickStart(uint64_t intervalNanos, uint32_t retracesElapsed) {
         s_lateTickMissPenaltyMs = LateTickStart::NextMissPenalty(s_lateTickMissPenaltyMs, retracesElapsed >= 2);
         haveWork = s_lateTickWork.P99(workP99Ms);
     }
-    const uint64_t lead = haveWork ? LateTickStart::LeadNanos(workP99Ms, s_lateTickMissPenaltyMs, intervalNanos) : 0;
-    if (lead == 0) {
+    if (!haveWork) {
         return;
     }
+    // Read after pacing: it may just have committed a new interval (50/60 Hz switch).
     Clock::time_point nextRetrace;
+    uint64_t intervalNanos = 0;
     {
         std::lock_guard<std::mutex> lock(g_viMutex);
         nextRetrace = g_vi.lastRetrace + g_vi.retraceInterval;
+        intervalNanos = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(g_vi.retraceInterval).count());
+    }
+    const uint64_t lead = LateTickStart::LeadNanos(workP99Ms, s_lateTickMissPenaltyMs, intervalNanos);
+    if (lead == 0) {
+        return;
     }
     const auto holdUntil = nextRetrace - std::chrono::nanoseconds(lead);
     if (holdUntil > Clock::now()) {
@@ -585,10 +592,10 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     } sequenceGuard;
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
-    uint64_t intervalNanos = 0;
     uint32_t retracesElapsed = 0;
     if (paceToRetrace) {
         uint64_t baseNanos = 0;
+        uint64_t intervalNanos = 0;
         uint32_t retraceCount = 0;
         {
             std::lock_guard<std::mutex> lock(g_viMutex);
@@ -646,7 +653,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         s_lastPacedRetraceCount = g_vi.retraceCount;
     }
     if (paceToRetrace && s_lateTickStart.load(std::memory_order_relaxed)) {
-        HoldForLateTickStart(intervalNanos, retracesElapsed);
+        HoldForLateTickStart(retracesElapsed);
     }
     {
         // The next tick starts here.

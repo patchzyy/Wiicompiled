@@ -7,6 +7,7 @@
 #include "input_bindings.h"
 #include "motion_trick.h"
 #include "game_graphics_options.h"
+#include "hle_stubs.h"
 #include "music_attenuation.h"
 #include "runtime_config.h"
 #include "runtime_log.h"

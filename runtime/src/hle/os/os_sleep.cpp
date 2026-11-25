@@ -393,7 +393,6 @@ void ReportUnparkableSleep(uint32_t queuePtr, uint32_t thread)
 extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
 {
     CpuContext* cpu = ctx ? ctx : &GetPersistentCpuContext();
-    VI_HLE_NoteGuestWait();
     const uint32_t queuePtr = cpu->gpr[3];
     
     if (queuePtr == 0) {
@@ -436,6 +435,9 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
             OS__RestoreInterrupts_801a65d4(irqState);
             return;
         }
+
+        // The sleep goes ahead: late tick start times the drawing thread's work up to here.
+        VI_HLE_NoteGuestWait();
 
         // Mark thread as WAITING
         ::Memory::Write16(currentThread + 0x2C8u, 4);
