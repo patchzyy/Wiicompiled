@@ -132,6 +132,93 @@ float EvaluateTrackingInvalid(float (*eval)(float, float, float), float a, float
     return result;
 }
 
+PPC_FMA_TEST_NOINLINE double EvalPsMsub(double a, double c, double b)
+{
+    return PPC_PsMsubNoNiInline(a, c, b);
+}
+
+PPC_FMA_TEST_NOINLINE double EvalPsNmsub(double a, double c, double b)
+{
+    return PPC_PsNmsubNoNiInline(a, c, b);
+}
+
+// Same pinning as EvaluateTrackingInvalid, for a paired op on operands only known at run time.
+double EvaluatePairTrackingInvalid(double (*eval)(double, double, double), double a, double c,
+                                   double b, bool& invalid)
+{
+    volatile double va = a;
+    volatile double vc = c;
+    volatile double vb = b;
+    volatile double result;
+    std::feclearexcept(FE_ALL_EXCEPT);
+    result = eval(va, vc, vb);
+    invalid = std::fetestexcept(FE_INVALID) != 0;
+    return result;
+}
+
+// ps_msub/ps_nmsub return a NaN subtractor with its sign intact and quieted, raising FE_INVALID
+// only for a signaling one, and compute a*c - b in the right operand order. These operands are
+// loaded at run time; the constant ones in CheckPairedSpecialCases catch compile-time folding.
+// The CRT's software fmaf (what std::fma is on a CPU without FMA3) returns a signaling NaN
+// unquieted and without FE_INVALID, and v2 lanes are std::fma by contract, so that reference
+// skips the signaling cases.
+bool CheckRuntimeFusedSubtract(const char* mode, bool crtSoftwareReference)
+{
+    struct Case {
+        float b0;
+        float b1;
+        uint32_t lane0;
+        uint32_t lane1;
+        bool invalid;
+        const char* label;
+    };
+    const float negQNaN = PpcBitCastToFloatInline(0xFFC54321u);
+    const float posSNaN = PpcBitCastToFloatInline(0x7F812345u);
+    const float negSNaN = PpcBitCastToFloatInline(0xFF812345u);
+    // a = (2, 3), c = (5, 7): a*c - b = (10 - b0, 21 - b1).
+    const std::array<Case, 4> cases{{
+        {1.0f, 0.5f, PpcBitCastToU32Inline(9.0f), PpcBitCastToU32Inline(20.5f), false,
+         "finite"},
+        {negQNaN, 1.0f, 0xFFC54321u, PpcBitCastToU32Inline(20.0f), false, "-qNaN subtractor"},
+        {1.0f, posSNaN, PpcBitCastToU32Inline(9.0f), 0x7FC12345u, true, "+sNaN subtractor"},
+        {negSNaN, 1.0f, 0xFFC12345u, PpcBitCastToU32Inline(20.0f), true, "-sNaN subtractor"},
+    }};
+    const double a = PpcPackPairedInline(2.0f, 3.0f);
+    const double c = PpcPackPairedInline(5.0f, 7.0f);
+
+    bool ok = true;
+    for (const Case& tc : cases) {
+        if (crtSoftwareReference && tc.invalid) {
+            continue;
+        }
+        const double b = PpcPackPairedInline(tc.b0, tc.b1);
+        const auto lane = [](uint32_t bits, bool negate) {
+            const bool isNan = (bits & 0x7FFFFFFFu) > 0x7F800000u;
+            return negate && !isNan ? bits ^ 0x80000000u : bits;
+        };
+        for (const bool negated : {false, true}) {
+            bool invalid = false;
+            const double actual = EvaluatePairTrackingInvalid(negated ? &EvalPsNmsub : &EvalPsMsub,
+                                                              a, c, b, invalid);
+            const double expected = PpcPackPairedInline(
+                PpcBitCastToFloatInline(lane(tc.lane0, negated)),
+                PpcBitCastToFloatInline(lane(tc.lane1, negated)));
+            if (!SameBits(actual, expected) || invalid != tc.invalid) {
+                std::fprintf(stderr,
+                             "%s %s (%s): got 0x%016llx (FE_INVALID=%d), expected 0x%016llx "
+                             "(FE_INVALID=%d)\n",
+                             mode, negated ? "ps_nmsub" : "ps_msub", tc.label,
+                             static_cast<unsigned long long>(PpcBitCastToU64Inline(actual)),
+                             invalid ? 1 : 0,
+                             static_cast<unsigned long long>(PpcBitCastToU64Inline(expected)),
+                             tc.invalid ? 1 : 0);
+                ok = false;
+            }
+        }
+    }
+    return ok;
+}
+
 bool CheckInvalidExceptionParity(const char* mode)
 {
     constexpr float kInf = std::numeric_limits<float>::infinity();
@@ -347,7 +434,7 @@ struct FlushToZeroScope {
 #endif
 };
 
-bool CheckAgainstReference(const char* reference)
+bool CheckAgainstReference(const char* reference, bool crtSoftwareReference)
 {
     bool ok = CheckPairedFamily(1.000000119f, -123.25f, 33554431.0f, 0.0625f, -33554430.0f, 7.75f);
     ok &= CheckPairedSpecialCases();
@@ -359,6 +446,7 @@ bool CheckAgainstReference(const char* reference)
         char mode[64];
         std::snprintf(mode, sizeof(mode), "%s, %s", reference, flushToZero ? "FTZ/DAZ" : "IEEE");
         ok &= CheckInvalidExceptionParity(mode);
+        ok &= CheckRuntimeFusedSubtract(mode, crtSoftwareReference);
         ok &= CheckEdgeValues(mode);
         ok &= CheckRandomized(mode);
     }
@@ -367,17 +455,19 @@ bool CheckAgainstReference(const char* reference)
 
 }  // namespace
 
-#if defined(_WIN32) && defined(__x86_64__)
+// Only a build without __FMA__ calls the CRT's fmaf; a v3 build compiles std::fma to vfmadd.
+#if defined(_WIN32) && defined(__x86_64__) && !defined(__FMA__)
+#define PPC_FMA_TEST_CRT_SOFTWARE_FMAF 1
 extern "C" __declspec(dllimport) int _set_FMA3_enable(int flag);
 #endif
 
 int main()
 {
-    bool ok = CheckAgainstReference("CRT default");
-#if defined(_WIN32) && defined(__x86_64__)
+    bool ok = CheckAgainstReference("CRT default", false);
+#if defined(PPC_FMA_TEST_CRT_SOFTWARE_FMAF)
     // A CPU without FMA3 gets the CRT's software fmaf as std::fma; compare against that too.
     _set_FMA3_enable(0);
-    ok &= CheckAgainstReference("CRT software fmaf");
+    ok &= CheckAgainstReference("CRT software fmaf", true);
     _set_FMA3_enable(1);
 #endif
     return ok ? 0 : 1;
