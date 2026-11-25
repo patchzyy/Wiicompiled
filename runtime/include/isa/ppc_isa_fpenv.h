@@ -34,7 +34,7 @@ inline constexpr double kMkwNiFlushThreshold = 0x1p-126;  // 0x3810000000000000
 inline thread_local double g_mkwNiFlushThreshold = 0.0;
 
 // Host FP control register access (MXCSR on x86_64, FPCR on AArch64), abstracted so
-// MkwApplyHostNiMode/MkwRestoreHostMxcsr and CpuContextScope (ppc_isa_context.h) don't each need
+// MkwApplyHostNiMode/MkwRestoreHostMxcsr and CpuContextScope (guest_abi/cpu_context.h) don't each need
 // their own per-arch branch.
 inline uint32_t MkwGetHostFpControl() noexcept
 {

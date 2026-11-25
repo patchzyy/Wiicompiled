@@ -3,6 +3,7 @@
 #include "ax_internal.h"
 
 #include "abi_bridge.h"
+#include "perf_stats.h"
 #include "audio_backend.h"
 #include "ax_mix_kernels.h"
 #include "isa/big_endian.h"
@@ -112,8 +113,17 @@ public:
         ConfigureFromTaskLocked(taskPtr);
     }
 
+    bool MixBusy() {
+        if (!m_mixThread.joinable()) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(m_mixMutex);
+        return m_mixPending || m_mixBusy;
+    }
+
     void JoinMix() {
         if (m_mixThread.joinable()) {
+            PerfStats::WaitScope wait;
             std::unique_lock<std::mutex> lock(m_mixMutex);
             m_mixIdle.wait(lock, [this] { return !m_mixPending && !m_mixBusy; });
         }
@@ -1467,19 +1477,15 @@ void InitForAXOut(CpuContext* ctx) {
     Memory::Write32(g_axTaskPtr + 0x2cu, kAxResumeCallback);
     Memory::Write32(g_axTaskPtr + 0x30u, kAxDoneCallback);
     Memory::Write32(g_axTaskPtr + 0x34u, kAxRequestCallback);
-    if (ctx) {
-        const uint32_t r13 = ctx->gpr[13];
-        Memory::Write32(g_axTaskPtr + 0x10u, Memory::Read16(r13 - 0x73fcu));
-        Memory::Write16(g_axTaskPtr + 0x24u, Memory::Read16(r13 - 0x7400u));
-        Memory::Write16(g_axTaskPtr + 0x26u, Memory::Read16(r13 - 0x73feu));
-    }
+    // __AXOutInitDSP's ucode length and DSP init/resume vectors, then its two flags.
+    (void)ctx;
+    Memory::Write32(g_axTaskPtr + 0x10u, Memory::Read16(MKW_GADDR(80385804)));
+    Memory::Write16(g_axTaskPtr + 0x24u, Memory::Read16(MKW_GADDR(80385800)));
+    Memory::Write16(g_axTaskPtr + 0x26u, Memory::Read16(MKW_GADDR(80385802)));
     Instance().ConfigureFromTask(g_axTaskPtr);
     LinkSingleDspTask(g_axTaskPtr);
-    if (ctx) {
-        const uint32_t r13 = ctx->gpr[13];
-        Memory::Write32(r13 - 0x66d8u, 1);
-        Memory::Write32(r13 - 0x66dcu, 0);
-    }
+    Memory::Write32(MKW_GADDR(80386528), 1);
+    Memory::Write32(MKW_GADDR(80386524), 0);
 }
 
 void Stop() {
@@ -1558,6 +1564,10 @@ void InitAram() {
 
 void JoinMixWorker() {
     Instance().JoinMix();
+}
+
+bool MixWorkerBusy() {
+    return Instance().MixBusy();
 }
 
 void ShutdownMixWorker() {

@@ -40,13 +40,13 @@ namespace {
 // transform double-transformed menu viewports and broke 640x480 overscan, so it was removed.
 extern "C" void GX__SetViewportJitter_80173378(float l, float t, float w, float h, float nz, float fz, uint32_t f) {
     g_viewportState[0]=l; g_viewportState[1]=t; g_viewportState[2]=w; g_viewportState[3]=h; g_viewportState[4]=nz; g_viewportState[5]=fz;
-    GXSetViewportJitter(l, t, w, h, nz, fz, f);
+    GxWorker::Run([=] { GXSetViewportJitter(l, t, w, h, nz, fz, f); });
 }
 PPC_NATIVE_OVERRIDE_VOID(80173378, GX__SetViewportJitter_80173378, (float l, float t, float w, float h, float nz, float fz, uint32_t f), (l, t, w, h, nz, fz, f));
 
 extern "C" void GX__SetViewport_801733b4(float l, float t, float w, float h, float nz, float fz) {
     g_viewportState[0]=l; g_viewportState[1]=t; g_viewportState[2]=w; g_viewportState[3]=h; g_viewportState[4]=nz; g_viewportState[5]=fz;
-    GXSetViewport(l, t, w, h, nz, fz);
+    GxWorker::Run([=] { GXSetViewport(l, t, w, h, nz, fz); });
 }
 PPC_NATIVE_OVERRIDE_VOID(801733b4, GX__SetViewport_801733b4, (float l, float t, float w, float h, float nz, float fz), (l, t, w, h, nz, fz));
 
@@ -66,7 +66,7 @@ extern "C" void GX__GetViewportv_801733e0(uint32_t oa) {
 PPC_NATIVE_OVERRIDE_VOID(801733e0, GX__GetViewportv_801733e0, (uint32_t oa), (oa));
 
 extern "C" void GX__SetZScaleOffset_80173400(float s, float o) {
-    GXSetZScaleOffset(s, o);
+    GxWorker::Run([s, o] { GXSetZScaleOffset(s, o); });
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) {
@@ -80,7 +80,7 @@ extern "C" void GX__SetZScaleOffset_80173400(float s, float o) {
 PPC_NATIVE_OVERRIDE_VOID(80173400, GX__SetZScaleOffset_80173400, (float s, float o), (s, o));
 
 extern "C" void GX__SetScissorBoxOffset_801734e0(int32_t xo, int32_t yo) {
-    GXSetScissorBoxOffset(xo, yo);
+    GxWorker::Run([xo, yo] { GXSetScissorBoxOffset(xo, yo); });
     try {
         const uint32_t gd = Memory::Read32(kGXDataPtrAddr);
         if (gd) Memory::Write16(gd + 2, 0);
@@ -104,7 +104,7 @@ extern "C" void GX__SetScissor_80173430(uint32_t l, uint32_t t, uint32_t w, uint
     // No viewport replay here: aurora recomputes viewport and scissor together
     // on every scissor change (set_logical_scissor -> apply_logical_render_state),
     // so re-issuing the current viewport would be duplicate work.
-    GXSetScissor(l, t, w, h);
+    GxWorker::Run([l, t, w, h] { GXSetScissor(l, t, w, h); });
 }
 PPC_NATIVE_OVERRIDE_VOID(80173430, GX__SetScissor_80173430, (uint32_t l, uint32_t t, uint32_t w, uint32_t h), (l, t, w, h));
 
@@ -115,7 +115,7 @@ PPC_NATIVE_OVERRIDE_VOID(80173430, GX__SetScissor_80173430, (uint32_t l, uint32_
 extern "C" void GX__SetProjection_8017301c(uint32_t ma, uint32_t pt) {
     const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma, 64); float m[16];
     SwapBeF32ArrayToHost(raw, m, 16);
-    GXSetProjection(m, (GXProjectionType)pt);
+    GxWorker::Run([mtx = std::to_array(m), pt]() mutable { GXSetProjection(mtx.data(), (GXProjectionType)pt); });
     UpdateProjectionVectorFromMatrix(m, (GXProjectionType)pt);
 }
 PPC_NATIVE_OVERRIDE_VOID(8017301c, GX__SetProjection_8017301c, (uint32_t ma, uint32_t pt), (ma, pt));
@@ -126,7 +126,7 @@ extern "C" void GX__SetProjectionv_80173080(uint32_t pa) {
     GXProjectionType pt=(v[0]!=0.f)?GX_ORTHOGRAPHIC:GX_PERSPECTIVE;
     float m[16]={0.f}; m[0]=v[1]; m[5]=v[3]; m[10]=v[5]; m[11]=v[6];
     if(pt==GX_PERSPECTIVE){ m[2]=v[2]; m[6]=v[4]; m[14]=-1.f; } else { m[3]=v[2]; m[7]=v[4]; m[15]=1.f; }
-    GXSetProjection(m, pt);
+    GxWorker::Run([mtx = std::to_array(m), pt]() mutable { GXSetProjection(mtx.data(), pt); });
     UpdateProjectionVectorFromProjV(v);
 }
 PPC_NATIVE_OVERRIDE_VOID(80173080, GX__SetProjectionv_80173080, (uint32_t pa), (pa));
@@ -146,28 +146,51 @@ PPC_NATIVE_OVERRIDE_VOID(801730cc, GX__GetProjectionv_801730cc, (uint32_t pa), (
 extern "C" void GX__LoadPosMtxImm_8017310c(uint32_t ma, uint32_t id) {
     const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma); float m[12];
     SwapBeF32ArrayToHost(raw, m, 12);
-    GXLoadPosMtxImm((float(*)[4])m, id);
+    GxWorker::Run([mtx = std::to_array(m), id]() mutable { GXLoadPosMtxImm((float(*)[4])mtx.data(), id); });
 }
 PPC_NATIVE_OVERRIDE_VOID(8017310c, GX__LoadPosMtxImm_8017310c, (uint32_t ma, uint32_t id), (ma, id));
 
+// The matrix is read at load time, as Dolphin does, since the worker can run well behind the game.
+// Returns false only when the game thread doesn't know the array and the worker must resolve it.
+static bool IndexedMtxArray(uint32_t attr, uint32_t& base, uint32_t& stride) {
+    if (GxWorker::ShouldDefer()) {
+        return ApiVtxArray(attr, base, stride);
+    }
+    base = g_hleGxState.vtxArray[attr].base;
+    stride = g_hleGxState.vtxArray[attr].stride;
+    return true;
+}
+
 extern "C" void GX__LoadPosMtxIndx_8017315c(uint32_t mi, uint32_t id) {
-    const auto& arr=g_hleGxState.vtxArray[GX_POS_MTX_ARRAY];
-    if(arr.base==0||arr.stride==0) return;
-    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(arr.base+mi*arr.stride, 48);
-    if(raw){ float m[12]; SwapBeF32ArrayToHost(raw,m,12); GXLoadPosMtxImm((float(*)[4])m,id); }
+    uint32_t base = 0, stride = 0;
+    if (!IndexedMtxArray(GX_POS_MTX_ARRAY, base, stride)) {
+        GX_DEFER_CALL(GX__LoadPosMtxIndx_8017315c, mi, id);
+        return;
+    }
+    if (base == 0 || stride == 0) return;
+    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(base+mi*stride, 48);
+    if(raw){
+        float m[12]; SwapBeF32ArrayToHost(raw,m,12);
+        GxWorker::Run([mtx = std::to_array(m), id]() mutable { GXLoadPosMtxImm((float(*)[4])mtx.data(), id); });
+    }
 }
 PPC_NATIVE_OVERRIDE_VOID(8017315c, GX__LoadPosMtxIndx_8017315c, (uint32_t mi, uint32_t id), (mi, id));
 
 extern "C" void GX__LoadNrmMtxImm_80173188(uint32_t ma, uint32_t id) {
     const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma, 48); float m[12];
-    SwapBeF32ArrayToHost(raw, m, 12); GXLoadNrmMtxImm((float(*)[4])m, id);
+    SwapBeF32ArrayToHost(raw, m, 12);
+    GxWorker::Run([mtx = std::to_array(m), id]() mutable { GXLoadNrmMtxImm((float(*)[4])mtx.data(), id); });
 }
 PPC_NATIVE_OVERRIDE_VOID(80173188, GX__LoadNrmMtxImm_80173188, (uint32_t ma, uint32_t id), (ma, id));
 
 extern "C" void GX__LoadNrmMtxIndx3x3_801731e0(uint32_t mi, uint32_t id) {
-    const auto& arr=g_hleGxState.vtxArray[GX_NRM_MTX_ARRAY];
-    if(arr.base==0||arr.stride==0) return;
-    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(arr.base+mi*arr.stride, 36);
+    uint32_t base = 0, stride = 0;
+    if (!IndexedMtxArray(GX_NRM_MTX_ARRAY, base, stride)) {
+        GX_DEFER_CALL(GX__LoadNrmMtxIndx3x3_801731e0, mi, id);
+        return;
+    }
+    if (base == 0 || stride == 0) return;
+    const uint32_t* raw=(const uint32_t*)GuestToHostPtr(base+mi*stride, 36);
     if(raw){
         float src[9]{};
         float m[12]{};
@@ -177,7 +200,7 @@ extern "C" void GX__LoadNrmMtxIndx3x3_801731e0(uint32_t mi, uint32_t id) {
                 m[row * 4 + col] = src[row * 3 + col];
             }
         }
-        GXLoadNrmMtxImm((float(*)[4])m, id);
+        GxWorker::Run([mtx = std::to_array(m), id]() mutable { GXLoadNrmMtxImm((float(*)[4])mtx.data(), id); });
     }
 }
 PPC_NATIVE_OVERRIDE_VOID(801731e0, GX__LoadNrmMtxIndx3x3_801731e0, (uint32_t mi, uint32_t id), (mi, id));
@@ -185,9 +208,13 @@ PPC_NATIVE_OVERRIDE_VOID(801731e0, GX__LoadNrmMtxIndx3x3_801731e0, (uint32_t mi,
 extern "C" void GX__LoadTexMtxImm_80173234(uint32_t ma, uint32_t id, uint32_t t) {
     size_t c=(t==(uint32_t)GX_MTX3x4)?12:8;
     const uint32_t* raw=(const uint32_t*)GuestToHostPtr(ma,c*4); float l[12]={};
-    SwapBeF32ArrayToHost(raw,l,c); GXLoadTexMtxImm(l, id, (GXTexMtxType)t);
+    SwapBeF32ArrayToHost(raw,l,c);
+    GxWorker::Run([mtx = std::to_array(l), id, t]() mutable { GXLoadTexMtxImm(mtx.data(), id, (GXTexMtxType)t); });
 }
 PPC_NATIVE_OVERRIDE_VOID(80173234, GX__LoadTexMtxImm_80173234, (uint32_t ma, uint32_t id, uint32_t t), (ma, id, t));
 
-extern "C" void GX__SetCurrentMtx_80173214(uint32_t id) { GXSetCurrentMtx(id); }
+extern "C" void GX__SetCurrentMtx_80173214(uint32_t id) {
+    GX_DEFER_CALL(GX__SetCurrentMtx_80173214, id);
+    GXSetCurrentMtx(id);
+}
 PPC_NATIVE_OVERRIDE_VOID(80173214, GX__SetCurrentMtx_80173214, (uint32_t id), (id));

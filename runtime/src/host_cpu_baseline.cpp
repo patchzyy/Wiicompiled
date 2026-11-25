@@ -1,14 +1,12 @@
-// Host ISA guard. Every other product target builds with -march=x86-64-v3, so a pre-Haswell
-// Intel or pre-Excavator AMD machine would otherwise die on an illegal-instruction fault with no
+// Host ISA guard. Product targets build with an explicit x86-64-v2 or x86-64-v3 profile, so an
+// unsupported machine would otherwise die on an illegal-instruction fault with no
 // explanation. This TU alone skips that flag (own CMake object library, excluded from unity
 // build/PCH) and runs from a priority-101 C initializer, ahead of every C++ dynamic initializer
 // and thus the first AVX2 code that could execute. Keep it free of anything that could pull in
 // vectorized code: no iostreams, no std::string, no runtime-wide headers.
 //
-// x86-64-v3 is an x86-specific optional-feature baseline (AVX2/BMI2/FMA and friends are not
-// guaranteed present on every x86_64 chip); nothing here applies on AArch64, where ASIMD/NEON is
-// mandatory in the base architecture and PublicProducts.cmake never applies an -march=x86-64-v3
-// equivalent flag to begin with. That branch below is a no-op stub, not a port of this check.
+// x86-64-v2/v3 are x86-specific optional-feature baselines; nothing here applies on AArch64,
+// where ASIMD/NEON is mandatory in the base architecture.
 
 #if defined(__x86_64__)
 
@@ -58,27 +56,27 @@ struct CpuFeature {
     bool isOsXsave;
 };
 
-// Everything x86-64-v3 implies, which includes all of x86-64-v2. Spelled out so
-// the error message can name the exact instruction sets the machine lacks
-// rather than only "AVX2", which is merely the best known member of the set.
+// x86-64-v2 requirements. The v3-only extension below retains a useful
+// feature-by-feature diagnostic rather than reducing a failed v3 check to AVX2.
 constexpr CpuFeature kRequiredFeatures[] = {
     {"SSE3", 1, 0, 2, 0, false},
     {"SSSE3", 1, 0, 2, 9, false},
-    {"FMA", 1, 0, 2, 12, false},
     {"CMPXCHG16B", 1, 0, 2, 13, false},
     {"SSE4.1", 1, 0, 2, 19, false},
     {"SSE4.2", 1, 0, 2, 20, false},
-    {"MOVBE", 1, 0, 2, 22, false},
     {"POPCNT", 1, 0, 2, 23, false},
-    {"OSXSAVE", 1, 0, 2, 27, true},
-    {"AVX", 1, 0, 2, 28, false},
-    {"F16C", 1, 0, 2, 29, false},
-    {"BMI1", 7, 0, 1, 3, false},
-    {"AVX2", 7, 0, 1, 5, false},
-    {"BMI2", 7, 0, 1, 8, false},
     {"LAHF-SAHF", 0x80000001u, 0, 2, 0, false},
+};
+
+#if !defined(MKW_X86_CPU_PROFILE_V2)
+constexpr CpuFeature kV3RequiredFeatures[] = {
+    {"FMA", 1, 0, 2, 12, false}, {"MOVBE", 1, 0, 2, 22, false},
+    {"OSXSAVE", 1, 0, 2, 27, true}, {"AVX", 1, 0, 2, 28, false},
+    {"F16C", 1, 0, 2, 29, false}, {"BMI1", 7, 0, 1, 3, false},
+    {"AVX2", 7, 0, 1, 5, false}, {"BMI2", 7, 0, 1, 8, false},
     {"LZCNT", 0x80000001u, 0, 2, 5, false},
 };
+#endif
 
 // Fixed-capacity text accumulation: no allocation, no exceptions, nothing that
 // could route through code this file is trying to stay ahead of.
@@ -130,6 +128,27 @@ bool CollectMissingBaselineFeatures(TextBuffer& missing) {
         ok = false;
     }
 
+#if !defined(MKW_X86_CPU_PROFILE_V2)
+    for (const CpuFeature& feature : kV3RequiredFeatures) {
+        const bool leafAvailable = (feature.leaf & 0x80000000u) != 0
+                                       ? feature.leaf <= maxExtended
+                                       : feature.leaf <= maxBasic;
+        bool present = false;
+        if (leafAvailable) {
+            unsigned regs[4] = {0, 0, 0, 0};
+            HostCpuId(feature.leaf, feature.subleaf, regs);
+            present = (regs[feature.reg] & (1u << feature.bit)) != 0;
+        }
+        if (present) {
+            haveOsXsave = haveOsXsave || feature.isOsXsave;
+            continue;
+        }
+        if (!ok) missing.Append(", ");
+        missing.Append(feature.name);
+        ok = false;
+    }
+#endif
+
     // CPUID reporting AVX is not sufficient: the OS also has to have enabled
     // XMM and YMM state saving or every VEX-encoded instruction faults. This is
     // the same guard a compiler's own runtime feature dispatch applies.
@@ -175,13 +194,17 @@ void WriteStdErrEarly(const char* text) {
 
 [[noreturn]] void ReportUnsupportedCpu(const char* missing) {
     TextBuffer message;
-    message.Append(
-        "This build needs a processor that supports AVX2 and the rest of the "
-        "x86-64-v3 instruction set.\n\nMissing on this machine: ");
+#if defined(MKW_X86_CPU_PROFILE_V2)
+    message.Append("This build needs a processor that supports the x86-64-v2 instruction set.\n\nMissing on this machine: ");
+#else
+    message.Append("This build needs a processor that supports the x86-64-v3 instruction set.\n\nMissing on this machine: ");
+#endif
     message.Append(missing);
-    message.Append(
-        "\n\nx86-64-v3 covers Intel Core processors from Haswell (4th "
-        "generation, 2013) onward and AMD processors from Excavator (2015) onward.");
+#if defined(MKW_X86_CPU_PROFILE_V2)
+    message.Append("\n\nx86-64-v2 covers Intel Core processors from Nehalem (2008) onward and AMD processors from Jaguar (2013) onward.");
+#else
+    message.Append("\n\nx86-64-v3 covers Intel Core processors from Haswell (4th generation, 2013) onward and AMD processors from Excavator (2015) onward.");
+#endif
 
     // The tag matches RT_TAG_RUNTIME in runtime_log.h. It is spelled out here
     // because this translation unit must not include runtime-wide headers (see

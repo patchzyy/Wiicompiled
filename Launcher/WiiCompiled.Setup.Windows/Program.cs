@@ -1,5 +1,6 @@
 ﻿namespace WiiCompiled.Setup.Windows;
 
+using System.Reflection;
 using System.Runtime.InteropServices;
 
 internal static class Program
@@ -30,7 +31,7 @@ internal static class Program
             {
                 // A command line was supplied, so a caller is driving this process. Rejecting the
                 // command with a modal dialog would hang that caller forever.
-                if (progressJson) new NdjsonInstallReporter().Failure(ex.Message);
+                if (progressJson) new NdjsonInstallReporter(ProductInfo.Version).Failure(ex.Message);
                 else Console.Error.WriteLine(ex.Message);
                 return 1;
             }
@@ -63,6 +64,8 @@ internal static class Program
 
             if (command.Mode is AppMode.SilentInstall or AppMode.RepairProducts)
             {
+                // CPUs without x86-64-v3 get an x86-64-v2 build.
+                HostCpuRequirement.EnsureSupported(X86CpuProfile.V2);
                 using var cancellationSignal = CancellationSignal.ObserveEnvironment();
                 return command.Mode == AppMode.SilentInstall
                     ? ConsoleCommands.Install(command, cancellationSignal.Token).GetAwaiter().GetResult()
@@ -90,7 +93,7 @@ internal static class Program
             // errors raised outside it.
             if (progressJson)
             {
-                new NdjsonInstallReporter().Failure(ex.Message);
+                new NdjsonInstallReporter(ProductInfo.Version).Failure(ex.Message);
                 Console.Error.WriteLine(ex);
             }
             else
@@ -121,7 +124,9 @@ internal static class PlatformChecks
 internal static class ProductInfo
 {
     public const string Name = "WiiCompiled";
-    public const string Version = "0.2.32";
+    public static readonly string Version =
+        typeof(ProductInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()!
+            .InformationalVersion;
 
     /// <summary>
     /// The setup executable is copied into the installation under this name. It is the launcher and

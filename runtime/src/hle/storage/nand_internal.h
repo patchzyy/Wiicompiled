@@ -10,6 +10,7 @@
 #include "memory.h"
 #include "nand_path.h"
 #include "nand_save_probe.h"
+#include "hle/bluetooth_hle.h"
 #include "hle/net/network.h"
 #include "recomp_mod_loader.h"
 #include "runtime_config.h"
@@ -44,7 +45,7 @@
 // Mario Kart Wii Title ID
 namespace {
 constexpr uint32_t kNandTitleIdHi = 0x00010004;
-constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
+inline uint32_t NandTitleIdLo() { return ::GuestRegion::CurrentFacts().gameCode; }
 } // anonymous namespace
 
 // ============================================================================
@@ -56,6 +57,7 @@ constexpr uint32_t kNandTitleIdLo = 0x524D4350; // "RMCP" fallback
 // - never by inspecting the format string - and both levels print the same way;
 // the split records intent and is the single place to add filtering later.
 void LogNandError(const char* func, const char* fmt, ...);
+void NandQueueIosCallback(uint32_t callbackPtr, int32_t result, uint32_t callbackArg);
 void LogNandWarning(const char* func, const char* fmt, ...);
 
 // An empty optional means continue opening normally; otherwise return the

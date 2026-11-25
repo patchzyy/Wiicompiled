@@ -379,10 +379,10 @@ void CloseNativeSocket(NativeSocket socket) {
 #endif
 }
 
-void SetNonBlocking(NativeSocket socket, bool enabled) {
+bool SetNonBlocking(NativeSocket socket, bool enabled) {
 #ifdef _WIN32
     u_long mode = enabled ? 1 : 0;
-    ioctlsocket(socket, FIONBIO, &mode);
+    return ioctlsocket(socket, FIONBIO, &mode) == 0;
 #else
     int flags = fcntl(socket, F_GETFL, 0);
     if (flags >= 0) {
@@ -391,8 +391,9 @@ void SetNonBlocking(NativeSocket socket, bool enabled) {
         } else {
             flags &= ~O_NONBLOCK;
         }
-        fcntl(socket, F_SETFL, flags);
+        return fcntl(socket, F_SETFL, flags) == 0;
     }
+    return false;
 #endif
 }
 
@@ -446,11 +447,12 @@ int32_t ReconnectWiiSocket(WiiSocket& socket, uint16_t port) {
 
     CloseNativeSocket(socket.native);
     socket.native = native;
+    socket.nativeNonblocking = true;
     socket.generation = NextSocketGeneration();
     socket.peerAddr = addr;
     socket.peerPort = port;
     socket.nonblocking = false;
-    SetNonBlocking(socket.native, false);
+    SetSocketNonBlocking(socket, false);
     return 0;
 }
 

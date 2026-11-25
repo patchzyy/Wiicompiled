@@ -187,7 +187,7 @@ public class PpcDecoderPrimary31Tests
         Assert.Equal("sthx", Decode(EncodeXForm(27, 28, 29, 407)).Mnemonic);
         Assert.Equal("sthux", Decode(EncodeXForm(27, 28, 29, 439)).Mnemonic);
 
-        var stwcx = Decode(EncodeXoForm(3, 4, 5, 498));
+        var stwcx = Decode(EncodeXForm(3, 4, 5, 150, rc: true));
         Assert.Equal("stwcx.", stwcx.Mnemonic);
         Assert.True(stwcx.IsConditionalBranch);
 

@@ -38,10 +38,12 @@ extern "C" void OS_HLE_EndDeferredGuestCallbacks();
 // renaming requires updating Translator.Cli/Program.cs, RuntimeNativeGuestEffectAnalyzer.cs,
 // TranslatedBuildShardEmitter.cs and RuntimeNativeFunctionAbiProvider.cs together.
 
+// addr_hex is the PAL address (see guest_abi/guest_region.h). The translator reads arg_list as
+// the guest ABI, so the unused wrapper keeps it checked against the implementation.
 #define PPC_NATIVE_OVERRIDE(addr_hex, name, ret_type, arg_list, call_list) \
-    extern "C" ret_type func_##addr_hex arg_list { return name call_list; } \
+    [[maybe_unused]] static ret_type native_signature_##addr_hex arg_list { return name call_list; } \
     REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)
 
 #define PPC_NATIVE_OVERRIDE_VOID(addr_hex, name, arg_list, call_list) \
-    extern "C" void func_##addr_hex arg_list { name call_list; } \
+    [[maybe_unused]] static void native_signature_##addr_hex arg_list { name call_list; } \
     REGISTER_NATIVE_FUNCTION(0x##addr_hex, name)

@@ -1,4 +1,7 @@
 using System.Text;
+using Tomlyn;
+using Tomlyn.Parsing;
+using Tomlyn.Syntax;
 
 namespace WiiCompiled.Setup.Common;
 
@@ -16,12 +19,6 @@ public sealed record RuntimeConfigSnapshot(bool Existed, byte[] Contents);
 public static class RuntimeConfiguration
 {
     public const string ConfigFileName = "Config.toml";
-
-    /// <summary>
-    /// Ordinal, matching the runtime parser/writer (<c>runtime_config.h</c>) exactly. Case-insensitive
-    /// matching here would let setup rewrite a <c>[Paths]</c>/<c>Dvd_Root</c> spelling the runtime ignores.
-    /// </summary>
-    private const StringComparison KeyComparison = StringComparison.Ordinal;
 
     /// <summary>The per-user configuration an ordinary (non-portable) installation shares.</summary>
     public static string ApplicationDataConfigPath => Path.Combine(
@@ -75,9 +72,11 @@ public static class RuntimeConfiguration
     public static void RemoveDvdRootIfOwned(string configPath, string dvdRoot) =>
         RemovePathIfOwned(configPath, "dvd_root", dvdRoot);
 
-    /// <summary>The raw stored text of a <c>[paths]</c> key, exactly as the file holds it.</summary>
+    /// <summary>The stored string of a <c>[paths]</c> key, exactly as the file holds it.</summary>
     public static string? GetPath(string configPath, string key) =>
-        TryUnquoteToml(GetRawValue(configPath, "paths", key) ?? "", out var value) ? value : null;
+        TryLoad(configPath) is { } document && Find(document, ["paths"], key)?.Item.Value is StringValueSyntax value
+            ? value.Value!
+            : null;
 
     /// <summary>
     /// A <c>[paths]</c> value as the runtime will actually use it. The runtime resolves every relative
@@ -99,9 +98,19 @@ public static class RuntimeConfiguration
 
     private static void SetPath(string configPath, string key, string value)
     {
-        var lines = ReadLinesOrDefault(configPath);
-        SetSectionValue(lines, "paths", key, QuoteToml(FormatPathValue(configPath, value)));
-        WriteLines(configPath, lines);
+        var document = Parse(File.Exists(configPath) ? File.ReadAllText(configPath) : DefaultConfig);
+        var section = new[] { "paths" };
+        var newValue = new StringValueSyntax(FormatPathValue(configPath, value));
+        if (Find(document, section, key) is { } existing)
+        {
+            LastToken(newValue).TrailingTrivia = LastToken(existing.Item.Value!).TrailingTrivia;
+            existing.Item.Value = newValue;
+        }
+        else
+        {
+            Append(document, section, new KeyValueSyntax(key, newValue));
+        }
+        Save(configPath, document);
     }
 
     /// <summary>
@@ -123,176 +132,104 @@ public static class RuntimeConfiguration
 
     private static void RemovePathIfOwned(string configPath, string key, string expectedValue)
     {
-        if (!File.Exists(configPath)) return;
-        var lines = File.ReadAllLines(configPath).ToList();
-        var inPaths = false;
-        var changed = false;
-        for (var index = 0; index < lines.Count; index++)
-        {
-            var trimmed = RemoveComment(lines[index]).Trim();
-            if (IsSection(trimmed))
-            {
-                inPaths = trimmed.Equals("[paths]", KeyComparison);
-                continue;
-            }
-            if (!inPaths || trimmed.Length == 0) continue;
-            var equals = trimmed.IndexOf('=');
-            if (equals < 0 || !trimmed[..equals].Trim().Equals(key, KeyComparison))
-                continue;
-            if (!TryUnquoteToml(trimmed[(equals + 1)..].Trim(), out var configured)) return;
-            // A portable installation stores this relative, so ownership is decided on the path the
-            // runtime would actually resolve, not on the stored text.
-            if (!ResolveAgainstConfig(configPath, configured)
-                    .Equals(Path.GetFullPath(expectedValue), StringComparison.OrdinalIgnoreCase))
-                return;
-            lines.RemoveAt(index);
-            changed = true;
-            break;
-        }
-        if (changed) WriteLines(configPath, lines);
+        if (TryLoad(configPath) is not { } document ||
+            Find(document, ["paths"], key) is not { } entry ||
+            entry.Item.Value is not StringValueSyntax configured)
+            return;
+        // A portable installation stores this relative, so ownership is decided on the path the
+        // runtime would actually resolve, not on the stored text.
+        if (!ResolveAgainstConfig(configPath, configured.Value!)
+                .Equals(Path.GetFullPath(expectedValue), StringComparison.OrdinalIgnoreCase))
+            return;
+        var previous = entry.Previous?.EndOfLineToken ?? entry.Table?.EndOfLineToken;
+        if (previous is not null && entry.Item.EndOfLineToken?.TrailingTrivia is { } trivia)
+            (previous.TrailingTrivia ??= []).AddRange(trivia);
+        entry.Items.RemoveChild(entry.Item);
+        Save(configPath, document);
     }
 
-    /// <summary>The raw TOML literal stored for a key, or null when the section or key is absent.</summary>
-    public static string? GetRawValue(string configPath, string section, string key)
+    private const string DefaultConfig = "# WiiCompiled user configuration\n\n";
+
+    private sealed record Entry(
+        KeyValueSyntax Item, SyntaxList<KeyValueSyntax> Items, TableSyntax? Table, KeyValueSyntax? Previous);
+
+    private static DocumentSyntax Parse(string text) => SyntaxParser.ParseStrict(text);
+
+    private static DocumentSyntax? TryLoad(string configPath)
     {
         if (!File.Exists(configPath)) return null;
-        var header = $"[{section}]";
-        var inSection = false;
-        foreach (var line in File.ReadLines(configPath))
+        try { return Parse(File.ReadAllText(configPath)); }
+        catch (TomlException) { return null; }
+    }
+
+    /// <summary>Re-parses the edited tree before replacing the file, so an invalid edit never reaches disk.</summary>
+    private static void Save(string configPath, DocumentSyntax document)
+    {
+        var text = document.ToString();
+        Parse(text);
+        FileSystemUtilities.WriteAtomic(configPath, new UTF8Encoding(false).GetBytes(text));
+    }
+
+    private static IEnumerable<TableSyntax> Tables(DocumentSyntax document) =>
+        document.Tables.OfType<TableSyntax>();
+
+    private static string[] Parts(KeySyntax key) =>
+        [Part(key.Key!), .. key.DotKeys.Select(dotted => Part(dotted.Key!))];
+
+    private static string Part(BareKeyOrStringValueSyntax part) =>
+        part is StringValueSyntax quoted ? quoted.Value! : ((BareKeySyntax)part).Key!.Text!;
+
+    /// <summary>Matches by TOML meaning, so <c>"dvd_root"</c> and <c>dvd_root</c> are the same key.</summary>
+    private static Entry? Find(DocumentSyntax document, string[] section, string key)
+    {
+        string[] wanted = [.. section, key];
+        var scopes = Tables(document)
+            .Select(table => (Table: (TableSyntax?)table, Prefix: Parts(table.Name!), Items: table.Items))
+            .Prepend((Table: null, Prefix: [], Items: document.KeyValues));
+        foreach (var (table, prefix, items) in scopes)
         {
-            var trimmed = RemoveComment(line).Trim();
-            if (IsSection(trimmed))
+            KeyValueSyntax? previous = null;
+            foreach (var item in items)
             {
-                inSection = trimmed.Equals(header, KeyComparison);
-                continue;
+                if (prefix.Concat(Parts(item.Key!)).SequenceEqual(wanted))
+                    return new Entry(item, items, table, previous);
+                previous = item;
             }
-            if (!inSection || trimmed.Length == 0) continue;
-            var equals = trimmed.IndexOf('=');
-            if (equals < 0 || !trimmed[..equals].Trim().Equals(key, KeyComparison)) continue;
-            return trimmed[(equals + 1)..].Trim();
         }
         return null;
     }
 
-    /// <summary>
-    /// Replaces one key in one section, preserving comments, ordering, and every unrelated setting -
-    /// this file belongs to the user and to the in-game settings bar as much as to setup. A
-    /// commented-out key is deliberately not matched, matching the runtime's own writer.
-    /// </summary>
-    private static void SetSectionValue(List<string> lines, string section, string key, string value)
+    private static void Append(DocumentSyntax document, string[] section, KeyValueSyntax item)
     {
-        var header = $"[{section}]";
-        var sectionStart = -1;
-        var sectionEnd = lines.Count;
-        for (var index = 0; index < lines.Count; index++)
+        var text = document.ToString();
+        var newline = text.Contains("\r\n") ? "\r\n" : "\n";
+        var table = Tables(document).FirstOrDefault(t => Parts(t.Name!).SequenceEqual(section));
+        if (table is null)
         {
-            var trimmed = RemoveComment(lines[index]).Trim();
-            if (!IsSection(trimmed)) continue;
-            if (sectionStart >= 0)
-            {
-                sectionEnd = index;
-                break;
-            }
-            if (trimmed.Equals(header, KeyComparison)) sectionStart = index;
-        }
-        if (sectionStart < 0)
-        {
-            if (lines.Count > 0 && lines[^1].Length != 0) lines.Add("");
-            lines.Add(header);
-            lines.Add($"{key} = {value}");
-            return;
+            var name = new KeySyntax(section[0]);
+            foreach (var part in section.Skip(1)) name.DotKeys.Add(new DottedKeyItemSyntax(part));
+            table = new TableSyntax(name) { EndOfLineToken = NewLine(newline) };
+            var blankLine = text.EndsWith("\n\n") || text.EndsWith("\n\r\n");
+            var gap = text.Length == 0 ? 0 : !text.EndsWith('\n') ? 2 : blankLine ? 0 : 1;
+            for (var i = 0; i < gap; i++) (table.LeadingTrivia ??= []).Add(new SyntaxTrivia(TokenKind.NewLine, newline));
+            document.Tables.Add(table);
         }
 
-        for (var index = sectionStart + 1; index < sectionEnd; index++)
-        {
-            var trimmed = RemoveComment(lines[index]).Trim();
-            if (trimmed.Length == 0) continue;
-            var equals = trimmed.IndexOf('=');
-            if (equals >= 0 && trimmed[..equals].Trim().Equals(key, KeyComparison))
-            {
-                lines[index] = $"{key} = {value}";
-                return;
-            }
-        }
-
-        // Append after the section's last real line, not after the blank line that separates it from
-        // the next header, so a generated file stays readable for the user who also edits it by hand.
-        var insertAt = sectionEnd;
-        while (insertAt > sectionStart + 1 && lines[insertAt - 1].Trim().Length == 0) insertAt--;
-        lines.Insert(insertAt, $"{key} = {value}");
+        // Blank lines and comments after the last entry stay after the new one.
+        var last = table.Items.LastOrDefault();
+        var before = last is null ? table.EndOfLineToken ??= NewLine(newline) : last.EndOfLineToken ??= NewLine(newline);
+        item.EndOfLineToken = NewLine(newline);
+        item.EndOfLineToken.TrailingTrivia = before.TrailingTrivia;
+        before.TrailingTrivia = null;
+        table.Items.Add(item);
     }
 
-    private static List<string> ReadLinesOrDefault(string configPath) =>
-        File.Exists(configPath) ? File.ReadAllLines(configPath).ToList() : DefaultConfigLines();
+    private static SyntaxToken NewLine(string text) => new(TokenKind.NewLine, text);
 
-    private static void WriteLines(string configPath, List<string> lines) =>
-        FileSystemUtilities.WriteAtomic(configPath,
-            Encoding.UTF8.GetBytes(string.Join(Environment.NewLine, lines) + Environment.NewLine));
-
-    private static List<string> DefaultConfigLines() =>
-    [
-        "# WiiCompiled user configuration",
-        "",
-        "[paths]"
-    ];
-
-    private static bool IsSection(string value) =>
-        value.Length >= 2 && value[0] == '[' && value[^1] == ']';
-
-    /// <summary>
-    /// Line-for-line port of <c>RemoveComment</c> in <c>runtime_config.h</c>, including its backslash
-    /// escaping inside basic strings: without it a Windows path ending in <c>\\"</c> reads as
-    /// re-opening the quote, and the two implementations disagree about which <c>#</c> starts a comment.
-    /// </summary>
-    private static string RemoveComment(string line)
+    private static SyntaxToken LastToken(SyntaxNode node)
     {
-        var inSingle = false;
-        var inDouble = false;
-        var escaped = false;
-        for (var index = 0; index < line.Length; index++)
-        {
-            var character = line[index];
-            if (inDouble && character == '\\' && !escaped)
-            {
-                escaped = true;
-                continue;
-            }
-            if (character == '\'' && !inDouble) inSingle = !inSingle;
-            else if (character == '"' && !inSingle && !escaped) inDouble = !inDouble;
-            else if (character == '#' && !inSingle && !inDouble) return line[..index];
-            escaped = false;
-        }
-        return line;
-    }
-
-    private static string QuoteToml(string value) =>
-        "\"" + value.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
-
-    public static bool TryUnquoteToml(string value, out string result)
-    {
-        result = "";
-        if (value.Length < 2) return false;
-        // Literal strings carry no escapes; the runtime's parser treats them the same way.
-        if (value[0] == '\'' && value[^1] == '\'')
-        {
-            result = value[1..^1];
-            return true;
-        }
-        if (value[0] != '"' || value[^1] != '"') return false;
-        var builder = new StringBuilder(value.Length - 2);
-        for (var index = 1; index < value.Length - 1; index++)
-        {
-            if (value[index] == '\\' && index + 1 < value.Length - 1)
-            {
-                var escaped = value[++index];
-                builder.Append(escaped switch { '\\' => '\\', '"' => '"', _ => escaped });
-            }
-            else
-            {
-                builder.Append(value[index]);
-            }
-        }
-        result = builder.ToString();
-        return true;
+        while (node is not SyntaxToken)
+            node = node.GetChild(node.ChildrenCount - 1)!;
+        return (SyntaxToken)node;
     }
 }

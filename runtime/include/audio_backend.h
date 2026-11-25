@@ -22,6 +22,8 @@ public:
     // Applied to the final host output, covering both AX and direct AI DMA.
     void SetMasterVolume(float volume);
     void SetMuted(bool muted);
+    // Mutes output without touching the user's persisted mute setting.
+    void SetSilenced(bool silenced);
 
 private:
     AudioBackend() = default;
@@ -41,8 +43,10 @@ private:
     uint32_t m_sampleRate = 0;
     uint32_t m_channels = 0;
     bool m_initialized = false;
+    bool m_audioSubsystemReady = false;
     float m_masterVolume = 1.0f;
     bool m_muted = false;
+    bool m_silenced = false;
     bool m_reportedDroppedBlock = false;
     std::vector<int16_t> m_convertBuffer;
 };

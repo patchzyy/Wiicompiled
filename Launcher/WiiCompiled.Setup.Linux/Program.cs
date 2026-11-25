@@ -31,7 +31,7 @@ internal static class Program
         var (command, flags) = ParseArgs(args);
         if (command is null) { PrintUsage(); return 1; }
         var progressJson = flags.ContainsKey("progress-json");
-        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter() : new ConsoleInstallReporter();
+        IInstallReporter reporter = progressJson ? new NdjsonInstallReporter(ProductInfo.Version) : new ConsoleInstallReporter();
 
         try
         {
@@ -74,6 +74,8 @@ internal static class Program
 
     private static async Task InstallAsync(Dictionary<string, string?> flags, IInstallReporter reporter, CancellationToken token)
     {
+        // local-build.sh falls back to an x86-64-v2 build when this CPU lacks v3.
+        HostCpuRequirement.EnsureSupported(X86CpuProfile.V2);
         var retroDir = flags.GetValueOrDefault("retro-dir");
         var installsRetro = !string.IsNullOrEmpty(retroDir);
         var downloadPayload = flags.ContainsKey("download-retro-wfc-payload");
@@ -95,13 +97,14 @@ internal static class Program
         if (installsRetro) retroDir = RetroRewindSource.ResolveRetroRewind6(retroDir!);
 
         var workspace = flags.GetValueOrDefault("workspace") ?? WorkspaceLocator.FindFrom(AppContext.BaseDirectory);
-        var manifest = ProjectManifest.Load(Path.Combine(workspace, "projects", "mkwii", "recomp.yml"));
+        var releases = ProjectManifest.LoadAll(workspace);
         var assetsDir = Path.Combine(workspace, "Assets");
 
         reporter.Progress(InstallStages.Validate, "Checking prerequisites", 1);
+        ProjectManifest release;
         if (flags.TryGetValue("game", out var isoPath) && !string.IsNullOrEmpty(isoPath))
         {
-            await DiscTool.ValidateAndExtractAsync(isoPath, manifest, assetsDir, workspace,
+            release = await DiscTool.ValidateAndExtractAsync(isoPath, releases, assetsDir, workspace,
                 flags.GetValueOrDefault("disc-tool-bin"), reporter, token);
         }
         else
@@ -114,6 +117,7 @@ internal static class Program
                     "No --game ISO was given and Assets/main.dol + Assets/StaticR.rel are not already present. " +
                     "Either pass --game <path-to-iso>, or extract them yourself first (see translator/README.md).");
             }
+            release = DiscTool.SelectExtracted(releases, assetsDir);
         }
 
         var state = JsonState.TryRead<InstallState>(StatePath) ?? new InstallState { Workspace = workspace };
@@ -127,18 +131,39 @@ internal static class Program
         string? retroWfcOfflineDir = null;
         if (downloadPayload)
         {
-            // Reused if a previous install already downloaded and it's still valid - matches
-            // Windows's own reuse-if-valid behavior instead of re-downloading on every install.
             var cacheDir = Path.Combine(workspace, "generated", "retro-wfc-payload");
-            reporter.Progress(InstallStages.Validate, "Preparing the Retro-WFC payload", 1);
+            reporter.Progress(InstallStages.Validate,
+                "Downloading the current Retro-WFC payload", 1);
             try
             {
-                RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir);
-            }
-            catch (InvalidDataException)
-            {
+                // A valid signature authenticates a payload, but does not prove it is the latest
+                // signed revision. Always ask the release's fixed endpoint for the current snapshot;
+                // the downloader verifies it before atomically replacing the cache.
                 await RetroWfcPayload.DownloadRetroWfcPayloadAsync(
-                    RetroWfcPayload.CurrentRetroWfcPayloadUri, cacheDir, token);
+                    RetroWfcPayload.PayloadUri(release.GameId), cacheDir, token);
+            }
+            catch (Exception downloadFailure) when (!token.IsCancellationRequested &&
+                                                     downloadFailure is HttpRequestException or TimeoutException
+                                                         or IOException)
+            {
+                // Offline installs may continue with a previously authenticated snapshot. Do not
+                // use this path for a newly downloaded payload that failed signature validation:
+                // that must remain a hard failure instead of hiding possible endpoint tampering.
+                try
+                {
+                    RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir, gameId: release.GameId);
+                }
+                catch (Exception cacheFailure) when (cacheFailure is IOException or
+                                                     UnauthorizedAccessException or InvalidDataException)
+                {
+                    throw new InvalidOperationException(
+                        "The current Retro-WFC payload could not be downloaded and no valid cached " +
+                        $"payload is available ({cacheFailure.Message.TrimEnd('.')}).", downloadFailure);
+                }
+
+                reporter.Diagnostic(
+                    "The current Retro-WFC payload could not be downloaded; using the previously " +
+                    $"verified cached payload instead ({downloadFailure.Message.TrimEnd('.')}).");
             }
             retroWfcOfflineDir = cacheDir;
         }
@@ -175,7 +200,9 @@ internal static class Program
         foreach (var p in profiles)
         {
             var dir = p == "base" ? (baseInstallDir ?? installDir) : installDir;
-            var exeName = p == "base" ? "WiiCompiled" : "RetroRewind";
+            var product = p == "base" ? "WiiCompiled" : "RetroRewind";
+            // macOS builds a .app bundle (publish-app.command); launch/check-products want the binary inside it.
+            var exeName = OperatingSystem.IsMacOS() ? $"{product}.app/Contents/MacOS/{product}" : product;
             var displayName = p == "base" ? "WiiCompiled (base game)" : "WiiCompiled (Retro Rewind)";
             state.Products.RemoveAll(r => r.Profile == p);
             state.Products.Add(new ProductInstallRecord

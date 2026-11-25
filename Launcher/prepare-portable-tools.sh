@@ -41,10 +41,23 @@ Usage: prepare-portable-tools.sh --arch {x86_64|aarch64} [--destination DIR]
 EOF
 }
 
+# Same guard as Prepare-NativePrebuilt.sh: a value-taking option must not swallow a missing,
+# empty, or option-like value (issue #274).
+require_value() {
+    if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "prepare-portable-tools.sh: $1 requires a value" >&2
+        exit 1
+    fi
+    if [[ "$2" == --* || "$2" == -h ]]; then
+        echo "prepare-portable-tools.sh: $1 requires a value; \"$2\" looks like another option" >&2
+        exit 1
+    fi
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --arch) arch=$2; shift 2 ;;
-        --destination) destination=$2; shift 2 ;;
+        --arch) require_value "$@"; arch=$2; shift 2 ;;
+        --destination) require_value "$@"; destination=$2; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "prepare-portable-tools.sh: unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -225,7 +238,7 @@ EOF
 # clang++ invocation above would not catch a broken CMAKE_ROOT (Modules/Templates) or a Ninja that
 # can't find the compiler.
 cat > "$test_dir/CMakeLists.txt" <<'EOF'
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.25)
 project(test CXX)
 add_executable(test t.cpp)
 EOF

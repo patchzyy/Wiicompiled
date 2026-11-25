@@ -84,7 +84,8 @@ public:
     // Crash-path helpers shared by the centralized reporter in main.cpp.
     // DumpCrashHeuristics prints plain-language "likely cause" hints derived
     // from the register state; WriteGuestMemorySnapshot writes MEM1 to
-    // `mem1Path` and MEM2 to `mem1Path + ".mem2"`, logging outcomes to `os`.
+    // `mem1Path`, MEM2 to `mem1Path + ".mem2"` and the Kamek overlay to
+    // `mem1Path + ".kamek"`, logging outcomes to `os`.
     static void DumpCrashHeuristics(std::ostream& os, const struct CpuContext* cpu,
                                     const uint32_t* missingGuestTarget);
     static void WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path);

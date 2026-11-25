@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          submodules: recursive
 
       - uses: actions/setup-dotnet@v6
         with:
@@ -45,6 +46,20 @@ jobs:
         shell: pwsh
         run: ./Launcher/Prepare-PortableTools.ps1
 
+      - name: Build and run Windows host-platform tests
+        shell: pwsh
+        run: |
+          $tools = Join-Path $PWD 'Launcher/artifacts/portable-tools'
+          $env:PATH = "$tools/llvm-mingw/bin;$tools/CMake/bin;$tools/Ninja;$env:PATH"
+          cmake -S runtime -B build-platform -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ `
+            -DMKW_BUILD_PRODUCTS=OFF -DMKW_PLATFORM_TESTS_ONLY=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build build-platform --parallel 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir build-platform --output-on-failure
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Prepare pinned native dependencies
         shell: pwsh
         run: ./Launcher/Prepare-Dependencies.ps1
@@ -53,6 +68,18 @@ jobs:
       - name: Translate, compile the full runtime, and link
         shell: pwsh
         run: ./Launcher/Test-Recompilation.ps1 -Parallel 4
+
+      - name: Test GX performance paths
+        shell: pwsh
+        run: |
+          $tools = Join-Path $PWD 'Launcher/artifacts/portable-tools'
+          $build = Join-Path $PWD 'build/recomp-test/native-build'
+          $env:PATH = "$build;$tools/llvm-mingw/bin;$tools/CMake/bin;$tools/Ninja;$env:PATH"
+          cmake -S build/recomp-test/runtime -B $build -DMKW_BUILD_AURORA_TESTS=ON -DFETCHCONTENT_FULLY_DISCONNECTED=OFF
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build $build --parallel 3 --target gx_fifo_tests shader_module_cache_tests mkw_gx_texture_binding_tests mkw_gx_sync_tests mkw_gx_dl_cache_tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ctest --test-dir $build --output-on-failure --no-tests=error -R '^(GXFifoTest|RuntimeDirectDrawTest|ShaderModuleCacheTest|mkw_gx_(texture_binding|sync|dl_cache)_tests)'
 
       # Print cache results (even if the build fails)
       - name: Show sccache stats

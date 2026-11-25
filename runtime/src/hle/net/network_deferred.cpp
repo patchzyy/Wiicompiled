@@ -1,4 +1,5 @@
 #include "network_internal.h"
+#include "guest_abi/guest_region.h"
 
 #include "fiber_manager.h"
 #include "hle/net/network.h"
@@ -38,6 +39,7 @@ struct DeferredNetworkRoute {
     uint64_t token = 0;
     uint32_t waitQueue = 0;
     uint32_t expectedThread = 0;
+    uint64_t threadGeneration = 0;
     uint32_t callback = 0;
     uint32_t callbackArg = 0;
 };
@@ -122,12 +124,27 @@ struct DeferredConnectWork {
     std::optional<int32_t> initialResult;
 };
 
+struct DeferredReceiveWork {
+    DeferredNetworkRoute route{};
+    NetworkPollContract::Timeout timeout{};
+    uint32_t deviceFd = 0;
+    uint32_t wiiFd = 0;
+    NativeSocket nativeFd = kInvalidSocket;
+    uint64_t socketGeneration = 0;
+    uint32_t flags = 0;
+    uint32_t dataAddress = 0;
+    uint32_t dataSize = 0;
+    std::optional<int32_t> initialResult;
+};
+
 using DeferredDnsPreparation =
     NetworkDeferredContract::Preparation<DeferredDnsWork>;
 using DeferredPollPreparation =
     NetworkDeferredContract::Preparation<DeferredPollWork>;
 using DeferredConnectPreparation =
     NetworkDeferredContract::Preparation<DeferredConnectWork>;
+using DeferredReceivePreparation =
+    NetworkDeferredContract::Preparation<DeferredReceiveWork>;
 
 struct DeferredNetworkStore {
     std::mutex completedMutex;
@@ -136,6 +153,7 @@ struct DeferredNetworkStore {
     // thread, so unlike DNS worker completions they need no cross-thread lock.
     std::vector<DeferredPollWork> pendingPolls;
     std::vector<DeferredConnectWork> pendingConnects;
+    std::vector<DeferredReceiveWork> pendingReceives;
     std::mutex resultMutex;
     std::unordered_map<uint64_t, int32_t> syncResults;
     std::mutex schedulerThreadMutex;
@@ -158,6 +176,14 @@ static DeferredNetworkStore& GetDeferredNetworkStore() {
 void AbortPendingDeferredConnects(uint32_t wiiFd, int32_t result) {
     DeferredNetworkStore& store = GetDeferredNetworkStore();
     for (DeferredConnectWork& work : store.pendingConnects) {
+        if (work.wiiFd == wiiFd && !work.initialResult) {
+            work.initialResult = result;
+        }
+    }
+}
+
+void AbortPendingDeferredReceives(uint32_t wiiFd, int32_t result) {
+    for (DeferredReceiveWork& work : GetDeferredNetworkStore().pendingReceives) {
         if (work.wiiFd == wiiFd && !work.initialResult) {
             work.initialResult = result;
         }
@@ -457,6 +483,52 @@ static DeferredConnectPreparation PrepareDeferredConnect(
     return DeferredConnectPreparation::Ready(std::move(work), -SO_EINVAL);
 }
 
+static DeferredReceivePreparation PrepareDeferredReceive(
+    uint32_t fd, uint32_t numIn, uint32_t numOut, uint32_t vectorPtr) {
+    const uint64_t count = static_cast<uint64_t>(numIn) + numOut;
+    if (!numIn || !numOut || count > kMaxIoVectors || !vectorPtr ||
+        !Memory::Contains(vectorPtr, static_cast<size_t>(count) * 8u)) {
+        return DeferredReceivePreparation::Error(-SO_EINVAL);
+    }
+    const auto vectors = ReadVectors(vectorPtr, static_cast<uint32_t>(count));
+    const IoVector& control = vectors[0];
+    const IoVector& data = vectors[numIn];
+    if (control.size < 8u || !control.address || !Memory::Contains(control.address, 8u) ||
+        data.size > static_cast<uint32_t>(INT32_MAX) ||
+        (data.size && (!data.address || !Memory::Contains(data.address, data.size)))) {
+        return DeferredReceivePreparation::Error(-SO_EINVAL);
+    }
+    const uint32_t wiiFd = Memory::Read32(control.address);
+    WiiSocket* socket = GetWiiSocket(wiiFd);
+    if (!socket) {
+        return DeferredReceivePreparation::Error(-SO_EBADF);
+    }
+    const uint32_t flags = Memory::Read32(control.address + 4u);
+    const bool hasFrom = numOut > 1 && vectors[numIn + 1u].address &&
+                         vectors[numIn + 1u].size >= 8u;
+    if (!data.size || socket->type != SOCK_STREAM || socket->nonblocking || (flags & 0x04u) || hasFrom) {
+        return DeferredReceivePreparation::NotApplicable();
+    }
+
+    // Try the nonblocking read itself; readiness can be lost to another reader.
+    const int32_t result = ReceiveFromNow(wiiFd, flags, data.address, data.size);
+    if (result != -SO_EAGAIN) {
+        return DeferredReceivePreparation::Error(result);
+    }
+    DeferredReceiveWork work{};
+    work.timeout = NetworkPollContract::Timeout::FromMilliseconds(1000);
+    work.deviceFd = fd;
+    work.wiiFd = wiiFd;
+    work.nativeFd = socket->native;
+    work.socketGeneration = socket->generation;
+    work.flags = flags & 0x03u;
+    // IOS async callers retain output storage until their callback. The work
+    // owns copied addresses, never pointers into the caller's vector array.
+    work.dataAddress = data.address;
+    work.dataSize = data.size;
+    return DeferredReceivePreparation::Ready(std::move(work), -SO_ENOMEM);
+}
+
 static DeferredDnsPreparation PrepareDeferredGetAddrInfo(
     uint32_t fd, uint32_t cmd, uint32_t numIn, uint32_t numOut, uint32_t vectorPtr) {
     if (!IsIpTopCommand(fd, cmd, IOCTLV_SO_GETADDRINFO)) {
@@ -627,7 +699,7 @@ static bool InitializeDeferredSyncRoute(DeferredNetworkRoute& route, uint32_t wa
     // early scheduler setup. Capture its identity before yielding so a late
     // resolver result cannot wake a stale/reused stack queue after cancellation.
     constexpr uint32_t kOSRunningContextAddr = 0x800000E4u;
-    constexpr uint32_t kDefaultThreadContextAddr = 0x80347498u;
+    const uint32_t kDefaultThreadContextAddr = MKW_GADDR(80347498);
     uint32_t expectedThread = Memory::Read32(kOSRunningContextAddr);
     if (expectedThread == 0) {
         expectedThread = kDefaultThreadContextAddr;
@@ -640,6 +712,7 @@ static bool InitializeDeferredSyncRoute(DeferredNetworkRoute& route, uint32_t wa
     route.token = nextToken;
     route.waitQueue = waitQueue;
     route.expectedThread = expectedThread;
+    route.threadGeneration = Fiber::GuestFiberManager::GetThreadGeneration(expectedThread);
     // ABA cookie: thread/stack addresses are reused after cancellation.
     Memory::Write64(waitQueue + 8u, nextToken);
     return true;
@@ -686,6 +759,11 @@ static bool InstallDeferredDns(DeferredDnsWork work) {
 
 static bool InstallDeferredPoll(DeferredPollWork work) {
     GetDeferredNetworkStore().pendingPolls.push_back(std::move(work));
+    return true;
+}
+
+static bool InstallDeferredReceive(DeferredReceiveWork work) {
+    GetDeferredNetworkStore().pendingReceives.push_back(std::move(work));
     return true;
 }
 
@@ -799,6 +877,12 @@ NetworkDeferredContract::StartOutcome Network_HLE_StartIoctlSync(
 NetworkDeferredContract::StartOutcome Network_HLE_StartIoctlvSync(
     uint32_t fd, uint32_t cmd, uint32_t numIn, uint32_t numOut,
     uint32_t vectorPtr, uint32_t waitQueue) {
+    if (IsIpTopCommand(fd, cmd, IOCTLV_SO_RECVFROM)) {
+        return RunDeferredEntry(-SO_EINVAL, -SO_EINVAL, [&] {
+            return StartDeferred(PrepareDeferredReceive(fd, numIn, numOut, vectorPtr),
+                                 SyncRoute(waitQueue), InstallDeferredReceive);
+        });
+    }
     if (!IsIpTopCommand(fd, cmd, IOCTLV_SO_GETADDRINFO)) {
         return DeferredStartOutcome::NotApplicable();
     }
@@ -824,6 +908,12 @@ NetworkDeferredContract::StartOutcome Network_HLE_StartIoctlAsync(
 NetworkDeferredContract::StartOutcome Network_HLE_StartIoctlvAsync(
     uint32_t fd, uint32_t cmd, uint32_t numIn, uint32_t numOut,
     uint32_t vectorPtr, uint32_t callback, uint32_t callbackArg) {
+    if (IsIpTopCommand(fd, cmd, IOCTLV_SO_RECVFROM)) {
+        return RunDeferredEntry(-SO_EINVAL, -SO_EINVAL, [&] {
+            return StartDeferred(PrepareDeferredReceive(fd, numIn, numOut, vectorPtr),
+                                 AsyncRoute(callback, callbackArg), InstallDeferredReceive);
+        });
+    }
     if (!IsIpTopCommand(fd, cmd, IOCTLV_SO_GETADDRINFO)) {
         return DeferredStartOutcome::NotApplicable();
     }
@@ -853,7 +943,8 @@ static bool DeferredNetworkWaiterIsValid(const DeferredNetworkRoute& route) {
     if (!route.waitQueue || !route.expectedThread ||
         !Memory::Contains(route.waitQueue, 16u) ||
         !Memory::Contains(route.expectedThread + 0x2C8u, 0x20u) ||
-        Fiber::GuestFiberManager::IsTerminated(route.expectedThread)) {
+        Fiber::GuestFiberManager::IsTerminated(route.expectedThread) ||
+        Fiber::GuestFiberManager::GetThreadGeneration(route.expectedThread) != route.threadGeneration) {
         return false;
     }
 
@@ -949,6 +1040,40 @@ static std::optional<int32_t> ProbeDeferredConnect(
     }
 
     return ClassifySettledConnect(work.nativeFd);
+}
+
+static bool ReceiveIsReady(const DeferredReceiveWork& work) {
+    NetworkPollContract::NativePollFd descriptor{};
+    descriptor.fd = work.nativeFd;
+#ifdef _WIN32
+    descriptor.events = (work.flags & 0x01u) ? POLLRDBAND : POLLRDNORM;
+    const int result = WSAPoll(&descriptor, 1, 0);
+#else
+    descriptor.events = (work.flags & 0x01u) ? POLLPRI : POLLIN;
+    const int result = poll(&descriptor, 1, 0);
+#endif
+    return result < 0 || (result > 0 && descriptor.revents != 0);
+}
+
+static std::optional<int32_t> ProbeDeferredReceive(
+    const DeferredReceiveWork& work, NetworkPollContract::Timeout::TimePoint now) {
+    if (work.initialResult) {
+        return *work.initialResult;
+    }
+    if (!IsIpTopDevice(work.deviceFd) ||
+        !SocketIdentityIsCurrent(work.wiiFd, work.nativeFd, work.socketGeneration)) {
+        return -SO_ENOTCONN;
+    }
+    const bool expired = work.timeout.IsExpired(now);
+    if (!expired && !ReceiveIsReady(work)) {
+        return std::nullopt;
+    }
+    const int32_t result = ReceiveFromNow(work.wiiFd, work.flags, work.dataAddress, work.dataSize);
+    // A competing read or a spurious readiness event must not shorten the wait.
+    if (result == -SO_EAGAIN && !expired) {
+        return std::nullopt;
+    }
+    return result;
 }
 
 bool Network_HLE_ProcessCompletions(CpuContext* cpu) {
@@ -1064,6 +1189,29 @@ bool Network_HLE_ProcessCompletions(CpuContext* cpu) {
         }
         it = store.pendingConnects.erase(it);
         DeliverDeferredNetworkResult(cpu, store, route, result);
+        handledAny = true;
+    }
+    for (auto it = store.pendingReceives.begin(); it != store.pendingReceives.end();) {
+        const DeferredReceiveWork& work = *it;
+        const DeferredNetworkRoute route = work.route;
+        if (route.kind == DeferredNetworkCompletionKind::SyncWaitQueue &&
+            !DeferredNetworkWaiterIsValid(route)) {
+            it = store.pendingReceives.erase(it);
+            continue;
+        }
+        std::optional<int32_t> result;
+        try {
+            result = ProbeDeferredReceive(work, now);
+        } catch (const Memory::AccessViolation&) {
+            result = -SO_EINVAL;
+        }
+        if (!result) {
+            ++it;
+            continue;
+        }
+        g_lastSocketError = *result < 0 ? *result : 0;
+        it = store.pendingReceives.erase(it);
+        DeliverDeferredNetworkResult(cpu, store, route, *result);
         handledAny = true;
     }
     return handledAny;

@@ -1,12 +1,32 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 
 namespace GxTextureBindingContract {
 
-// Every piece of GX texture state that can change the bound view/sampler. Shared by `State`
-// (this plus the guest GXTexObj address) and HLE's TexObjMeta (this plus the `userData`/
-// `needsUpload` bookkeeping fields), so a new sampler field here reaches both.
+// Independent of the metadata shadow, which getters and setters may refresh.
+struct ValidatedLoad {
+    uint8_t bytes[32]{};
+    bool valid = false;
+
+    void Invalidate() noexcept { valid = false; }
+
+    void Record(const uint8_t* snapshot) noexcept {
+        valid = snapshot != nullptr;
+        if (valid) {
+            std::memcpy(bytes, snapshot, sizeof(bytes));
+        }
+    }
+
+    bool CanReuse(const uint8_t* snapshot, bool needsUpload, bool constructed,
+                  bool isPalette) const noexcept {
+        return valid && snapshot != nullptr && !needsUpload && constructed && !isPalette &&
+               std::memcmp(bytes, snapshot, sizeof(bytes)) == 0;
+    }
+};
+
+// Sampler fields shared by the binding record and HLE's TexObjMeta.
 struct SamplerState {
     uint32_t dataAddr = 0;
     uint16_t width = 0;
@@ -31,6 +51,8 @@ struct SamplerState {
 // be part of the snapshot.
 struct State : SamplerState {
     uint32_t objAddr = 0;
+    uint32_t texObjId = 0;
+    uint32_t texDataVersion = 0;
 };
 
 inline bool SameSamplerState(const SamplerState& lhs, const SamplerState& rhs) noexcept {
@@ -53,14 +75,8 @@ inline bool SameSamplerState(const SamplerState& lhs, const SamplerState& rhs) n
 }
 
 inline bool SameBinding(const State& lhs, const State& rhs) noexcept {
-    return lhs.objAddr == rhs.objAddr && SameSamplerState(lhs, rhs);
-}
-
-inline bool CanSkipHostLoad(const State& oldBinding, const State& newBinding,
-                            bool needsInit, bool tlutChanged,
-                            bool textureDataUploaded) noexcept {
-    return SameBinding(oldBinding, newBinding) &&
-           !needsInit && !tlutChanged && !textureDataUploaded;
+    return lhs.objAddr == rhs.objAddr && lhs.texObjId == rhs.texObjId && lhs.texDataVersion == rhs.texDataVersion &&
+           SameSamplerState(lhs, rhs);
 }
 
 } // namespace GxTextureBindingContract

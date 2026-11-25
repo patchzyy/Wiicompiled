@@ -1,4 +1,4 @@
-﻿#include "hle_stubs.h"
+#include "hle_stubs.h"
 #include "isa/big_endian.h"
 #include "hle/dvd_contract.h"
 #include "hle/runtime_parse_helpers.h"
@@ -44,7 +44,7 @@ static fs::path g_dvdRoot;
 static std::once_flag g_dvdRootOnce;
 
 static uint32_t CurrentDiscGameCode() {
-    return RuntimeHle::CurrentGameCode(0x524D4350u); // RMCP
+    return RuntimeHle::CurrentGameCode(::GuestRegion::CurrentFacts().gameCode);
 }
 
 // ============================================================================
@@ -103,10 +103,23 @@ extern "C" void DVDInit_8015EA1C();
 extern "C" uint32_t g_dvdFstReservedBase;
 extern "C" uint32_t g_dvdFstReservedSize;
 
-// Byte-wise copy into guest RAM plus the DMA notification the GX caches need.
+// Copy into guest RAM plus the DMA notification the GX caches need. A fully writable 1 MiB page
+// takes its bytes in one memcpy, since Write8 is a plain store there; any other page keeps Write8.
 static void CopyToGuestAsDma(uint32_t dest, const uint8_t* data, size_t size) {
-    for (size_t i = 0; i < size; ++i) {
-        Memory::Write8(dest + static_cast<uint32_t>(i), data[i]);
+    size_t done = 0;
+    while (done < size) {
+        const uint32_t address = dest + static_cast<uint32_t>(done);
+        const size_t pageLeft = MemoryInline::kPageSize - (address & MemoryInline::kPageMask);
+        const size_t chunk = std::min(size - done, pageLeft);
+        if (const uintptr_t bias = MemoryInline::g_fullWritablePageBias[address >> MemoryInline::kPageShift];
+            bias != 0) {
+            std::memcpy(reinterpret_cast<uint8_t*>((bias - 1u) + address), data + done, chunk);
+        } else {
+            for (size_t i = 0; i < chunk; ++i) {
+                Memory::Write8(address + static_cast<uint32_t>(i), data[done + i]);
+            }
+        }
+        done += chunk;
     }
     GxNotifyGuestRamDmaWrite(dest, static_cast<uint32_t>(size));
 }
@@ -161,6 +174,21 @@ static const fs::path& GetDvdRoot() {
         }
         if (!IsDvdDataRoot(path)) {
             FailDvdRoot("Configured DVD root is not an extracted DATA directory", path);
+        }
+        std::error_code ec;
+        const auto bootBin = path / "sys" / "boot.bin";
+        if (fs::is_regular_file(bootBin, ec)) {
+            std::ifstream file(bootBin, std::ios::binary);
+            char id[7] = {};
+            if (!file.read(id, 6)) {
+                FailDvdRoot("Configured DVD root has an unreadable or truncated sys/boot.bin", bootBin);
+            }
+            if (std::memcmp(id, "RMC", 3) == 0 && id[3] != ::GuestRegion::CurrentFacts().letter) {
+                FailDvd("dvd_region_mismatch", "DVD region mismatch",
+                        std::string("Configured DVD root has disc ID '") + id +
+                        "', but this build was compiled for region " + ::GuestRegion::CurrentFacts().gameId +
+                        ".\nThe extracted game assets must match the region of the compiled executable.");
+            }
         }
         g_dvdRoot = path;
     });
@@ -749,7 +777,7 @@ extern "C" const char* DVDResolveHostPathForTest(const char* dvdPath)
 
 static void InitDvdWaitingQueues()
 {
-    constexpr uint32_t kQueueBase = 0x80343230;
+    const uint32_t kQueueBase = MKW_GADDR(80343230);
     for (uint32_t i = 0; i < 4; ++i) {
         const uint32_t queue = kQueueBase + (i * 8);
         Memory::Write32(queue + 0, queue);
@@ -763,12 +791,12 @@ static void CompleteDvdCancelState()
 
     // These are the SDK DVD globals used by DVDCancelAll/__DVDPrepareReset.
     // The actual drive work is HLE'd, so complete pending cancel/reset waits.
-    Memory::Write32(0x80386664, 0); // Canceling
-    Memory::Write32(0x80386668, 0); // ResumeFromHere
-    Memory::Write32(0x80386670, 0); // PausingFlag
-    Memory::Write32(0x8038667C, 1); // CancelAllSync complete
-    Memory::Write32(0x803866A8, 1); // PrepareReset complete
-    Memory::Write32(0x803866F0, 0); // executing command block
+    Memory::Write32(MKW_GADDR(80386664), 0); // Canceling
+    Memory::Write32(MKW_GADDR(80386668), 0); // ResumeFromHere
+    Memory::Write32(MKW_GADDR(80386670), 0); // PausingFlag
+    Memory::Write32(MKW_GADDR(8038667C), 1); // CancelAllSync complete
+    Memory::Write32(MKW_GADDR(803866A8), 1); // PrepareReset complete
+    Memory::Write32(MKW_GADDR(803866F0), 0); // executing command block
 }
 
 // 0x8015EA1C -> DVDInit
@@ -785,14 +813,14 @@ extern "C" void DVDInit_8015EA1C()
 
     // 1. Initialize Global Flags (Emulate OS state)
     // These addresses are standard OS globals for DVD context
-    Memory::Write8(0x80386724, 1);   // Contexts initialized
-    Memory::Write8(0x80386725, 1);   // LowInit called
-    Memory::Write32(0x80386720, 0);  // Current context index
-    Memory::Write8(0x803866a0, 1);   // DVDInit called flag
+    Memory::Write8(MKW_GADDR(80386724), 1);   // Contexts initialized
+    Memory::Write8(MKW_GADDR(80386725), 1);   // LowInit called
+    Memory::Write32(MKW_GADDR(80386720), 0);  // Current context index
+    Memory::Write8(MKW_GADDR(803866a0), 1);   // DVDInit called flag
     CompleteDvdCancelState();
 
     // 2. Initialize DVD Context structures (prevent crashes in callbacks)
-    constexpr uint32_t kContextBase = 0x803434e0;
+    const uint32_t kContextBase = MKW_GADDR(803434e0);
     constexpr uint32_t kMagicValue = 0xFEEBDAED;
     for (int i = 0; i < 4; i++) {
         uint32_t ctx = kContextBase + i * 0x20;
@@ -840,7 +868,7 @@ extern "C" void DVDInit_8015EA1C()
     BuildAndPublishRuntimeFst();
 
     // Initialize the translated DVD filesystem so it can use the published FST.
-    constexpr uint32_t kDvdFsInitAddress = 0x8015DF1C;
+    const uint32_t kDvdFsInitAddress = MKW_GADDR(8015DF1C);
     if (TranslatedFunctionRegistry::FindByAddressPtr(kDvdFsInitAddress)) {
         InvokeIndirectCpu(kDvdFsInitAddress, &GetPersistentCpuContext());
     }
@@ -1016,30 +1044,45 @@ extern "C" int32_t DVDLowInit_80164848() {
 }
 PPC_NATIVE_OVERRIDE(80164848, DVDLowInit_80164848, int32_t, (), ());
 
-extern "C" int32_t DVDLowInquiry_80165A30(uint32_t cmdBlockPtr, uint32_t callback)
+// DVDLowInquiry(DVDDriveInfo* info, DVDLowCallback cb); reports a retail drive.
+extern "C" int32_t DVDLowInquiry_80165A30(uint32_t driveInfoPtr, uint32_t callback)
 {
-    // HLE: acknowledge the drive is present. Must mark the command block complete
-    // (State = 0) or callers polling this address hang waiting for "Busy" to clear.
-    if (cmdBlockPtr) {
-        Memory::Write32(cmdBlockPtr + DVD_CB_OFFSET_STATE, DVD_STATE_END);
+    if (driveInfoPtr && Memory::Contains(driveInfoPtr, 0x20)) {
+        Memory::Write32(driveInfoPtr + 0x0, 0x00000002); // revision level, device code
+        Memory::Write32(driveInfoPtr + 0x4, 0x20060526); // release date
+        Memory::Write32(driveInfoPtr + 0x8, 0x41000000);
     }
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
     CompleteDvdCancelState();
-
-    return 1; // Return 1 to indicate the command was successfully issued.
+    return 1;
 }
 PPC_NATIVE_OVERRIDE(80165A30, DVDLowInquiry_80165A30, int32_t, (uint32_t b, uint32_t c), (b, c));
 
 // 0x80164AAC -> DVDLowReadDiskID
 extern "C" int32_t DVDLowReadDiskID_80164AAC(uint32_t diskIdPtr, uint32_t callback) {
-    if (diskIdPtr) {
+    if (diskIdPtr && Memory::Contains(diskIdPtr, 0x20)) {
+        for (uint32_t i = 0x07; i < 0x20; ++i) {
+            Memory::Write8(diskIdPtr + i, 0);
+        }
         Memory::Write32(diskIdPtr + 0x00, CurrentDiscGameCode());
         Memory::Write16(diskIdPtr + 0x04, 0x3031);
         Memory::Write8 (diskIdPtr + 0x06, 0x01);
+        Memory::Write32(diskIdPtr + 0x18, 0x5D1C9EA3); // Wii disc magic
     }
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
     CompleteDvdCancelState();
     return 1; // Success
 }
 PPC_NATIVE_OVERRIDE(80164AAC, DVDLowReadDiskID_80164AAC, int32_t, (uint32_t p, uint32_t c), (p, c));
+
+// Host files need no head positioning.
+extern "C" int32_t DVDLowSeek_801664E0(uint32_t offset, uint32_t callback) {
+    (void)offset;
+    InvokeDvdLowCallback(callback, DvdReadContract::kInterruptTransferComplete);
+    CompleteDvdCancelState();
+    return 1;
+}
+PPC_NATIVE_OVERRIDE(801664E0, DVDLowSeek_801664E0, int32_t, (uint32_t o, uint32_t c), (o, c));
 
 // 0x80166330 -> DVDLowRead (And 0x80165708 UnencryptedRead)
 // The game calls this to read the Disk Header (offset 0) or raw data.

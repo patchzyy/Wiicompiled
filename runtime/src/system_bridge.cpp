@@ -57,8 +57,8 @@ std::optional<std::string> PrintableU32(uint32_t value) {
     return out;
 }
 
-std::optional<TranslatedFunctionInfo> FindNearestTranslatedFunction(uint32_t address) {
-    auto best = TranslatedFunctionRegistry::FindNearestByAddress(address);
+std::optional<TranslatedFunctionInfo> FindNearbyTranslatedFunction(uint32_t address) {
+    auto best = FindNearestTranslatedFunction(address);
 
     // Crash-only heuristic: large gaps are usually data/FourCC values, not code offsets.
     if (best && address - best->address < 0x10000u) {
@@ -161,7 +161,7 @@ void PrintGuestValue(std::ostream& os, std::string_view label, uint32_t value) {
         } else {
             os << "<" << exact->name << ">";
         }
-    } else if (auto nearest = FindNearestTranslatedFunction(value)) {
+    } else if (auto nearest = FindNearbyTranslatedFunction(value)) {
         if (mapName && mapStart >= nearest->address) {
             os << "<" << mapName;
             if (value != mapStart) {
@@ -255,7 +255,7 @@ void DumpGuestStackHints(std::ostream& os, const CpuContext* cpu) {
         if (!value) {
             continue;
         }
-        if (!TranslatedFunctionRegistry::FindByAddressPtr(*value) && !FindNearestTranslatedFunction(*value)) {
+        if (!TranslatedFunctionRegistry::FindByAddressPtr(*value) && !FindNearbyTranslatedFunction(*value)) {
             continue;
         }
         if (printed == 0) {
@@ -334,8 +334,8 @@ void SystemBridge::Initialize() {
     // These set up vtables and other critical infrastructure
     RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for main DOL..." << std::endl;
 
-    const uint32_t dolCtorStart = 0x80244DE0;
-    const uint32_t dolCtorEnd = 0x80244EA0;
+    const uint32_t dolCtorStart = MKW_GADDR(80244DE0);
+    const uint32_t dolCtorEnd = MKW_GADDR(80244EA0);
 
     int dolCount = 0;
     for (uint32_t addr = dolCtorStart; addr < dolCtorEnd; addr += 4) {
@@ -353,8 +353,13 @@ void SystemBridge::Initialize() {
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
-                InvokeIndirectCpu(funcAddr, &cpu);
-                dolCount++;
+                try {
+                    InvokeIndirectCpu(funcAddr, &cpu);
+                    dolCount++;
+                } catch (...) {
+                    RT_LOG(RT_TAG_RUNTIME) << "C++ exception invoking DOL ctor 0x" << std::hex << funcAddr
+                              << std::dec << " - skipping." << std::endl;
+                }
             } else {
                 RT_LOG(RT_TAG_RUNTIME) << "SEH Exception caught invoking DOL ctor 0x" << std::hex << funcAddr
                           << " code=0x" << g_sehLastExceptionCode
@@ -374,8 +379,8 @@ void SystemBridge::Initialize() {
     RT_LOG(RT_TAG_RUNTIME) << "Running static constructors for StaticR.rel..." << std::endl;
 
     // Define range for StaticR.rel .ctors
-    const uint32_t ctorStart = 0x8088f400;
-    const uint32_t ctorEnd = 0x8088f704;
+    const uint32_t ctorStart = MKW_GADDR(8088f400);
+    const uint32_t ctorEnd = MKW_GADDR(8088f704);
 
     int count = 0;
     for (uint32_t addr = ctorStart; addr < ctorEnd; addr += 4) {
@@ -393,8 +398,13 @@ void SystemBridge::Initialize() {
             g_sehJumpTarget = &jumpBuf;
             if (MKW_SETJMP(jumpBuf) == 0) {
                 cpu.gpr[1] = 0x81700000u;
-                InvokeIndirectCpu(funcAddr, &cpu);
-                count++;
+                try {
+                    InvokeIndirectCpu(funcAddr, &cpu);
+                    count++;
+                } catch (...) {
+                    RT_LOG(RT_TAG_RUNTIME) << "C++ exception invoking ctor 0x" << std::hex << funcAddr
+                              << std::dec << " - skipping." << std::endl;
+                }
             } else {
                 RT_LOG(RT_TAG_RUNTIME) << "SEH Exception caught invoking ctor 0x" << std::hex << funcAddr
                           << " code=0x" << g_sehLastExceptionCode
@@ -413,14 +423,18 @@ void SystemBridge::Initialize() {
 }
 
 void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesystem::path& mem1Path) {
+    auto writeRegion = [&](const char* label, uint32_t base, uint32_t size,
+                           const std::filesystem::path& path) {
+        std::ofstream dump(path, std::ios::binary | std::ios::trunc);
+        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(base, size)), size);
+        os << "[runtime] " << label << " snapshot written to " << RuntimeConfigFile::PathToUtf8(path)
+           << (dump.good() ? "" : " (write failed)") << std::endl;
+    };
+
     constexpr uint32_t kMem1Base = 0x80000000u;
     constexpr uint32_t kMem1Size = 0x01800000u;
     if (Memory::Contains(kMem1Base, kMem1Size)) {
-        std::ofstream dump(mem1Path, std::ios::binary | std::ios::trunc);
-        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem1Base, kMem1Size)),
-                   kMem1Size);
-        os << "[runtime] MEM1 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem1Path)
-           << (dump.good() ? "" : " (write failed)") << std::endl;
+        writeRegion("MEM1", kMem1Base, kMem1Size, mem1Path);
     }
     constexpr uint32_t kMem2Base = 0x90000000u;
     for (uint32_t mem2Size : {0x08000000u, 0x04000000u}) {
@@ -429,12 +443,15 @@ void SystemBridge::WriteGuestMemorySnapshot(std::ostream& os, const std::filesys
         }
         std::filesystem::path mem2Path = mem1Path;
         mem2Path += ".mem2";
-        std::ofstream dump(mem2Path, std::ios::binary | std::ios::trunc);
-        dump.write(reinterpret_cast<const char*>(Memory::GetPointer(kMem2Base, mem2Size)),
-                   mem2Size);
-        os << "[runtime] MEM2 snapshot written to " << RuntimeConfigFile::PathToUtf8(mem2Path)
-           << (dump.good() ? "" : " (write failed)") << std::endl;
+        writeRegion("MEM2", kMem2Base, mem2Size, mem2Path);
         break;
+    }
+    constexpr uint32_t kKamekBase = 0x81800000u;
+    constexpr uint32_t kKamekSize = 0x00200000u;
+    if (Memory::Contains(kKamekBase, kKamekSize)) {
+        std::filesystem::path kamekPath = mem1Path;
+        kamekPath += ".kamek";
+        writeRegion("Kamek overlay", kKamekBase, kKamekSize, kamekPath);
     }
 }
 
@@ -484,7 +501,7 @@ void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
     };
 
     std::vector<SeedEntry> entries;
-    constexpr uint32_t kMem1ArenaLoDefault = 0x80399180u;
+    const uint32_t kMem1ArenaLoDefault = ::GuestRegion::CurrentFacts().mem1ArenaLo;
     uint32_t mem1ArenaHiDefault = 0x817f0520u;
     constexpr uint32_t kBusClockHz =
         static_cast<uint32_t>(TimeBaseContract::kBusClockHz);
@@ -508,10 +525,10 @@ void SystemBridge::SeedLowMemDefaults(const Memory::Config& config) {
     // Retro Rewind reads the region byte directly from here while building its
     // Retro-WFC payload URL, and OSGetAppGamename reads the app code mirrors
     // at 0x80003180/0x80003194 while building NAS auth fields.
-    entries.push_back({0x80000000u, 0x524D4350u, "Disc game code"}); // RMCP
+    entries.push_back({0x80000000u, ::GuestRegion::CurrentFacts().gameCode, "Disc game code"});
     entries.push_back({0x80000004u, 0x30310100u, "Disc maker/id"});  // 01 + disc 1
-    entries.push_back({0x80003180u, 0x524D4350u, "OS app game code"}); // RMCP
-    entries.push_back({0x80003194u, 0x524D4350u, "OS app gamename"});  // RMCP
+    entries.push_back({0x80003180u, ::GuestRegion::CurrentFacts().gameCode, "OS app game code"});
+    entries.push_back({0x80003194u, ::GuestRegion::CurrentFacts().gameCode, "OS app gamename"});
     if (RuntimeProduct::IsRetroRewind()) {
         entries.push_back({0x800017D8u, 0x00000001u, "Retro Rewind recomp runtime marker", true});
     }

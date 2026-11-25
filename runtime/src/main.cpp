@@ -41,26 +41,37 @@
 #include <mmsystem.h>
 #include <dbghelp.h>
 #else
+#include <fcntl.h>
 #include <signal.h>
 #if defined(__x86_64__)
 // Only the x86 POSIX fault path inspects ucontext_t to recover the page-fault
-// write bit. macOS deprecates ucontext and requires _XOPEN_SOURCE just to
-// include the header, while the arm64 handler does not use it at all.
+// write bit. macOS exposes the signal-handler context through sys/ucontext.h;
+// avoid ucontext.h itself because its deprecated user-context APIs require
+// _XOPEN_SOURCE. The arm64 handler does not inspect a host context at all.
+#if defined(__APPLE__)
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #endif
 #include <unistd.h>
 #endif
 
 #include "abi_bridge.h"
+#include "audio_backend.h"
+#include "boot_race.h"
+#include "guest_abi/guest_region.h"
 #include "guest_flat_memory.h"
 #include "gx_guest_write.h"
 #include "memory.h"
 #include "system_bridge.h"
 #include "ppc_runtime.h"
 #include "aurora_events.h"
-#include "wii_remote_input.h"
+#include "wiimote_host.h"
 #include "discord_presence.h"
+#include "steam_input_layout.h"
 #include "fiber_manager.h"
+#include "gx_worker.h"
 #include "hle_stubs.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
@@ -82,7 +93,24 @@ namespace {
 // Defined below, beside the fatal-log machinery.
 std::string FormatHostStackTrace(unsigned framesToSkip = 0);
 
+// Set only on the thread running guest code, while it runs. Guest fibers switch on this thread.
+constinit thread_local bool t_runningGuest = false;
+
+struct GuestThreadScope {
+    GuestThreadScope() { t_runningGuest = true; }
+    ~GuestThreadScope() { t_runningGuest = false; }
+    GuestThreadScope(const GuestThreadScope&) = delete;
+    GuestThreadScope& operator=(const GuestThreadScope&) = delete;
+};
+
 void ServiceGuestTimingDuringAuroraFrameWait() {
+    // Aurora calls this from any thread that blocks on its render worker, including its FIFO
+    // processor and the GX worker. The pumps below run guest callbacks on the guest stack and
+    // touch the alarm queue and other single-threaded guest state, so only the guest thread may
+    // run them.
+    if (!t_runningGuest) {
+        return;
+    }
     // Aurora can block inside FIFO drains before control returns to GX HLE, for as long as a
     // whole display period. Keep VI retraces, alarms and audio moving at wall-clock cadence here
     // while still suppressing guest rescheduling and recursive Aurora work.
@@ -147,6 +175,8 @@ private:
 #endif
 } // namespace
 
+extern const char* const kMkwSetupVersion;
+
 namespace {
 
 std::string g_lastEntryLabel;
@@ -154,6 +184,7 @@ std::atomic_bool g_auroraInitialized{false};
 std::atomic_flag g_abortSignalHandled = ATOMIC_FLAG_INIT;
 std::atomic_bool g_fatalErrorReported{false};
 std::atomic_bool g_fatalPopupShown{false};
+bool g_headless = false;
 std::atomic<int> g_lastExitCode{0};
 std::atomic_bool g_exitCodeSet{false};
 
@@ -322,6 +353,9 @@ bool InstallTranscriptPipe(int& outReadFd, int& outWriteFd, int targetFd) {
     if (::pipe(pipeFds) != 0) {
         return false;
     }
+    // Spawned helpers must not keep the transcript open; its reader waits for EOF on shutdown.
+    ::fcntl(pipeFds[0], F_SETFD, FD_CLOEXEC);
+    ::fcntl(pipeFds[1], F_SETFD, FD_CLOEXEC);
 #endif
 
     outReadFd = pipeFds[0];
@@ -373,10 +407,13 @@ void AttachParentConsoleForDiagnostics() {
 void AttachParentConsoleForDiagnostics() {}
 #endif
 
-// The setup writes build-fingerprint.json beside every product executable; its SetupVersion is
-// the only version identity the runtime has (products are compiled locally, so nothing is baked
-// into the binary). Surface it at the top of the transcript so every attached log self-identifies.
+// The macOS and Linux local builds bake the setup version in; the Windows setup instead writes it
+// to build-fingerprint.json beside the executable. Surfaced at the top of the transcript so every
+// attached log self-identifies.
 std::string ReadInstalledSetupVersion() {
+    if (const std::string_view builtIn = kMkwSetupVersion; !builtIn.empty()) {
+        return std::string(builtIn);
+    }
     const auto directory = RuntimeConfigFile::ExecutableDirectory();
     if (!directory) {
         return {};
@@ -620,7 +657,7 @@ std::string FormatHostStackTrace(unsigned framesToSkip) {
         symbol->MaxNameLen = MAX_SYM_NAME;
         if (symbolsReady && SymFromAddr(process, addr, &symbolDisp, symbol)) {
             symbolName = symbol->Name;
-        } else if (auto info = TranslatedFunctionRegistry::FindByHostAddress(static_cast<uintptr_t>(addr))) {
+        } else if (auto info = FindTranslatedFunctionByHostAddress(static_cast<uintptr_t>(addr))) {
             // DbgHelp could not name it; the translated-function registry can.
             translatedFuncName = info->name;
             ppcAddress = info->address;
@@ -682,6 +719,7 @@ void WriteFatalLogImpl(std::string_view reason, std::string_view extraDetails = 
     out << "[runtime] fatal log" << std::endl;
     out << "[runtime] reason: " << reason << std::endl;
     out << "[runtime] timestamp(seconds): " << nowSecs << std::endl;
+    out << "[runtime] game: " << GuestRegion::CurrentFacts().gameId << std::endl;
     out << "[runtime] entry: " << (g_lastEntryLabel.empty() ? "<unknown>" : g_lastEntryLabel) << std::endl;
     if (!extraDetails.empty()) {
         out << "[runtime] details: " << extraDetails << std::endl;
@@ -751,10 +789,12 @@ extern "C" void DumpHostStackTraceForRuntimeHelper() {
 
 void MarkFatalErrorReported() {
     g_fatalErrorReported.store(true, std::memory_order_release);
+    // Every caller exits next; keep the worker out of static teardown.
+    GxWorker::Abandon();
 }
 
 void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) noexcept {
-    if (g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
+    if (g_headless || g_fatalPopupShown.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
 
@@ -1009,6 +1049,12 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
             info->ExceptionRecord->ExceptionInformation[0] != 0)) {
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+    // First-chance software exceptions belong to their frame handlers.
+    if (info->ExceptionRecord->ExceptionCode == kCppExceptionCodeGcc ||
+        info->ExceptionRecord->ExceptionCode == kCppExceptionCodeMsvc ||
+        (info->ExceptionRecord->ExceptionCode & 0x20000000u) != 0) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     if (g_suppressSehReporting && g_sehJumpTarget) {
         g_sehLastExceptionCode = info->ExceptionRecord->ExceptionCode;
         g_sehLastExceptionAddress = reinterpret_cast<uintptr_t>(info->ExceptionRecord->ExceptionAddress);
@@ -1023,22 +1069,10 @@ LONG CALLBACK SehLogger(EXCEPTION_POINTERS* info) {
     if (g_suppressSehReporting) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    // Let C++ exceptions propagate to std::terminate so we can log their what().
-    if (info->ExceptionRecord->ExceptionCode == kCppExceptionCodeGcc ||
-        info->ExceptionRecord->ExceptionCode == kCppExceptionCodeMsvc) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
     if (info->ExceptionRecord->ExceptionCode == 0x40010006 || // DBG_PRINTEXCEPTION_C
         info->ExceptionRecord->ExceptionCode == 0x4001000A || // DBG_PRINTEXCEPTION_WIDE_C (OutputDebugStringW)
         info->ExceptionRecord->ExceptionCode == 0x406D1388 || // SetThreadName
         info->ExceptionRecord->ExceptionCode == kAsanFatalAppExit) { // ASan reporting - let it print first
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    // Software-raised exceptions (customer bit set) are used for internal control flow by
-    // system DLLs (e.g. msxml6 while mscms parses a display colour profile) and are caught
-    // by their own frame handlers. Only hardware faults are fatal at first chance; anything
-    // else that truly goes unhandled reaches UnhandledSehFilter.
-    if ((info->ExceptionRecord->ExceptionCode & 0x20000000u) != 0) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
     return ReportFatalSehAndExit(info);
@@ -1077,6 +1111,7 @@ LONG ReportFatalSehAndExit(EXCEPTION_POINTERS* info) {
                      << " at host address 0x" << record->ExceptionInformation[1];
     }
     popupDetails << ".\n\nThe process transcript and crash log contain the full CPU and stack diagnostics.";
+    SteamInputLayout::Release();
     ShowRuntimeFatalPopup("a native crash occurred", popupDetails.str());
     DumpHostStackTrace();
 
@@ -1128,7 +1163,11 @@ void PosixMemoryFaultHandler(int sig, siginfo_t* info, void* ucontextVoid) {
     // error code x86 pushes on a page fault records whether it was a write.
     if (ucontextVoid != nullptr) {
         auto* uc = static_cast<ucontext_t*>(ucontextVoid);
+#if defined(__APPLE__)
+        isWrite = uc->uc_mcontext != nullptr && (uc->uc_mcontext->__es.__err & 0x2) != 0;
+#else
         isWrite = (uc->uc_mcontext.gregs[REG_ERR] & 0x2) != 0;
+#endif
     }
 #endif
 
@@ -1173,6 +1212,7 @@ void PosixMemoryFaultHandler(int sig, siginfo_t* info, void* ucontextVoid) {
     }
     popupDetails << ".\n\nThe process transcript and crash log contain the full CPU and stack "
                     "diagnostics.";
+    SteamInputLayout::Release();
     ShowRuntimeFatalPopup("a native crash occurred", popupDetails.str());
     DumpHostStackTrace();
     WriteFatalLogImpl(sig == SIGBUS ? "sigbus" : "sigsegv");
@@ -1206,6 +1246,7 @@ void AbortSignalHandler(int signum) {
     // abort() bypasses atexit, so the guest-memory fault summary has to be
     // emitted here too. It is idempotent, so a later AtExitHandler is a no-op.
     GuestFlat::LogFaultSummary();
+    SteamInputLayout::Release();
 
     ShowRuntimeFatalPopup("a fatal internal error occurred",
                           "The process called abort while running the game or Aurora renderer.\n\n"
@@ -1241,6 +1282,7 @@ void SetRuntimeExitCode(int code) {
 
 // Global handler called via atexit() to flush buffers before any exit
 static void AtExitHandler() {
+    SteamInputLayout::Release();
     // End-of-run guest memory report. This runs before the fatal-report check
     // below because the counters describe the whole session and are just as
     // interesting after a crash as after a clean exit.
@@ -1265,6 +1307,7 @@ static void AtExitHandler() {
 
 // Global terminate handler for uncaught exceptions
 static void TerminateHandler() {
+    SteamInputLayout::Release();
     // Skip detailed dump if already reported
     if (g_fatalErrorReported.load(std::memory_order_acquire)) {
         std::fflush(stderr);
@@ -1322,12 +1365,25 @@ int RuntimeMain(int argc, char** argv) {
     
     std::string currentEntryLabel;
 
+    // `--headless`: with a boot race, run without a window, sound or dialogs.
+    g_headless = std::any_of(argv + 1, argv + argc,
+                             [](const char* arg) { return std::string_view(arg) == "--headless"; });
+
     try {
-        if (argc != 1) {
-            throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
+        for (int i = 1; i < argc; ++i) {
+            if (std::string_view(argv[i]) != "--headless" && !BootRace::ParseArgument(argv[i])) {
+                throw std::invalid_argument(std::string("Unknown command-line option '") + argv[i] +
+                                            "'; the game runtime only accepts --race[=<course id>], --race-cpu and --headless, use Config.toml through the installed host.");
+            }
+        }
+        if (g_headless && !BootRace::Requested()) {
+            throw std::invalid_argument("--headless needs --race[=<course id>] or --race-cpu");
+        }
+        if (g_headless) {
+            AudioBackend::Instance().SetSilenced(true);
         }
         RuntimeConfigFile::LogLoadedConfig();
-        if (RuntimeConfigFile::DiscordPresenceEnabled()) {
+        if (!g_headless && RuntimeConfigFile::DiscordPresenceEnabled()) {
             DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(), "Mario Kart Wii");
         }
         SystemBridge::Initialize();
@@ -1353,15 +1409,17 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.cachePath = auroraCachePath.c_str();
         auroraConfig.logCallback = &RuntimeAuroraLogCallback;
         auroraConfig.logLevel = LOG_DEBUG;
+        RuntimeConfigFile::MigrateLegacyForceAspect();
         const bool configWidescreen = RuntimeConfigFile::WidescreenEnabled(true);
-        const bool forceAspect169 = RuntimeConfigFile::ForceAspect169Enabled();
-        auroraConfig.windowWidth = (configWidescreen || forceAspect169) ? 854 : 640;
+        const bool forceAspect = RuntimeConfigFile::ForceAspectEnabled();
+        auroraConfig.windowWidth = configWidescreen ? 854 : 640;
         auroraConfig.windowHeight = 480;
         auroraConfig.windowWidth = RuntimeConfigFile::WindowWidth(auroraConfig.windowWidth);
         auroraConfig.windowHeight = RuntimeConfigFile::WindowHeight(auroraConfig.windowHeight);
         auroraConfig.hasWindowPosition = RuntimeConfigFile::WindowPosition(
             auroraConfig.windowPosX, auroraConfig.windowPosY);
-        auroraConfig.allowJoystickBackgroundEvents = true;
+        auroraConfig.allowJoystickBackgroundEvents = !g_headless;
+        auroraConfig.startHidden = g_headless;
         auroraConfig.disableCopyFilter = RuntimeConfigFile::DisableCopyFilter(true);
         // Dolphin-style custom textures. Aurora indexes <userPath>/texture_replacements
         // once during aurora_initialize, so both knobs only take effect on the next launch.
@@ -1370,10 +1428,10 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.allowTextureReplacements = RuntimeConfigFile::TextureReplacements(false);
         auroraConfig.allowTextureDumps = auroraConfig.allowTextureReplacements &&
                                          RuntimeConfigFile::TextureDumps(false);
-        // No vsync knob: aurora always configures a non-blocking present mode.
+        auroraConfig.vsync = RuntimeConfigFile::Vsync();
         auroraConfig.desiredBackend = BACKEND_AUTO;
         const float resolutionMultiplier = RuntimeConfigFile::ResolutionMultiplier(1.0f);
-        ConfigureMkwDynamicAspect(configWidescreen, forceAspect169,
+        ConfigureMkwDynamicAspect(configWidescreen, forceAspect,
                                   auroraConfig.windowWidth, auroraConfig.windowHeight);
         VISetFrameBufferScale(resolutionMultiplier);
         // One table for both directions. RuntimeConfigFile::IsSupportedGraphicsApi
@@ -1416,10 +1474,9 @@ int RuntimeMain(int argc, char** argv) {
         }
         const AuroraBackend requestedBackend = auroraConfig.desiredBackend;
 
-        // SDL only reads its Wii driver hint when the joystick subsystem starts, which
-        // aurora_initialize does; a Bluetooth Wii Remote paired before launch must be
-        // visible on that first scan.
-        WiiRemoteInput::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled(true));
+        // SDL reads its device hints when the joystick subsystem starts, which
+        // aurora_initialize does.
+        Wiimote::ConfigureSdlHints(RuntimeConfigFile::WiiRemotesEnabled());
 
         const AuroraInfo auroraInfo = aurora_initialize(0, nullptr, &auroraConfig);
         if (auroraInfo.initializationStatus != AURORA_INITIALIZATION_SUCCESS) {
@@ -1436,22 +1493,32 @@ int RuntimeMain(int argc, char** argv) {
                       << std::endl;
         }
         aurora_set_frame_worker_wait_callback(ServiceGuestTimingDuringAuroraFrameWait);
+        Wiimote::Initialize();
         GxGuestWrite::InstallAuroraHooks();
         UpdateMkwDynamicAspectSurface(auroraInfo.windowSize.native_fb_width,
                                       auroraInfo.windowSize.native_fb_height);
         settings_overlay::InitializeRuntimeSettings();
+        if (!g_headless) {
+            SteamInputLayout::Initialize(RuntimeConfigFile::SteamInputOverrideEnabled(),
+                                         RuntimeConfigFile::SteamInputAppId());
+        }
+        if (BootRace::Requested()) {
+            aurora_set_skip_unready_pipelines(false);
+        }
         RT_LOG(RT_TAG_CONFIG) << "video.widescreen=" << (configWidescreen ? "true" : "false")
-                  << " force_16_9=" << (forceAspect169 ? "true" : "false")
-                  << " SCGetAspectRatio=" << (configWidescreen || forceAspect169 ? 1 : 0)
+                  << " force_aspect=" << (forceAspect ? "true" : "false")
+                  << " SCGetAspectRatio=" << (configWidescreen ? 1 : 0)
                   << " resolutionMultiplier=" << resolutionMultiplier
                   << " window=" << auroraInfo.windowSize.width << "x" << auroraInfo.windowSize.height
                   << " native=" << auroraInfo.windowSize.native_fb_width << "x"
                   << auroraInfo.windowSize.native_fb_height
-                  << " viewportPolicy=" << (forceAspect169 ? "16:9" : (configWidescreen ? "stretch" : "fit"))
+                  << " viewportPolicy=" << (forceAspect ? (configWidescreen ? "16:9" : "fit") : "stretch")
                   << " presentAspect="
-                  << (forceAspect169 ? "16:9" : (configWidescreen ? "surface (dynamic EGG canvas)" : "4:3"))
+                  << (forceAspect ? (configWidescreen ? "16:9" : "4:3") : "surface (dynamic EGG canvas)")
                   << std::endl;
         g_auroraInitialized.store(true, std::memory_order_release);
+        GxWorker::SetWaitCallback(ServiceGuestTimingDuringAuroraFrameWait);
+        GxWorker::Start();
 
         auto entry = ResolveEntry();
         InitializePersistentCpuContext();
@@ -1472,13 +1539,19 @@ int RuntimeMain(int argc, char** argv) {
         currentEntryLabel = label;
         g_lastEntryLabel = currentEntryLabel;
 
-        InvokeIndirectCpu(entry->address, &cpu);
+        {
+            GuestThreadScope guestThreadScope;
+            InvokeIndirectCpu(entry->address, &cpu);
+        }
         const uint32_t result = cpu.gpr[3];
         RT_LOG(RT_TAG_RUNTIME) << label << " => 0x" << std::hex << result << std::dec << " (" << result << ")" << std::endl;
         
         // Shutdown fiber system
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
+        SteamInputLayout::Release();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         SetRuntimeExitCodeImpl(0);
@@ -1492,11 +1565,14 @@ int RuntimeMain(int argc, char** argv) {
                 << " len=0x" << ex.length()
                 << std::dec << std::nouppercase
                 << " reason=" << ex.reason();
+        SteamInputLayout::Release();
         ShowRuntimeFatalPopup("a guest memory access was out of bounds", details.str());
         WriteFatalLogImpl("access_violation", details.str());
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();
@@ -1504,11 +1580,14 @@ int RuntimeMain(int argc, char** argv) {
     } catch (const std::exception& ex) {
         std::cerr << "Runtime error: " << ex.what() << std::endl;
         SystemBridge::DumpCpuState(TryGetCpuContext());
+        SteamInputLayout::Release();
         ShowRuntimeFatalPopup("a runtime exception occurred", ex.what());
         WriteFatalLogImpl("exception");
         SetRuntimeExitCodeImpl(1);
         Fiber::GuestFiberManager::Shutdown();
         WindowPlacementPersistence::Flush(true);
+        Wiimote::Shutdown();
+        GxWorker::Stop();
         aurora_shutdown();
         DiscordPresence::Shutdown();
         ShutdownProcessTranscript();

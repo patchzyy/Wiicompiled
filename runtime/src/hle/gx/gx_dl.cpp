@@ -1,14 +1,11 @@
 #include "gx_internal.h"
 #include "gx_stream_common.h"
 #include "gx_cp_decode.h"
+#include "gx_dl_cache.h"
 #include "isa/big_endian.h"
 
 #include <cstdlib>
-#include <unordered_map>
-
-// The display-list scan cache validates a cached scan against the live guest
-// bytes with a 64-bit XXH3 digest (see GxDisplayListScanCache::CanReuse).
-#include <xxhash.h>
+#include <new>
 
 namespace aurora::gx::fifo {
 bool in_display_list();
@@ -25,17 +22,8 @@ using namespace GxStream;
 using GxCpDecode::ApplyCpRegWrite;
 using GxCpDecode::SameVtxAttrFmt;
 
-// Small display lists dominate the in-race call count. Cache them as well, but
-// cap both individual entries and aggregate copied command bytes so malformed
-// guest input cannot turn this optimization into unbounded host allocation.
-constexpr uint32_t kDlScanCacheMaxEntryBytes = 64u * 1024u;
 constexpr size_t kDlScanCacheMaxEntries = 8192;
 constexpr size_t kDlScanCacheMaxStoredBytes = 8u * 1024u * 1024u;
-
-// Display-list write tracking (audit F6a): re-digesting every list every call is the
-// costliest step of GX__CallDisplayList, and wasted on BRRES shape lists that are written
-// once at load and never touched again.
-constexpr uint64_t kDlWriteGenerationUntracked = GxGuestWrite::kUntracked;
 
 // Byte footprint of one vertex of the currently configured layout. Indexed attributes are
 // sized before the matrix-attribute check here (unlike BuildScanVertexLayout), but a
@@ -89,39 +77,42 @@ static inline uint32_t ReadModulatedLytColor(uint32_t colorAddr, int index, uint
            static_cast<uint32_t>(a);
 }
 
-static inline void AppendLytTexCoords(uint8_t* packet, uint32_t& pos, uint32_t texCoordAddr,
-                                      int texCoordCount, uint32_t cornerOffset) {
-    if (texCoordCount <= 0) {
-        return;
-    }
-    for (int i = 0; i < texCoordCount; ++i) {
-        const uint32_t coordAddr = texCoordAddr + static_cast<uint32_t>(i * 32) + cornerOffset;
-        BigEndian::AppendFloat32(packet, pos, Memory::ReadFloat32(coordAddr));
-        BigEndian::AppendFloat32(packet, pos, Memory::ReadFloat32(coordAddr + 4));
+// An nw4r::lyt quad as read on the game thread: texcoords are 8 sets of 4 corners x (s, t).
+struct LytQuad {
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    int texCoordCount = 0;
+    std::array<float, 8 * 4 * 2> texCoords{};
+    bool hasColors = false;
+    std::array<uint32_t, 4> colors{};
+};
+
+static inline void AppendLytTexCoords(uint8_t* packet, uint32_t& pos, const LytQuad& quad,
+                                      uint32_t cornerOffset) {
+    for (int i = 0; i < quad.texCoordCount; ++i) {
+        const size_t at = static_cast<size_t>(i) * 8u + cornerOffset / 4u;
+        BigEndian::AppendFloat32(packet, pos, quad.texCoords[at]);
+        BigEndian::AppendFloat32(packet, pos, quad.texCoords[at + 1]);
     }
 }
 
-static inline void AppendLytQuadVertex(uint8_t* packet, uint32_t& pos, float x, float y,
-                                       uint32_t texCoordAddr, int texCoordCount,
-                                       uint32_t cornerOffset, const uint32_t* colors, int colorIndex) {
+static inline void AppendLytQuadVertex(uint8_t* packet, uint32_t& pos, float x, float y, const LytQuad& quad,
+                                       uint32_t cornerOffset, int colorIndex) {
     BigEndian::AppendFloat32(packet, pos, x);
     BigEndian::AppendFloat32(packet, pos, y);
-    if (colors) {
-        BigEndian::Append32(packet, pos, colors[colorIndex]);
+    if (quad.hasColors) {
+        BigEndian::Append32(packet, pos, quad.colors[colorIndex]);
     }
-    AppendLytTexCoords(packet, pos, texCoordAddr, texCoordCount, cornerOffset);
+    AppendLytTexCoords(packet, pos, quad, cornerOffset);
 }
 
 // The four corners of an nw4r::lyt quad, in the order GX_QUADS expects, with
 // each corner's texcoord byte offset and colour index. The winding order is
 // load-bearing and both emit paths below share this one copy of it.
-static inline void AppendLytQuadVertices(uint8_t* packet, uint32_t& pos, float x0, float y0,
-                                         float x1, float y1, uint32_t texCoordAddr,
-                                         int texCoordCount, const uint32_t* colors) {
-    AppendLytQuadVertex(packet, pos, x0, y0, texCoordAddr, texCoordCount, 0, colors, 0);
-    AppendLytQuadVertex(packet, pos, x1, y0, texCoordAddr, texCoordCount, 8, colors, 1);
-    AppendLytQuadVertex(packet, pos, x1, y1, texCoordAddr, texCoordCount, 24, colors, 3);
-    AppendLytQuadVertex(packet, pos, x0, y1, texCoordAddr, texCoordCount, 16, colors, 2);
+static inline void AppendLytQuadVertices(uint8_t* packet, uint32_t& pos, const LytQuad& quad) {
+    AppendLytQuadVertex(packet, pos, quad.x0, quad.y0, quad, 0, 0);
+    AppendLytQuadVertex(packet, pos, quad.x1, quad.y0, quad, 8, 1);
+    AppendLytQuadVertex(packet, pos, quad.x1, quad.y1, quad, 24, 3);
+    AppendLytQuadVertex(packet, pos, quad.x0, quad.y1, quad, 16, 2);
 }
 
 static bool CanSubmitLytDrawDirect(int texCoordCount, const uint32_t* colors) {
@@ -175,9 +166,8 @@ static bool CanSubmitLytDrawDirect(int texCoordCount, const uint32_t* colors) {
     return true;
 }
 
-static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texCoordCount,
-                                uint32_t texCoordAddr, const uint32_t* colors) {
-    if (!CanSubmitLytDrawDirect(texCoordCount, colors)) {
+static bool SubmitLytDrawDirect(const LytQuad& quad) {
+    if (!CanSubmitLytDrawDirect(quad.texCoordCount, quad.hasColors ? quad.colors.data() : nullptr)) {
         return false;
     }
 
@@ -193,7 +183,7 @@ static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texC
 
     std::array<uint8_t, 4u * (8u + 4u + 8u * 8u)> vertices{};
     uint32_t pos = 0;
-    AppendLytQuadVertices(vertices.data(), pos, x0, y0, x1, y1, texCoordAddr, texCoordCount, colors);
+    AppendLytQuadVertices(vertices.data(), pos, quad);
 
     if (!aurora::gx::fifo::submit_raw_draw(GX_QUADS, GX_VTXFMT0, vertices.data(), 4, pos)) {
         return false;
@@ -204,23 +194,8 @@ static bool SubmitLytDrawDirect(float x0, float y0, float x1, float y1, int texC
     return true;
 }
 
-static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texCoordCount,
-                                   uint32_t texCoordAddr, const uint32_t* colors) {
-    const float x0 = Memory::ReadFloat32(posAddr);
-    const float y0 = Memory::ReadFloat32(posAddr + 4);
-    // The casts pin the arithmetic to PPC single precision regardless of the
-    // host's FLT_EVAL_METHOD.
-    const float x1 = static_cast<float>(x0 + Memory::ReadFloat32(sizeAddr));
-    const float y1 = static_cast<float>(y0 - Memory::ReadFloat32(sizeAddr + 4));
-
-    if (SubmitLytDrawDirect(x0, y0, x1, y1, texCoordCount, texCoordAddr, colors)) {
-        return;
-    }
-
-    // GX has exactly 8 texture coordinates, so nw4r::lyt cannot ask for more.
-    // The fixed packet buffer below is sized for that maximum; bail rather than
-    // overrun it if the guest ever hands us something else.
-    if (texCoordCount > 8) {
+static void EmitLytQuad(const LytQuad& quad) {
+    if (SubmitLytDrawDirect(quad)) {
         return;
     }
 
@@ -228,8 +203,37 @@ static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texC
     uint32_t pos = 0;
     packet[pos++] = GX_DRAW_QUADS_CMD | GX_VTXFMT0;
     BigEndian::Append16(packet.data(), pos, 4);
-    AppendLytQuadVertices(packet.data(), pos, x0, y0, x1, y1, texCoordAddr, texCoordCount, colors);
+    AppendLytQuadVertices(packet.data(), pos, quad);
     SubmitLytDrawPacket(packet.data(), pos);
+}
+
+static inline void EmitLytDrawQuad(uint32_t posAddr, uint32_t sizeAddr, int texCoordCount,
+                                   uint32_t texCoordAddr, const uint32_t* colors) {
+    // GX has exactly 8 texture coordinates, so nw4r::lyt cannot ask for more; the packet buffer
+    // is sized for that maximum.
+    if (texCoordCount > 8) {
+        return;
+    }
+    LytQuad quad;
+    quad.x0 = Memory::ReadFloat32(posAddr);
+    quad.y0 = Memory::ReadFloat32(posAddr + 4);
+    // The casts pin the arithmetic to PPC single precision regardless of the
+    // host's FLT_EVAL_METHOD.
+    quad.x1 = static_cast<float>(quad.x0 + Memory::ReadFloat32(sizeAddr));
+    quad.y1 = static_cast<float>(quad.y0 - Memory::ReadFloat32(sizeAddr + 4));
+    quad.texCoordCount = std::max(texCoordCount, 0);
+    for (int i = 0; i < quad.texCoordCount; ++i) {
+        for (uint32_t f = 0; f < 8; ++f) {
+            quad.texCoords[static_cast<size_t>(i) * 8u + f] =
+                Memory::ReadFloat32(texCoordAddr + static_cast<uint32_t>(i * 32) + f * 4u);
+        }
+    }
+    if (colors != nullptr) {
+        quad.hasColors = true;
+        std::copy(colors, colors + 4, quad.colors.begin());
+    }
+    EnsureAuroraFrameActive();
+    GxWorker::Run([quad] { EmitLytQuad(quad); });
 }
 
 static uint32_t SubmitDLVertex(const uint8_t* ptr, GXVtxFmt vtxfmt, const GXAttrType* sourceVtxDesc) {
@@ -454,9 +458,6 @@ static HleGxVertexStateSnapshot CaptureGxVertexStateForCpWrites(const std::vecto
 }
 
 struct DlScanCacheEntry {
-    uint32_t listAddr = 0;
-    uint32_t nbytes = 0;
-    uint64_t layoutHash = 0;
     std::array<uint32_t, GX_VA_MAX_ATTR> maxIdx{};
     std::array<bool, GX_VA_MAX_ATTR> sawIdx{};
     std::array<uint32_t, GX_VA_MAX_ATTR> maxXfIdx{};
@@ -468,28 +469,25 @@ struct DlScanCacheEntry {
     bool dlHasArrayStateWrites = false;
     bool dlHasCpWrites = false;
     bool scanOk = false;
-    // Flatten results for lists that need one. `flattenVerbatim` means the
-    // flattened stream is byte-identical to the source list, so aurora can be
-    // handed the guest bytes directly and no copy has to be stored.
     bool needsFlatten = false;
     bool flattenOk = false;
-    bool flattenVerbatim = false;
 };
 
 struct DlScanCacheRecord {
     DlScanCacheEntry result{};
+    uint32_t listAddr = 0;
+    uint32_t nbytes = 0;
+    uint64_t layoutHash = 0;
     // Answer of DisplayListMayContainDraw for these bytes
     bool mayContainDraw = false;
     uint64_t contentDigest = 0;
-    uint64_t writeGeneration = kDlWriteGenerationUntracked;
+    uint64_t writeGeneration = GxGuestWrite::kUntracked;
     std::vector<DlCpWrite> cpWrites{};
-    std::vector<uint8_t> flattened{};
+    bool streamIsSource = false;
+    std::vector<uint8_t> stream{};
 };
 
-struct DlScanCacheState {
-    std::unordered_map<uint64_t, DlScanCacheRecord> entries{};
-    size_t storedCommandBytes = 0;
-};
+using DlScanCacheState = GxDisplayListScanCache::BoundedCache<DlScanCacheRecord>;
 
 static uint64_t HashScanLayoutState() {
     if (!g_hleGxState.vtxLayoutHashDirty) {
@@ -516,106 +514,36 @@ static uint64_t HashScanLayoutState() {
     return g_hleGxState.vtxLayoutHash;
 }
 
-static uint64_t DlScanCacheKey(uint32_t listAddr, uint32_t nbytes, uint64_t layoutHash) {
-    return GxDisplayListScanCache::MakeIdentityKey(listAddr, nbytes, layoutHash);
-}
-
 static DlScanCacheState& DlScanCache() {
-    static thread_local DlScanCacheState s_cache;
+    static thread_local DlScanCacheState s_cache{kDlScanCacheMaxEntries, kDlScanCacheMaxStoredBytes};
     return s_cache;
-}
-
-static uint64_t DlContentDigest(const uint8_t* list, uint32_t nbytes) {
-    return static_cast<uint64_t>(XXH3_64bits(list, static_cast<size_t>(nbytes)));
-}
-
-
-struct DlScanCacheProbe {
-    const DlScanCacheRecord* record = nullptr;
-    uint64_t contentDigest = 0;
-    bool digestValid = false;
-    uint64_t writeGeneration = kDlWriteGenerationUntracked;
-};
-
-static DlScanCacheProbe ProbeDlScanCache(const uint8_t* list, uint32_t listAddr, uint32_t nbytes,
-                                         uint64_t layoutHash) {
-    DlScanCacheProbe probe{};
-    probe.writeGeneration = GxGuestWrite::GenerationForRange(listAddr, nbytes);
-
-    auto& s_cache = DlScanCache();
-    const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    const auto it = s_cache.entries.find(key);
-    if (it != s_cache.entries.end()) {
-        auto& record = it->second;
-        const auto& entry = record.result;
-        const bool identityMatches = entry.listAddr == CanonicalizeGxMainRamAddress(listAddr) &&
-                                     entry.nbytes == nbytes && entry.layoutHash == layoutHash;
-        if (identityMatches && probe.writeGeneration != kDlWriteGenerationUntracked &&
-            record.writeGeneration == probe.writeGeneration) {
-            // Nothing has flushed a write over these bytes since the digest was
-            // taken, so the stored digest still describes them. Skip XXH3.
-            probe.record = &record;
-            probe.contentDigest = record.contentDigest;
-            probe.digestValid = true;
-        } else {
-            probe.contentDigest = DlContentDigest(list, nbytes);
-            probe.digestValid = true;
-            if (identityMatches &&
-                GxDisplayListScanCache::CanReuse(entry.listAddr, entry.nbytes, entry.layoutHash,
-                                                 record.contentDigest, listAddr, nbytes, layoutHash,
-                                                 probe.contentDigest)) {
-                // False alarm: the bump did not actually change this list
-                record.writeGeneration = probe.writeGeneration;
-                probe.record = &record;
-            }
-        }
-    }
-    return probe;
-}
-
-static size_t DlScanCacheRecordBytes(const DlScanCacheRecord& record) {
-    return record.flattened.size() + record.cpWrites.size() * sizeof(DlCpWrite);
 }
 
 static void StoreDlScanCache(uint32_t listAddr, uint32_t nbytes, uint64_t layoutHash,
                              uint64_t contentDigest, uint64_t writeGeneration,
                              bool mayContainDraw, const DlScanCacheEntry& entry,
-                             std::vector<DlCpWrite>&& cpWrites, const uint8_t* flattened,
-                             uint32_t flattenedBytes) {
+                             std::vector<DlCpWrite>&& cpWrites, const uint8_t* stream,
+                             uint32_t streamBytes, bool streamIsSource) try {
     auto& s_cache = DlScanCache();
-    const uint64_t key = DlScanCacheKey(listAddr, nbytes, layoutHash);
-    auto old = s_cache.entries.find(key);
-    bool replacing = old != s_cache.entries.end();
-    size_t replacedBytes = replacing ? DlScanCacheRecordBytes(old->second) : 0;
-    const size_t incomingBytes = static_cast<size_t>(flattenedBytes) +
-                                 cpWrites.size() * sizeof(DlCpWrite);
-    if ((!replacing && s_cache.entries.size() >= kDlScanCacheMaxEntries) ||
-        s_cache.storedCommandBytes - replacedBytes + incomingBytes > kDlScanCacheMaxStoredBytes) {
-        s_cache.entries.clear();
-        s_cache.storedCommandBytes = 0;
-        replacing = false;
-        replacedBytes = 0;
-    }
+    const uint64_t key = GxDisplayListScanCache::MakeIdentityKey(listAddr, nbytes, layoutHash);
     DlScanCacheRecord record{};
     record.result = entry;
     record.mayContainDraw = mayContainDraw;
-    record.result.listAddr = CanonicalizeGxMainRamAddress(listAddr);
-    record.result.nbytes = nbytes;
-    record.result.layoutHash = layoutHash;
+    record.listAddr = CanonicalizeGxMainRamAddress(listAddr);
+    record.nbytes = nbytes;
+    record.layoutHash = layoutHash;
     record.contentDigest = contentDigest;
-    // Sampled before the digest was taken, so a write racing the digest can only
-    // make the next call re-digest, never make it trust a stale entry.
+    // Sampled before capture so later write notifications force revalidation.
     record.writeGeneration = writeGeneration;
     record.cpWrites = std::move(cpWrites);
-    if (flattened != nullptr && flattenedBytes != 0) {
-        record.flattened.assign(flattened, flattened + flattenedBytes);
+    record.streamIsSource = streamIsSource;
+    if (streamBytes != 0) {
+        record.stream.assign(stream, stream + streamBytes);
     }
-    auto [it, inserted] = s_cache.entries.insert_or_assign(key, std::move(record));
-    (void)inserted;
-    s_cache.storedCommandBytes += DlScanCacheRecordBytes(it->second);
-    if (replacing) {
-        s_cache.storedCommandBytes -= replacedBytes;
-    }
+    const size_t incomingBytes = record.stream.size() + record.cpWrites.size() * sizeof(DlCpWrite);
+    s_cache.Insert(key, std::move(record), incomingBytes);
+} catch (const std::bad_alloc&) {
+    // The current draw still has its scan results and stream.
 }
 
 static void BuildScanVertexLayout(GXVtxFmt vtxfmt, std::array<ScanAttrStep, 26>& indexedSteps,
@@ -791,21 +719,17 @@ struct DlMayContainDrawVisitor {
 
     bool OnNop(uint8_t) { return true; }
     bool OnBpReg(const uint8_t*, uint32_t) { return true; }
-    // An array base/stride write means the list is setting up indexed geometry.
-    bool OnCpReg(const uint8_t*, uint8_t reg, uint32_t) { return !(reg >= 0xA0 && reg <= 0xBF); }
+    // CP writes must reach the HLE vertex state, and indexed XF loads need their
+    // array resolved, so neither may be passed through raw.
+    bool OnCpReg(const uint8_t*, uint8_t, uint32_t) { return false; }
     bool OnXfReg(const uint8_t*, uint32_t) { return true; }
-    bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return true; }
+    bool OnIndexedXf(const uint8_t*, uint8_t, uint32_t) { return false; }
     bool OnInvalidateVertexCache(uint8_t) { return true; }
     // Draw opcodes reach this too (kHandlesDraw is false): a draw opcode, or a
     // command byte this walker does not model, both mean "assume it draws".
     bool OnUnknownCommand(uint8_t) { return false; }
-    bool OnCallDisplayList(uint32_t addr, uint32_t size, int depth) {
-        if (addr == 0 || size == 0) return true;
-        const uint8_t* nested = static_cast<const uint8_t*>(GuestToHostPtr(addr, size));
-        if (!nested) return false;
-        DlMayContainDrawVisitor child;
-        return WalkDisplayList(nested, size, child, depth + 1);
-    }
+    // Aurora skips nested calls, so the child has to be flattened.
+    bool OnCallDisplayList(uint32_t addr, uint32_t size, int) { return addr == 0 || size == 0; }
 };
 
 static bool DisplayListMayContainDraw(const uint8_t* data, uint32_t nbytes) {
@@ -848,7 +772,6 @@ struct DlInterpretVisitor {
     uint32_t DrawVertexSize(GXVtxFmt vtxfmt) { return CalcDLVertexSize(vtxfmt); }
     bool OnDraw(const uint8_t*, uint8_t opcode, GXVtxFmt vtxfmt, uint16_t vtxCount,
                 const uint8_t* vertices, uint32_t& payloadBytes) {
-        EnsureAuroraFrameActive();
         const HleGxVertexStateSnapshot drawGuestState = CaptureGxVertexState();
         ApplyAuroraVtxStateForDlBegin(vtxfmt);
         GXBegin(OpcodeToGXPrimitive(opcode), vtxfmt, vtxCount);
@@ -1040,7 +963,6 @@ static std::vector<uint8_t>& FlattenDisplayListScratch() {
 
 static bool s_appliedVtxDescValid = false;
 static std::array<GXAttrType, 26> s_appliedVtxDesc{};
-static std::array<GXAttrType, 26> s_appliedSourceVtxDesc{};
 static bool s_appliedVtxAttrFmtValid = false;
 static VtxAttrFmt s_appliedVtxAttrFmt[8][26]{};
 
@@ -1075,14 +997,12 @@ static void SyncAppliedVtxStateFromHleReal() {
         s_appliedVtxStateGeneration == g_hleGxState.vtxStateGeneration) {
         return;
     }
-    // Both mirrors are dense arrays of the same trivially copyable element types
-    // as their HLE counterparts, so publish them with three memcpys instead of
+    // The mirrors are dense arrays of the same trivially copyable element types
+    // as their HLE counterparts, so publish them with memcpys instead of
     // 234 individual element assignments.
     static_assert(sizeof(s_appliedVtxDesc) == sizeof(g_hleGxState.vtxDesc));
-    static_assert(sizeof(s_appliedSourceVtxDesc) == sizeof(g_hleGxState.vtxDesc));
     static_assert(sizeof(s_appliedVtxAttrFmt) == sizeof(g_hleGxState.vtxAttrFmt));
     std::memcpy(s_appliedVtxDesc.data(), g_hleGxState.vtxDesc, sizeof(g_hleGxState.vtxDesc));
-    std::memcpy(s_appliedSourceVtxDesc.data(), g_hleGxState.vtxDesc, sizeof(g_hleGxState.vtxDesc));
     s_appliedVtxDescValid = true;
 
     std::memcpy(s_appliedVtxAttrFmt, g_hleGxState.vtxAttrFmt, sizeof(g_hleGxState.vtxAttrFmt));
@@ -1129,17 +1049,12 @@ static void ApplyAuroraVtxDesc() {
         // GXGetVtxDesc only decodes GX_VA_PNMTXIDX..GX_VA_TEX7; the XF array
         // pseudo-attributes above GX_VA_TEX7 have no CP descriptor bits, so
         // probing them would always report GX_NONE and republish a no-op.
-        if (!needsPublish && !IsMatrixIndexAttr(gxAttr) && gxAttr <= GX_VA_TEX7 &&
-            (type == GX_INDEX8 || type == GX_INDEX16)) {
+        if (!needsPublish && gxAttr <= GX_VA_TEX7) {
             needsPublish = !AuroraVtxDescMatchesLive(gxAttr, type);
         }
         if (needsPublish) {
             GXSetVtxDesc(gxAttr, type);
             s_appliedVtxDesc[attr] = type;
-        }
-        if (!hadValidState || s_appliedSourceVtxDesc[attr] != type) {
-            GXSetSourceVtxDesc(gxAttr, type);
-            s_appliedSourceVtxDesc[attr] = type;
         }
     }
     s_appliedVtxDescValid = true;
@@ -1203,6 +1118,27 @@ static void SubmitLytDrawPacket(const uint8_t* packet, uint32_t packetBytes) {
     SyncAppliedVtxStateFromHleReal();
 }
 
+// A span inside one fully mapped 1 MiB page resolves straight from the page bias, the pointer
+// Contains + GuestToHostPtr would give after two table lookups.
+static const uint8_t* ResolveDisplayListArray(uint32_t base, uint32_t span) {
+#if !defined(__APPLE__)
+    // macOS has to keep GuestToHostPtr's canonical alias, which is the GX resource identity there.
+    if (base != 0 && span != 0) {
+        const uint32_t page = base >> MemoryInline::kPageShift;
+        const uint32_t last = base + span - 1u;
+        if (last >= base && (last >> MemoryInline::kPageShift) == page) {
+            if (const uintptr_t bias = MemoryInline::g_fullPageBias[page]; bias != 0) {
+                return reinterpret_cast<const uint8_t*>((bias - 1u) + base);
+            }
+        }
+    }
+#endif
+    if (!Memory::Contains(base, span)) {
+        return nullptr;
+    }
+    return static_cast<const uint8_t*>(GuestToHostPtr(base, span));
+}
+
 static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX_ATTR>& maxIdx,
                                             const std::array<bool, GX_VA_MAX_ATTR>& sawIdx,
                                             GXVtxFmt vtxfmt,
@@ -1228,11 +1164,7 @@ static bool ApplyAuroraArraysForDisplayList(const std::array<uint32_t, GX_VA_MAX
         }
         const uint32_t span = (count > 0) ? (static_cast<uint32_t>((count - 1u) * arr.stride) + elemSize) : 0u;
         const bool needsPack = arr.stride > 0xffu;
-        if (!Memory::Contains(arr.base, span)) {
-            ok = false;
-            continue;
-        }
-        const uint8_t* hostPtr = static_cast<const uint8_t*>(GuestToHostPtr(arr.base, span));
+        const uint8_t* hostPtr = ResolveDisplayListArray(arr.base, span);
         if (!hostPtr) {
             ok = false;
             continue;
@@ -1269,11 +1201,7 @@ static bool ApplyAuroraIndexedXFArraysForDisplayList(const std::array<uint32_t, 
             continue;
         }
         const uint32_t span = maxXfIdx[attr] * arr.stride + bytes;
-        if (!Memory::Contains(arr.base, span)) {
-            ok = false;
-            continue;
-        }
-        const uint8_t* hostPtr = static_cast<const uint8_t*>(GuestToHostPtr(arr.base, span));
+        const uint8_t* hostPtr = ResolveDisplayListArray(arr.base, span);
         if (!hostPtr) {
             ok = false;
             continue;
@@ -1291,28 +1219,36 @@ extern "C" void GxNotifyDisplayListMemoryWrite(uint32_t addr, uint32_t size) {
 
 extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes) {
     if (nbytes == 0 || listAddr == 0) return;
+    // List bytes and the arrays it indexes are GPU-side reads, so they are read when the worker runs.
+    if (GxWorker::ShouldDefer()) {
+        EnsureAuroraFrameActive();
+        GxWorker::Submit([=] { GX__CallDisplayList_80172f64(listAddr, nbytes); });
+        return;
+    }
     try {
-        const uint8_t* list = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
-        if (!list) return;
+        const auto* guestList = static_cast<const uint8_t*>(GuestToHostPtr(listAddr, nbytes));
+        if (!guestList) return;
 
-        const bool allowScanCache = nbytes <= kDlScanCacheMaxEntryBytes;
+        // Frame waits can dispatch guest code before the worker-side snapshot is taken.
+        EnsureAuroraFrameActive();
+        GxDisplayListScanCache::DisplayListBytes bytes{guestList, nbytes};
+        const bool allowScanCache = bytes.CanCache();
         const uint64_t scanLayoutHash = allowScanCache ? HashScanLayoutState() : 0;
-        // The digest is computed lazily inside the probe: an entry whose covering
-        // write-tracking granules have not moved since it was stored keeps its
-        // recorded digest and skips the XXH3 pass over the whole list entirely.
-        const DlScanCacheProbe probe =
-            allowScanCache ? ProbeDlScanCache(list, listAddr, nbytes, scanLayoutHash)
-                           : DlScanCacheProbe{};
-        const DlScanCacheRecord* cached = probe.record;
+        const uint64_t writeGeneration = allowScanCache
+                                             ? GxGuestWrite::GenerationForRange(listAddr, nbytes)
+                                             : GxGuestWrite::kUntracked;
+        const DlScanCacheRecord* cached =
+            allowScanCache ? GxDisplayListScanCache::Probe(DlScanCache(), bytes, listAddr, nbytes,
+                                                          scanLayoutHash, writeGeneration)
+                           : nullptr;
 
         // The scan a cached record came from already walked the list for this,
         // so only a miss pays for DisplayListMayContainDraw.
         const bool mayContainDraw =
-            (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(list, nbytes);
+            (cached != nullptr) ? cached->mayContainDraw : DisplayListMayContainDraw(bytes.Data(), nbytes);
         if (!mayContainDraw) {
-            EnsureAuroraFrameActive();
             GXMarkFrameWork();
-            GXCallDisplayList(list, nbytes);
+            GXCallDisplayList(cached ? cached->stream.data() : bytes.Data(), nbytes);
             // The republish is required even for register-only lists (verified by
             // experiment: dropping it corrupts in-race geometry decode). It is
             // instead memoized inside SyncAppliedVtxStateFromHleReal, so a run of
@@ -1362,15 +1298,11 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 ApplyCpRegWrite(write.reg, write.value);
             }
             if (needsFlatten && flattenOk) {
-                if (entry.flattenVerbatim) {
-                    auroraStream = list;
-                    auroraStreamBytes = nbytes;
-                } else {
-                    auroraStream = cached->flattened.data();
-                    auroraStreamBytes = static_cast<uint32_t>(cached->flattened.size());
-                }
+                auroraStream = cached->stream.data();
+                auroraStreamBytes = static_cast<uint32_t>(cached->stream.size());
             }
         } else {
+            const auto* list = bytes.Data();
             std::vector<DlCpWrite> cpWrites{};
             // The scan discovers the list's CP writes as it walks, so this path
             // cannot narrow the snapshot the way the cached one does.
@@ -1402,9 +1334,6 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
             // scan/flatten are pure functions of the list bytes and the layout-hash cache key.
             if (allowScanCache && scanOk && !dlHasNestedDl && (!needsFlatten || flattenOk)) {
                 DlScanCacheEntry entry{};
-                entry.listAddr = CanonicalizeGxMainRamAddress(listAddr);
-                entry.nbytes = nbytes;
-                entry.layoutHash = scanLayoutHash;
                 entry.maxIdx = maxIdx;
                 entry.sawIdx = sawIdx;
                 entry.maxXfIdx = maxXfIdx;
@@ -1418,15 +1347,12 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 entry.scanOk = scanOk;
                 entry.needsFlatten = needsFlatten;
                 entry.flattenOk = flattenOk;
-                entry.flattenVerbatim = flattenVerbatim;
                 const bool storeFlattened = needsFlatten && flattenOk && !flattenVerbatim;
 
-                const uint64_t contentDigest =
-                    probe.digestValid ? probe.contentDigest : DlContentDigest(list, nbytes);
-                StoreDlScanCache(listAddr, nbytes, scanLayoutHash, contentDigest,
-                                 probe.writeGeneration, mayContainDraw, entry, std::move(cpWrites),
-                                 storeFlattened ? flattened.data() : nullptr,
-                                 storeFlattened ? static_cast<uint32_t>(flattened.size()) : 0u);
+                StoreDlScanCache(listAddr, nbytes, scanLayoutHash, bytes.Digest(),
+                                 writeGeneration, mayContainDraw, entry, std::move(cpWrites),
+                                 storeFlattened ? flattened.data() : list,
+                                 storeFlattened ? static_cast<uint32_t>(flattened.size()) : nbytes, !storeFlattened);
             }
         }
 
@@ -1442,7 +1368,6 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 flattenApplyOk = flattenArraysOk && flattenXfOk;
             }
             if (flattenApplyOk) {
-                EnsureAuroraFrameActive();
                 GXMarkFrameWork();
                 GXCallDisplayList(auroraStream, auroraStreamBytes);
                 // No flip back to GX_DIRECT here
@@ -1462,9 +1387,8 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
                 applyOk = arraysOk && xfOk;
             }
             if (applyOk) {
-                EnsureAuroraFrameActive();
                 GXMarkFrameWork();
-                GXCallDisplayList(list, nbytes);
+                GXCallDisplayList(cached ? cached->stream.data() : bytes.Data(), nbytes);
 
                 SyncAppliedVtxStateFromHleReal();
                 return;
@@ -1475,10 +1399,14 @@ extern "C" void GX__CallDisplayList_80172f64(uint32_t listAddr, uint32_t nbytes)
         if (haveStateBeforeScan) {
             RestoreGxVertexState(stateBeforeScan);
         }
-        EnsureAuroraFrameActive();
+        if (!GxWorker::OnWorker() && !g_auroraFrameActive.load(std::memory_order_acquire)) {
+            EnsureAuroraFrameForFifo();
+            // A frame wait may have run another display list on this thread.
+            bytes = GxDisplayListScanCache::DisplayListBytes{guestList, nbytes};
+        }
         GXMarkFrameWork();
         InvalidateAppliedAuroraState();
-        ParseDisplayList(list, nbytes);
+        ParseDisplayList(bytes.Data(), nbytes);
         InvalidateAppliedAuroraState();
     } catch (...) {}
 }

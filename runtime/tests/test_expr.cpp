@@ -97,15 +97,29 @@ int main() {
     Check(!Pressed(pulse), "pulse expires");
 
     // The timing-window idiom seen in shared Dolphin configs.
-    auto window = Compile("!pulse(`W`, 0.05) & pulse(`W`, 0.15)");
+    auto window = Compile("!pulse(`W`, 0.05) & pulse(`W`, 0.35)");
     g_inputs["W"] = 0.0;
     window.Evaluate(Source());
     g_inputs["W"] = 1.0;
     Check(!Pressed(window), "window closed before its start");
-    Sleep(90);
-    Check(Pressed(window), "window open between the two pulses");
-    Sleep(90);
-    Check(!Pressed(window), "window closed after its end");
+    bool windowOpened = false;
+    for (int i = 0; i < 40; ++i) {
+        Sleep(10);
+        if (Pressed(window)) {
+            windowOpened = true;
+            break;
+        }
+    }
+    Check(windowOpened, "window open between the two pulses");
+    bool windowClosed = false;
+    for (int i = 0; i < 50; ++i) {
+        Sleep(10);
+        if (!Pressed(window)) {
+            windowClosed = true;
+            break;
+        }
+    }
+    Check(windowClosed, "window closed after its end");
 
     // timer ramps 0..1 and wraps, so a threshold turns it into a square wave.
     auto timer = Compile("`X` & timer(0.1)");

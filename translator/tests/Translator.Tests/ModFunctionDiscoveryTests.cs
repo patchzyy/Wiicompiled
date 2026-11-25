@@ -28,7 +28,7 @@ public sealed class ModFunctionDiscoveryTests
             ctorEnd: 0,
             chunkSize: (uint)(KamekChunk.HeaderSize + code.Length),
             codeBlob: code,
-            commands: []);
+            commands: [PointerRelocation(0x40, 0x50)]);
 
         var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
             .ToDictionary(start => start.Address, start => start.Reason);
@@ -368,7 +368,7 @@ public sealed class ModFunctionDiscoveryTests
             ctorEnd: 0,
             chunkSize: (uint)(code.Length + KamekChunk.HeaderSize),
             codeBlob: code,
-            commands: []);
+            commands: [PointerRelocation(0x20, 0x100)]);
 
         var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
             .ToDictionary(start => start.Address, start => start.Reason);
@@ -381,7 +381,7 @@ public sealed class ModFunctionDiscoveryTests
     {
         const uint moduleBase = 0x81200000u;
         var relocatedImage = new byte[0x300];
-        WriteU32(relocatedImage, 0x20, moduleBase + 0x200);
+        WriteU32(relocatedImage, 0x280, moduleBase + 0x200); // appended pointer table
         WriteU32(relocatedImage, 0x200, 0x38600001u); // li r3,1
         WriteU32(relocatedImage, 0x204, 0x4E800020u); // blr
 
@@ -654,6 +654,450 @@ public sealed class ModFunctionDiscoveryTests
 
         Assert.Equal("module leaf boundary scan", starts[moduleBase + 0x43004]);
     }
+
+    [Fact]
+    public void DiscoversVtableOnlyTailCallFunctionNextToInstructionThatEncodesItsTail()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x10000];
+
+        // Virtual call whose lwz encodes the address of the tail branch below.
+        WriteU32(code, 0x0FF0, 0x9421FFF0u); // stwu r1,-0x10(r1)
+        WriteU32(code, 0x0FF4, 0x7C0802A6u); // mflr r0
+        WriteU32(code, 0x0FF8, 0x8061000Cu); // lwz r3,0xc(r1)
+        WriteU32(code, 0x0FFC, 0x8184BB50u); // lwz r12,-0x44b0(r4)
+        WriteU32(code, 0x1000, 0x7D8903A6u); // mtctr r12
+        WriteU32(code, 0x1004, 0x4E800421u); // bctrl
+        WriteU32(code, 0x1008, 0x38210010u); // addi r1,r1,0x10
+        WriteU32(code, 0x100C, 0x4E800020u); // blr
+
+        WriteU32(code, 0xBAF0, 0x9421FFF0u); // stwu r1,-0x10(r1)
+        WriteU32(code, 0xBAF4, 0x7C0802A6u); // mflr r0
+        WriteU32(code, 0xBAF8, 0x80010014u); // lwz r0,0x14(r1)
+        WriteU32(code, 0xBAFC, 0x7C0803A6u); // mtlr r0
+        WriteU32(code, 0xBB00, 0x38210010u); // addi r1,r1,0x10
+        WriteU32(code, 0xBB04, 0x4E800020u); // blr
+
+        // Frameless virtual reached only through the vtable; it ends in a tail call.
+        WriteU32(code, 0xBB08, 0x38000008u); // li r0,8
+        WriteU32(code, 0xBB0C, 0x3880FFFFu); // li r4,-1
+        WriteU32(code, 0xBB10, 0x90832AB4u); // stw r4,0x2ab4(r3)
+        WriteU32(code, 0xBB14, 0x38A00000u); // li r5,0
+        WriteU32(code, 0xBB18, 0x80C3072Cu); // lwz r6,0x72c(r3)
+        WriteU32(code, 0xBB1C, 0x7C0903A6u); // mtctr r0
+        WriteU32(code, 0xBB20, 0x80860000u); // lwz r4,0(r6)
+        WriteU32(code, 0xBB24, 0x38C60004u); // addi r6,r6,4
+        WriteU32(code, 0xBB28, 0x98A401E9u); // stb r5,0x1e9(r4)
+        WriteU32(code, 0xBB2C, 0x4200FFF4u); // bdnz -0xc
+        WriteU32(code, 0xBB30, 0x3C80818Au); // lis r4,0x818a
+        WriteU32(code, 0xBB34, 0x808441F8u); // lwz r4,0x41f8(r4)
+        WriteU32(code, 0xBB38, 0x80040024u); // lwz r0,0x24(r4)
+        WriteU32(code, 0xBB3C, 0x5400103Au); // slwi r0,r0,2
+        WriteU32(code, 0xBB40, 0x7C000034u); // cntlzw r0,r0
+        WriteU32(code, 0xBB44, 0x5400D97Eu); // srwi r0,r0,5
+        WriteU32(code, 0xBB48, 0x980328E1u); // stb r0,0x28e1(r3)
+        WriteU32(code, 0xBB4C, 0x98032699u); // stb r0,0x2699(r3)
+        WriteU32(code, 0xBB50, EncodeBranch(moduleBase + 0xBB50, 0x80841110u)); // b base code
+
+        // Hook target that follows directly.
+        WriteU32(code, 0xBB54, 0x3CA0818Au); // lis r5,0x818a
+        WriteU32(code, 0xBB58, 0x80A541F8u); // lwz r5,0x41f8(r5)
+        WriteU32(code, 0xBB5C, 0x80050024u); // lwz r0,0x24(r5)
+        WriteU32(code, 0xBB60, 0x5400103Bu); // slwi. r0,r0,2
+        WriteU32(code, 0xBB64, 0x41820008u); // beq +8
+        WriteU32(code, 0xBB68, 0x38800001u); // li r4,1
+        WriteU32(code, 0xBB6C, EncodeBranch(moduleBase + 0xBB6C, 0x805F0DB4u)); // b base code
+
+        WriteU32(code, 0xBB70, 0x9421FFC0u); // stwu r1,-0x40(r1)
+        WriteU32(code, 0xBB74, 0x7C0802A6u); // mflr r0
+        WriteU32(code, 0xBB78, 0x4E800020u); // blr
+
+        WriteU32(code, 0xF000, moduleBase + 0xBB70); // vtable
+        WriteU32(code, 0xF004, moduleBase + 0xBB08);
+
+        var chunk = CodeChunk(
+            code,
+            PointerRelocation(0xF000, 0xBB70),
+            PointerRelocation(0xF004, 0xBB08),
+            AbsoluteCommand(KamekCommandId.BranchLink, 0x80601234u, 0xBB54));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module leaf boundary scan", starts[moduleBase + 0xBB08]);
+        Assert.Equal("BranchLink", starts[moduleBase + 0xBB54]);
+        Assert.Equal("module data pointer", starts[moduleBase + 0xBB70]);
+        Assert.False(starts.ContainsKey(moduleBase + 0xBB50));
+    }
+
+    [Fact]
+    public void IgnoresUnrelocatedInstructionWordThatEncodesTrampolineAddress()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x10000];
+        WriteU32(code, 0x100, 0x8184BB50u); // lwz r12,-0x44b0(r4)
+        WriteU32(code, 0xBB4C, 0x98032699u); // stb r0,0x2699(r3)
+        WriteU32(code, 0xBB50, EncodeBranch(moduleBase + 0xBB50, 0x80841110u)); // b base code
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code), moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0xBB50);
+    }
+
+    [Fact]
+    public void IgnoresUnrelocatedWordThatEncodesFunctionEpilogueAddress()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // lwz r12,0x220(r4)
+        WriteU32(code, 0x200, 0x9421FFF0u); // stwu r1,-0x10(r1)
+        WriteU32(code, 0x204, 0x7C0802A6u); // mflr r0
+        WriteU32(code, 0x208, 0x93C10008u); // stw r30,8(r1)
+        WriteU32(code, 0x20C, 0x90010014u); // stw r0,0x14(r1)
+        WriteU32(code, 0x210, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x214, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x218, 0x80010014u); // lwz r0,0x14(r1)
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x83C10008u); // lwz r30,8(r1)
+        WriteU32(code, 0x224, 0x7C0803A6u); // mtlr r0
+        WriteU32(code, 0x228, 0x38210010u); // addi r1,r1,0x10
+        WriteU32(code, 0x22C, 0x4E800020u); // blr
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code), moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module prologue scan", starts[moduleBase + 0x200]);
+        Assert.False(starts.ContainsKey(moduleBase + 0x220));
+    }
+
+    [Fact]
+    public void DoesNotSplitFunctionAtAnyAddressEncodedByUnrelocatedInstructions()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x3000];
+
+        WriteU32(code, 0x2000, 0x9421FFF0u); // stwu r1,-0x10(r1)
+        WriteU32(code, 0x2004, 0x7C0802A6u); // mflr r0
+        WriteU32(code, 0x2008, 0x90010014u); // stw r0,0x14(r1)
+        for (var offset = 0x200C; offset < 0x20F0; offset += 4)
+        {
+            WriteU32(code, offset, 0x38630001u); // addi r3,r3,1
+        }
+        WriteU32(code, 0x20F0, 0x80010014u); // lwz r0,0x14(r1)
+        WriteU32(code, 0x20F4, 0x7C0803A6u); // mtlr r0
+        WriteU32(code, 0x20F8, 0x38210010u); // addi r1,r1,0x10
+        WriteU32(code, 0x20FC, 0x4E800020u); // blr
+
+        // lwz r12,disp(r4) for every word of the function body.
+        for (var offset = 0x2004; offset < 0x2100; offset += 4)
+        {
+            WriteU32(code, 0x100 + (offset - 0x2004), 0x81840000u | (uint)offset);
+        }
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code), moduleBase, code);
+
+        Assert.Contains(starts, start => start.Address == moduleBase + 0x2000);
+        Assert.DoesNotContain(starts, start => start.Address > moduleBase + 0x2000 && start.Address < moduleBase + 0x2100);
+    }
+
+    [Fact]
+    public void DiscoversRelocatedPointerToFunctionThatOnlyLooksLikeAnEpilogue()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, moduleBase + 0x220);
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x83C10008u); // lwz r30,8(r1)
+        WriteU32(code, 0x224, 0x38210010u); // addi r1,r1,0x10
+        WriteU32(code, 0x228, 0x4E800020u); // blr
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code, PointerRelocation(0x100, 0x220)), moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module data pointer", starts[moduleBase + 0x220]);
+    }
+
+    [Fact]
+    public void DiscoversConditionallyWrittenModulePointer()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x80];
+        WriteU32(code, 0x40, moduleBase + 0x50);
+        WriteU32(code, 0x4C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x50, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(code, RelativeCommand(KamekCommandId.CondWritePointer, 0x40, 0x50, 0));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module data pointer", starts[moduleBase + 0x50]);
+    }
+
+    [Fact]
+    public void IgnoresSkippedConditionalPointerWrite()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // lwz r12,0x220(r4), expected value did not match
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+        WriteU32(code, 0x300, 0x38600002u); // li r3,2
+        WriteU32(code, 0x304, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(code, RelativeCommand(KamekCommandId.CondWritePointer, 0x100, 0x300, 0x12345678u));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220);
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x300);
+    }
+
+    [Fact]
+    public void IgnoresPointerRelocationOverwrittenByLaterWrite()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // Write32 result applied after the relocation
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+        WriteU32(code, 0x2FC, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x300, 0x38600002u); // li r3,2
+        WriteU32(code, 0x304, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(
+            code,
+            PointerRelocation(0x100, 0x300),
+            RelativeCommand(KamekCommandId.Write32, 0x100, 0x81840220u));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220);
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x300);
+    }
+
+    [Theory]
+    [InlineData(KamekCommandId.Addr16Lo, 2u)]
+    [InlineData(KamekCommandId.Addr16Ha, 2u)]
+    [InlineData(KamekCommandId.Addr16Hi, 2u)]
+    [InlineData(KamekCommandId.Addr16Lo, 0u)]
+    [InlineData(KamekCommandId.Addr16Ha, 0u)]
+    [InlineData(KamekCommandId.Addr16Hi, 0u)]
+    [InlineData(KamekCommandId.Write32, 0u)]
+    [InlineData(KamekCommandId.CondWrite32, 0u)]
+    public void IgnoresWordWhoseOnlyRelocationIsNotAPointerWrite(KamekCommandId id, uint addressDelta)
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // lwz r12,0x220(r4)
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+
+        var chunk = CodeChunk(code, RelativeCommand(id, 0x100 + addressDelta, 0x220));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220 && start.Reason == "module data pointer");
+    }
+
+    [Fact]
+    public void IgnoresAbsolutePointerWriteWhenGatingModuleWords()
+    {
+        const uint moduleBase = 0x81840000u;
+        var code = new byte[0x400];
+        WriteU32(code, 0x100, 0x81840220u); // lwz r12,0x220(r4)
+        WriteU32(code, 0x21C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x220, 0x38600001u); // li r3,1
+        WriteU32(code, 0x224, 0x4E800020u); // blr
+
+        // A base-game pointer patch whose address field happens to match the module offset.
+        var chunk = CodeChunk(code, AbsoluteCommand(KamekCommandId.WritePointer, 0x100, 0x300));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x220);
+    }
+
+    [Fact]
+    public void HonorsPointerRelocationInLastWordOfCode()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x100];
+        WriteU32(code, 0xFC, moduleBase + 0x50);
+        WriteU32(code, 0x50, 0x4E800020u); // blr
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code, PointerRelocation(0xFC, 0x50)), moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module data pointer", starts[moduleBase + 0x50]);
+    }
+
+    [Fact]
+    public void IgnoresUnrelocatedModuleAddressInLastWordOfCode()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x100];
+        WriteU32(code, 0xFC, moduleBase + 0x50);
+        WriteU32(code, 0x50, 0x4E800020u); // blr
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(CodeChunk(code), moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x50);
+    }
+
+    [Fact]
+    public void ScansFirstAppendedWordWithoutRelocations()
+    {
+        const uint moduleBase = 0x81200000u;
+        var relocatedImage = new byte[0x200];
+        WriteU32(relocatedImage, 0x50, 0x4E800020u); // blr
+        WriteU32(relocatedImage, 0x100, moduleBase + 0x50); // first appended word
+
+        var chunk = new KamekChunk(
+            index: 0,
+            fileOffset: 0,
+            bssSize: 0,
+            codeSize: 0x100,
+            ctorStart: 0,
+            ctorEnd: 0,
+            chunkSize: (uint)(0x100 + KamekChunk.HeaderSize),
+            codeBlob: relocatedImage[..0x100],
+            commands: []);
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, relocatedImage)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("module data pointer", starts[moduleBase + 0x50]);
+    }
+
+    [Fact]
+    public void IgnoresUnrelocatedCodeWordPointingIntoAppendedImage()
+    {
+        const uint moduleBase = 0x81200000u;
+        var relocatedImage = new byte[0x300];
+        WriteU32(relocatedImage, 0x20, moduleBase + 0x200);
+        WriteU32(relocatedImage, 0x1FC, 0x38630001u); // addi r3,r3,1
+        WriteU32(relocatedImage, 0x200, 0x38600001u); // li r3,1
+        WriteU32(relocatedImage, 0x204, 0x4E800020u); // blr
+
+        var chunk = new KamekChunk(
+            index: 0,
+            fileOffset: 0,
+            bssSize: 0,
+            codeSize: 0x100,
+            ctorStart: 0,
+            ctorEnd: 0,
+            chunkSize: (uint)(0x100 + KamekChunk.HeaderSize),
+            codeBlob: relocatedImage[..0x100],
+            commands: []);
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, relocatedImage);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x200);
+    }
+
+    [Fact]
+    public void StillRejectsRelocatedPointersToData()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x200];
+        "control\0"u8.ToArray().CopyTo(code, 0x80);
+        WriteU32(code, 0x20, moduleBase + 0x80);
+        WriteU32(code, 0x24, moduleBase + 0x180); // zero word
+
+        var chunk = CodeChunk(code, PointerRelocation(0x20, 0x80), PointerRelocation(0x24, 0x180));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code);
+
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x80);
+        Assert.DoesNotContain(starts, start => start.Address == moduleBase + 0x180);
+    }
+
+    [Fact]
+    public void DiscoversCtorEntriesWithAndWithoutPointerRelocations()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x100];
+        WriteU32(code, 0x40, moduleBase + 0x60);
+        WriteU32(code, 0x44, moduleBase + 0x70);
+        WriteU32(code, 0x5C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x60, 0x38600000u); // li r3,0
+        WriteU32(code, 0x64, 0x4E800020u); // blr
+        WriteU32(code, 0x6C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x70, 0x38600001u); // li r3,1
+        WriteU32(code, 0x74, 0x4E800020u); // blr
+
+        var chunk = new KamekChunk(
+            index: 0,
+            fileOffset: 0,
+            bssSize: 0,
+            codeSize: (uint)code.Length,
+            ctorStart: 0x40,
+            ctorEnd: 0x48,
+            chunkSize: (uint)(code.Length + KamekChunk.HeaderSize),
+            codeBlob: code,
+            commands: [PointerRelocation(0x40, 0x60)]);
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("ctor", starts[moduleBase + 0x60]);
+        Assert.Equal("ctor", starts[moduleBase + 0x70]);
+    }
+
+    [Fact]
+    public void DiscoversHookAndRelocationBranchTargets()
+    {
+        const uint moduleBase = 0x81200000u;
+        var code = new byte[0x200];
+        WriteU32(code, 0x5C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0x60, 0x38600001u); // li r3,1
+        WriteU32(code, 0x64, 0x4E800020u); // blr
+        WriteU32(code, 0x9C, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0xA0, 0x38600002u); // li r3,2
+        WriteU32(code, 0xA4, 0x4E800020u); // blr
+        WriteU32(code, 0xDC, 0x38630001u); // addi r3,r3,1
+        WriteU32(code, 0xE0, 0x38600003u); // li r3,3
+        WriteU32(code, 0xE4, 0x4E800020u); // blr
+        WriteU32(code, 0x100, EncodeBranch(moduleBase + 0x100, 0x80001000u) | 1u); // bl base code
+
+        var chunk = CodeChunk(
+            code,
+            AbsoluteCommand(KamekCommandId.Branch, 0x80001234u, 0x60),
+            AbsoluteCommand(KamekCommandId.BranchLink, 0x80001238u, 0xA0),
+            RelativeCommand(KamekCommandId.Rel24, 0x100, 0xE0));
+
+        var starts = ModFunctionDiscovery.DiscoverKamekFunctions(chunk, moduleBase, code)
+            .ToDictionary(start => start.Address, start => start.Reason);
+
+        Assert.Equal("Branch", starts[moduleBase + 0x60]);
+        Assert.Equal("BranchLink", starts[moduleBase + 0xA0]);
+        Assert.Equal("Rel24", starts[moduleBase + 0xE0]);
+    }
+
+    private static KamekChunk CodeChunk(byte[] code, params KamekCommand[] commands) =>
+        new(
+            index: 0,
+            fileOffset: 0,
+            bssSize: 0,
+            codeSize: (uint)code.Length,
+            ctorStart: 0,
+            ctorEnd: 0,
+            chunkSize: (uint)(code.Length + KamekChunk.HeaderSize),
+            codeBlob: code,
+            commands: commands);
+
+    private static KamekCommand RelativeCommand(KamekCommandId id, uint offset, params uint[] arguments) =>
+        new(0, ((uint)id << 24) | offset, id, false, offset, arguments);
+
+    private static KamekCommand AbsoluteCommand(KamekCommandId id, uint address, params uint[] arguments) =>
+        new(0, ((uint)id << 24) | 0x00FFFFFEu, id, true, address, arguments);
+
+    private static KamekCommand PointerRelocation(uint offset, uint target) =>
+        RelativeCommand(KamekCommandId.Addr32, offset, target);
 
     private static void WriteU32(byte[] data, int offset, uint value) =>
         BinaryPrimitives.WriteUInt32BigEndian(data.AsSpan(offset, 4), value);

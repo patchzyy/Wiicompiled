@@ -17,19 +17,17 @@
 #include "recomp_mod_loader.h"
 #include "runtime_log.h"
 #include "system_bridge.h"
-
-extern "C" void func_801A961C(CpuContext* ctx);
-extern "C" void func_8055531C(CpuContext* ctx);
+#include "guest_function_imports.h"
 
 extern "C" void OSInitAlarm_RecompModLateInit_801a961c(CpuContext* ctx) {
-    func_801A961C(ctx);
+    MKW_GUEST_FUNC(801A961C)(ctx);
 }
 
 REGISTER_NATIVE_FUNCTION_AS(0x801A961C, OSInitAlarm_RecompModLateInit_801a961c, "OSInitAlarm_RecompModLateInit_801a961c");
 
 extern "C" void StaticRProlog_RecompModInit_8055531c(CpuContext* ctx) {
     RecompMod::RunMemoryInitializers();
-    func_8055531C(ctx);
+    MKW_GUEST_FUNC(8055531C)(ctx);
     RecompMod::RunPostRelInitializers();
 }
 
@@ -80,33 +78,16 @@ extern "C" void OSFatal_HLE_801a4ec4(CpuContext* ctx) {
 
 REGISTER_NATIVE_FUNCTION_AS(0x801A4EC4, OSFatal_HLE_801a4ec4, "OSFatal_HLE_801a4ec4");
 
-extern "C" void GKI_delay_HLE_801301b4(CpuContext* ctx)
+extern "C" void GKI_delay_HLE_801301b4()
 {
-    const uint32_t delayMs = ctx ? static_cast<uint32_t>(ctx->gpr[3]) : 0;
-    const uint32_t sleepMs = delayMs == 0 ? 1u : std::min(delayMs, 10u);
-    std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+    // The guest's GKI_delay is empty: BTA_Init spins on it while the Bluetooth
+    // module answers through IPC interrupts and the 2 ms BTU alarm. Service both
+    // here and let the wall clock advance.
+    OS_HLE_ProcessAlarms(32);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
-extern "C" uint32_t BTM_IsDeviceUp_HLE_8013a300(CpuContext* ctx)
-{
-    // Force Bluetooth stack to "up" to avoid endless polling loops while we lack
-    // real hardware bring-up.
-    constexpr uint32_t kBtmCbBase = 0x80336278u;
-    constexpr uint32_t kDevStateOffset = 0x64Eu;
-    try {
-        ::Memory::Write8(kBtmCbBase + kDevStateOffset, 5u);
-    } catch (const ::Memory::AccessViolation&) {
-        // Ignore; best-effort write
-    }
-
-    if (ctx) {
-        ctx->gpr[3] = 1;
-    }
-    return 1;
-}
-
-PPC_NATIVE_OVERRIDE_VOID(801301B4, GKI_delay_HLE_801301b4, (CpuContext* ctx), (ctx));
-PPC_NATIVE_OVERRIDE(8013A300, BTM_IsDeviceUp_HLE_8013a300, uint32_t, (CpuContext* ctx), (ctx));
+PPC_NATIVE_OVERRIDE_VOID(801301B4, GKI_delay_HLE_801301b4, (), ());
 
 // Serial Interface (SI) - GameCube controller ports; stubbed since we don't emulate the MMIO.
 
@@ -124,13 +105,14 @@ extern "C" void HLE_SISetSamplingRate_801b3acc(uint32_t msec)
 
 // Video Interface (VI) - TV output.
 
-// VIGetTvFormat (0x801bacd8): CRITICAL, must return 1 (VI_PAL) not 0, or PAL builds
-// misbehave/panic.
+// VIGetTvFormat (0x801bacd8): CRITICAL, must report the game's own TV format or it
+// misbehaves/panics.
 extern "C" uint32_t HLE_VIGetTvFormat_801bacd8()
 {
     // VI_NTSC = 0, VI_PAL = 1, VI_MPAL = 2
-    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning VI_PAL (1)" << std::endl;
-    return 1;
+    RT_LOG(RT_TAG_OS) << "HLE_VIGetTvFormat_801bacd8 called: returning " << ::GuestRegion::CurrentFacts().viTvFormat
+                      << std::endl;
+    return ::GuestRegion::CurrentFacts().viTvFormat;
 }
 
 REGISTER_NATIVE_FUNCTION(0x801B2DE0, SIInit_801b2de0);
@@ -193,22 +175,18 @@ extern "C" uint32_t __OSInitSTM_HLE_801ab848(CpuContext* ctx)
 
     RT_LOG(RT_TAG_OS) << "__OSInitSTM_HLE_801ab848 called: initializing STM state" << std::endl;
 
-    // R13 (SDA2) holds the base for small data variables
-    const uint32_t r13 = cpu->gpr[13];
-    if (r13 == 0) {
-         RT_LOG(RT_TAG_OS) << "__OSInitSTM: Warning - R13 is 0, cannot write state." << std::endl;
-         return 0;
-    }
+    // STM_Initialized, /dev/stm/immediate and /dev/stm/eventhook.
+    const uint32_t kStmInitializedAddr = MKW_GADDR(80386934);
+    const uint32_t kStmImmediateHandleAddr = MKW_GADDR(80386938);
+    const uint32_t kStmEventHookHandleAddr = MKW_GADDR(8038693C);
 
-    // Offsets from disassembly: r13-0x62cc=STM_Initialized, r13-0x62c8=/dev/stm/immediate,
-    // r13-0x62c4=/dev/stm/eventhook.
     try {
         // Mark STM as initialized
-        ::Memory::Write32(r13 - 0x62ccu, 1);
+        ::Memory::Write32(kStmInitializedAddr, 1);
 
         // Fake non-zero handles so callers' zero-checks pass.
-        ::Memory::Write32(r13 - 0x62c8u, 0x00535401); // "ST\x01"
-        ::Memory::Write32(r13 - 0x62c4u, 0x00535402); // "ST\x02"
+        ::Memory::Write32(kStmImmediateHandleAddr, 0x00535401); // "ST\x01"
+        ::Memory::Write32(kStmEventHookHandleAddr, 0x00535402); // "ST\x02"
 
         // Default Power/Reset callback pointers are left unset; safe since we never fire
         // the STM hardware interrupt that would invoke them.

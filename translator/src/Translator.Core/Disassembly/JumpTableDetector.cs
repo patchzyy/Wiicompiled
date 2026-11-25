@@ -70,7 +70,7 @@ internal static class JumpTableDetector
         }
         entriesAreRelative = HasRelativeEntryAdd(ordered, loadIndex, mtctrIndex, targetRegister, baseReg.Name);
 
-        if (!TryFindUpperBound(ordered, loadIndex, indexReg.Name, out var upperBound) || upperBound < 0 || upperBound >= MaxEntryCount)
+        if (!TryFindUpperBound(ordered, loadIndex, indexReg, out var upperBound) || upperBound < 0 || upperBound >= MaxEntryCount)
         {
             return false;
         }
@@ -381,52 +381,129 @@ internal static class JumpTableDetector
         return false;
     }
 
-    private static bool TryFindUpperBound(IReadOnlyList<PpcInstruction> ordered, int startIndex, string register, out int upperBound)
+    private static bool TryFindUpperBound(IReadOnlyList<PpcInstruction> ordered, int startIndex, PpcRegisterOperand register, out int upperBound)
     {
-        // Preferred: compare directly on the same register used for lwzx indexing.
+        // Preferred: the compare on the lwzx index, followed back through the copies and
+        // shifts that derived it. A compare older than the value's definition bounds
+        // something else.
+        var tracked = register.Number;
         for (var i = startIndex - 1; i >= 0 && startIndex - i <= MaxBacktrackInstructions; i--)
         {
             var ins = ordered[i];
-            if (ins.Operands.Count < 2 || ins.Operands[0] is not PpcRegisterOperand reg ||
-                !string.Equals(reg.Name, register, StringComparison.OrdinalIgnoreCase) ||
-                ins.Operands[1] is not PpcImmediateOperand imm)
+            if (TryGetCompareImmediate(ins, out var compared, out var bound))
+            {
+                if (compared == tracked)
+                {
+                    upperBound = bound;
+                    return true;
+                }
+                continue;
+            }
+
+            if (ins.IsCall)
+            {
+                break;
+            }
+
+            if (!DefinesGpr(ins, tracked))
             {
                 continue;
             }
 
-            if (ins.Mnemonic is "cmplwi" or "cmpwi")
+            if (IsIndexDerivation(ins) &&
+                ins.Operands[0] is PpcRegisterOperand dest && dest.Number == tracked &&
+                ins.Operands[1] is PpcRegisterOperand source)
             {
-                upperBound = imm.Value;
-                return true;
+                tracked = source.Number;
+                continue;
             }
+
+            break;
         }
 
         // Fallback: some loops compare a logical counter (e.g. r18) distinct from the byte-offset
         // register (e.g. r30) that feeds lwzx, so the bound check may not target the index register.
         for (var i = startIndex - 1; i >= 0 && startIndex - i <= MaxBacktrackInstructions; i--)
         {
-            var ins = ordered[i];
-            if (ins.Operands.Count < 2 || ins.Operands[1] is not PpcImmediateOperand imm)
+            if (ordered[i].Operands.Count > 0 && ordered[i].Operands[0] is PpcConditionRegisterOperand)
+            {
+                continue;
+            }
+            if (!TryGetCompareImmediate(ordered[i], out _, out var bound) || bound < 0 || bound >= MaxEntryCount)
             {
                 continue;
             }
 
-            if (ins.Mnemonic is not ("cmplwi" or "cmpwi"))
-            {
-                continue;
-            }
-
-            if (imm.Value < 0 || imm.Value >= MaxEntryCount)
-            {
-                continue;
-            }
-
-            upperBound = imm.Value;
+            upperBound = bound;
             return true;
         }
 
         upperBound = 0;
         return false;
+    }
+
+    // Copies, sign extensions and left shifts (slwi, clrlwi, clrlslwi) keep a bound on
+    // the source a bound on the result's entry index.
+    private static bool IsIndexDerivation(PpcInstruction ins) => ins.Mnemonic switch
+    {
+        "mr" or "extsb" or "extsh" => ins.Operands.Count >= 2,
+        "rlwinm" => ins.Operands.Count == 5 &&
+            ins.Operands[2] is PpcImmediateOperand sh &&
+            ins.Operands[4] is PpcImmediateOperand me &&
+            me.Value == 31 - sh.Value,
+        _ => false,
+    };
+
+    // MayWriteGpr treats both register fields of an X-form as written, which also
+    // counts sources (or, extsb, stwx, cmpw); read the decoded destination instead.
+    private static bool DefinesGpr(PpcInstruction ins, int register)
+    {
+        if (ins.Word >> 26 != 31)
+        {
+            return PpcRegisterEffects.MayWriteGpr(ins.Word, register);
+        }
+
+        var mnemonic = ins.Mnemonic;
+        if (mnemonic.EndsWith("ux", StringComparison.Ordinal) &&
+            ins.Operands.Count > 1 && ins.Operands[1] is PpcRegisterOperand updated && updated.Number == register)
+        {
+            return true;
+        }
+
+        if (mnemonic.StartsWith("st", StringComparison.Ordinal) ||
+            mnemonic.StartsWith("cmp", StringComparison.Ordinal) ||
+            mnemonic.StartsWith("mt", StringComparison.Ordinal) ||
+            mnemonic.StartsWith("dcb", StringComparison.Ordinal) ||
+            mnemonic.StartsWith("icb", StringComparison.Ordinal) ||
+            mnemonic.StartsWith("tw", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return ins.Operands.Count > 0 && ins.Operands[0] is PpcRegisterOperand dest && dest.Number == register;
+    }
+
+    private static bool TryGetCompareImmediate(PpcInstruction ins, out int register, out int immediate)
+    {
+        register = -1;
+        immediate = 0;
+        if (ins.Mnemonic is not ("cmplwi" or "cmpwi"))
+        {
+            return false;
+        }
+
+        var operands = ins.Operands;
+        var first = operands.Count > 0 && operands[0] is PpcConditionRegisterOperand ? 1 : 0;
+        if (operands.Count < first + 2 ||
+            operands[first] is not PpcRegisterOperand reg ||
+            operands[first + 1] is not PpcImmediateOperand imm)
+        {
+            return false;
+        }
+
+        register = reg.Number;
+        immediate = imm.Value;
+        return true;
     }
 
     private static bool TryReadWord(ProgramImage image, uint address, out uint value)

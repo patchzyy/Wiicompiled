@@ -168,6 +168,31 @@ public sealed class GqrConstantPropagationTests
     }
 
     [Fact]
+    public void UnknownEntryRootsDependOnlyOnTheCallGraph()
+    {
+        IrFunction Calls(params uint[] targets) => Function(targets
+            .Select(target => (IrInstruction)new IrCall(string.Empty, $"0x{target:X8}", Array.Empty<IrValue>()))
+            .Append(new IrReturn(null))
+            .ToArray());
+        var functions = new Dictionary<uint, IrFunction>
+        {
+            [0x80001000] = Calls(),
+            [0x80002000] = Calls(0x80003000),
+            [0x80003000] = Calls(),
+            [0x80004000] = Calls(0x80005000),
+            [0x80005000] = Calls(0x80004000)
+        };
+        var summaries = functions.ToDictionary(pair => pair.Key, pair => GqrFunctionSummary.Create(pair.Value));
+        uint[] candidates = [0x80002000, 0x80003000, 0x80004000, 0x80005000];
+
+        var roots = GqrInterproceduralAnalysis.SelectUnknownEntryRoots(summaries, [0x80001000u], candidates);
+        var reversed = GqrInterproceduralAnalysis.SelectUnknownEntryRoots(summaries, [0x80001000u], candidates.Reverse());
+
+        Assert.Equal(new uint[] { 0x80001000, 0x80002000, 0x80004000 }, roots.Order());
+        Assert.Equal(roots.Order(), reversed.Order());
+    }
+
+    [Fact]
     public void InterproceduralAnalysisIntersectsConflictingCallers()
     {
         var functions = new Dictionary<uint, IrFunction>

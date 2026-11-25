@@ -57,16 +57,14 @@ internal static class ConsoleCommands
 
     public static int VerifyInputs(CommandLine command)
     {
-        var reporter = command.ProgressJson ? new NdjsonInstallReporter() : null;
+        var reporter = command.ProgressJson ? new NdjsonInstallReporter(ProductInfo.Version) : null;
         var temp = Path.Combine(Path.GetTempPath(), "mkwc-verify-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
         try
         {
             using var payload = PayloadArchive.OpenCurrent();
             var manifest = payload.ReadManifest();
-            var tool = Path.Combine(temp, "nodtool.exe");
-            payload.ExtractEntry(InstalledLayout.ToolkitEntryPrefix + "nodtool.exe", tool);
-            payload.ExtractDirectory(InstalledLayout.ToolkitEntryPrefix + "Redist", temp);
+            var tool = payload.ExtractDiscTool(temp);
             reporter?.Progress(InstallStages.Validate, "Checking the Wii disc image...", 10);
             var header = InputValidation.ReadDiscHeaderAsync(tool, command.GamePath!).GetAwaiter().GetResult();
             InputValidation.EnsureCompatibleDisc(header, manifest);
@@ -107,7 +105,7 @@ internal static class ConsoleCommands
         }
         File.WriteAllText(logPath, $"{ProductInfo.Name} setup {ProductInfo.Version}{Environment.NewLine}");
 
-        var ndjson = command.ProgressJson ? new NdjsonInstallReporter(Log) : null;
+        var ndjson = command.ProgressJson ? new NdjsonInstallReporter(ProductInfo.Version, Log) : null;
         IInstallReporter reporter = ndjson ?? (IInstallReporter)new ConsoleInstallReporter(Log);
         var installDirectory = Path.GetFullPath(command.InstallDirectory!);
         try
@@ -145,7 +143,7 @@ internal static class ConsoleCommands
     public static int CheckProducts(CommandLine command,
         CancellationToken cancellationToken = default)
     {
-        var reporter = command.ProgressJson ? new NdjsonInstallReporter() : null;
+        var reporter = command.ProgressJson ? new NdjsonInstallReporter(ProductInfo.Version) : null;
         var installation = new Installation(string.IsNullOrWhiteSpace(command.InstallDirectory)
             ? AppContext.BaseDirectory
             : Path.GetFullPath(command.InstallDirectory));
@@ -198,7 +196,7 @@ internal static class ConsoleCommands
             }
         }
 
-        var ndjson = command.ProgressJson ? new NdjsonInstallReporter(Log) : null;
+        var ndjson = command.ProgressJson ? new NdjsonInstallReporter(ProductInfo.Version, Log) : null;
         IInstallReporter reporter = ndjson is null ? new ConsoleInstallReporter(Log) : ndjson;
         var installDirectory = Path.GetFullPath(command.InstallDirectory!);
         var installation = new Installation(installDirectory);

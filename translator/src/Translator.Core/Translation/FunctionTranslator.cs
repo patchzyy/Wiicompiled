@@ -420,7 +420,7 @@ public sealed class FunctionTranslator
                     continue;
                 }
 
-                if (TryBuildSyntheticBlock(label, out var synth))
+                if (TryBuildSyntheticBlock(label, existingLabels, out var synth))
                 {
                     irBlocks.Add(synth);
                     existingLabels.Add(label);
@@ -839,7 +839,7 @@ public sealed class FunctionTranslator
         return rewritten;
     }
 
-    private static bool TryBuildSyntheticBlock(string label, out IrBasicBlock block)
+    private static bool TryBuildSyntheticBlock(string label, IReadOnlySet<string> localLabels, out IrBasicBlock block)
     {
         const string IndirectCtrPrefix = "indirect_ctr_";
         const string CallCtrPrefix = "call_ctr_";
@@ -883,11 +883,18 @@ public sealed class FunctionTranslator
 
         if (TryParseLinkBranchLabel(label, LinkBranchPrefix, out fallthrough, out var target))
         {
-            block = new IrBasicBlock(label, new IrInstruction[]
-            {
-                new IrAssign("lr", IrValue.Imm((int)fallthrough)),
-                new IrJump($"0x{target:X8}")
-            });
+            block = new IrBasicBlock(label, target == fallthrough || localLabels.Contains($"0x{target:X8}")
+                ? new IrInstruction[]
+                {
+                    new IrAssign("lr", IrValue.Imm((int)fallthrough)),
+                    new IrJump($"0x{target:X8}")
+                }
+                : new IrInstruction[]
+                {
+                    new IrAssign("lr", IrValue.Imm((int)fallthrough)),
+                    new IrCall(string.Empty, $"0x{target:X8}", BuildAbiCallArgs()),
+                    new IrJump($"0x{fallthrough:X8}")
+                });
             return true;
         }
 

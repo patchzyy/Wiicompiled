@@ -40,46 +40,60 @@ function Get-MkwToolchainPath([string]$ToolchainRoot) {
     ) -join ';')
 }
 
-function Get-MkwShellSafeToolchainRoot([string]$ToolchainRoot) {
-    if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) { throw 'A toolchain root is required.' }
-    $full = [IO.Path]::GetFullPath($ToolchainRoot)
+function Get-MkwBuildSafePath([string]$Path, [string]$Kind, [string]$MarkerFile) {
+    <#
+    The Windows native build passes workspace paths through CMake, Ninja response files and
+    clang, which do not all interpret quotes the same way. Keep those paths plain even when the
+    user's install directory contains an apostrophe, ampersand or other punctuation.
+    #>
+    if ([string]::IsNullOrWhiteSpace($Path)) { throw "A $Kind path is required." }
+    $full = [IO.Path]::GetFullPath($Path)
     # A drive root keeps its separator: "C:" is relative to the current directory on that drive.
     if ($full -ne [IO.Path]::GetPathRoot($full)) { $full = $full.TrimEnd('\') }
-    if ($full -notmatch '[()&^%!]') { return $full }
+    if ($full -cmatch '^[A-Za-z0-9 ._\\:-]+$') { return $full }
+
+    Assert-File (Join-Path $full $MarkerFile) "$Kind marker"
 
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($full.ToLowerInvariant()))
     } finally { $sha.Dispose() }
-    $linkName = 'toolchain-' + ((($bytes[0..7]) | ForEach-Object { $_.ToString('x2') }) -join '')
+    $linkName = "$Kind-" + ((($bytes[0..7]) | ForEach-Object { $_.ToString('x2') }) -join '')
 
     $failures = @()
     foreach ($base in @($env:ProgramData, $env:PUBLIC)) {
-        if ([string]::IsNullOrWhiteSpace($base) -or $base -match '[()&^%! ]') { continue }
+        if ([string]::IsNullOrWhiteSpace($base) -or $base -cnotmatch '^[A-Za-z0-9._\\:-]+$') { continue }
         $link = Join-Path (Join-Path $base 'WiiCompiled') $linkName
         try {
             [IO.Directory]::CreateDirectory((Split-Path -Parent $link)) | Out-Null
-            # The name already identifies the target, so an existing junction that still resolves is
-            # this one; only a broken leftover is replaced. Directory.Delete removes the reparse
-            # point itself, where Remove-Item -Recurse would delete the toolchain it points at.
-            if (-not (Test-Path -LiteralPath (Join-Path $link 'CMake\bin\cmake.exe') -PathType Leaf)) {
-                if (Test-Path -LiteralPath $link) { [IO.Directory]::Delete($link) }
+            $existing = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+            if ($null -ne $existing) {
+                # Never trust a directory just because it has the marker: it could point at a
+                # different installation. Nor may we remove a directory we did not create.
+                if ($existing.LinkType -ne 'Junction' -or
+                    @($existing.Target).Count -ne 1 -or
+                    -not [string]::Equals([IO.Path]::GetFullPath(@($existing.Target)[0]),
+                        $full, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "An existing path is not the expected junction: $link"
+                }
+            } else {
                 New-Item -ItemType Junction -Path $link -Target $full -ErrorAction Stop | Out-Null
             }
-            Write-Host "MKWCBUILD: Building through $link, because $full contains characters cmd.exe cannot parse"
+            Assert-File (Join-Path $link $MarkerFile) "$Kind junction marker"
+            Write-Host "MKWCBUILD: Building the $Kind through $link, because $full contains characters the native build cannot quote reliably"
             return $link
         } catch {
             $failures += "$link ($($_.Exception.Message))"
         }
     }
-    throw ("The toolchain path $full contains a character (one of ( ) & ^ % !) that the compiler " +
-        'cannot be invoked through, and no junction to it could be created: ' + ($failures -join '; ') +
-        '. Install to a path without those characters.')
+    throw ("The $Kind path $full cannot be passed safely to the native build, and no junction " +
+        'to it could be created: ' + ($failures -join '; ') + '. Install to a path of plain ' +
+        'letters, digits and spaces, or make a safe junction location available.')
 }
 
 function Get-MkwProjectPins([string]$ProjectFile) {
     <#
-    The Mario Kart Wii facts pinned by projects/mkwii/recomp.yml (game identity, clean input
+    The Mario Kart Wii facts pinned by a projects/*/recomp.yml (game identity, clean input
     digests, translation entry point, Retro-WFC endpoint), read from one place instead of being
     restated; Test-PinnedFacts.ps1 checks the copies that can't read YAML (C++ header, C#
     constants) against these values. Parsing is literal, not a YAML dependency, since the file is
@@ -87,7 +101,7 @@ function Get-MkwProjectPins([string]$ProjectFile) {
     #>
     Assert-File $ProjectFile 'Translation project file'
     $pins = [ordered]@{
-        GameId = ''; DolSha256 = ''; RelSha256 = ''; EntryPoint = ''; RetroWfcPayloadUri = ''
+        GameId = ''; Region = ''; DolSha256 = ''; RelSha256 = ''; EntryPoint = ''; RetroWfcPayloadUri = ''
     }
     $section = ''
     $inputKey = ''
@@ -98,6 +112,8 @@ function Get-MkwProjectPins([string]$ProjectFile) {
         if ($section -eq 'inputs' -and $line -match '^\s{2}([A-Za-z0-9_]+):\s*$') { $inputKey = $Matches[1]; continue }
         if ($section -eq 'project' -and $line -match '^\s*game_id:\s*(\S+)\s*$') {
             $pins.GameId = $Matches[1]
+        } elseif ($section -eq 'project' -and $line -match '^\s*region:\s*(\S+)\s*$') {
+            $pins.Region = $Matches[1]
         } elseif ($section -eq 'inputs' -and $line -match '^\s*sha256:\s*([0-9a-fA-F]{64})\s*$') {
             if ($inputKey -eq 'dol') { $pins.DolSha256 = $Matches[1].ToLowerInvariant() }
             elseif ($inputKey -eq 'rel') { $pins.RelSha256 = $Matches[1].ToLowerInvariant() }
@@ -116,8 +132,33 @@ function Get-MkwProjectPins([string]$ProjectFile) {
     return $pins
 }
 
+function Resolve-MkwProjectForAssets([string]$Workspace, [string]$AssetsDirectory) {
+    <#
+    The translation project pinned to the main.dol in AssetsDirectory, after checking that
+    StaticR.rel and any extracted disc data belong to the same release.
+    #>
+    $dolSha = Get-MkwFileSha256 (Join-Path $AssetsDirectory 'main.dol')
+    foreach ($file in Get-ChildItem -LiteralPath (Join-Path $Workspace 'projects') -Filter 'recomp.yml' -Recurse -File) {
+        $pins = Get-MkwProjectPins $file.FullName
+        if ($pins.DolSha256 -ne $dolSha) { continue }
+        if ((Get-MkwFileSha256 (Join-Path $AssetsDirectory 'StaticR.rel')) -ne $pins.RelSha256) {
+            throw "StaticR.rel does not match the clean $($pins.GameId) release of main.dol."
+        }
+        $bootBin = Join-Path $AssetsDirectory 'DATA\sys\boot.bin'
+        if (Test-Path -LiteralPath $bootBin -PathType Leaf) {
+            $discId = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($bootBin), 0, 6)
+            if ($discId -ne $pins.GameId) {
+                throw "The extracted game data is $discId but main.dol is $($pins.GameId); extract the game again."
+            }
+        }
+        return [pscustomobject]@{ Path = $file.FullName; Pins = $pins }
+    }
+    throw "main.dol (sha256 $dolSha) is not a supported clean Mario Kart Wii release."
+}
+
 function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Description,
-    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '', [bool]$WaitForProcessTree = $true) {
+    [string]$LogPrefix = 'MKWCBUILD', [string]$StepId = '', [bool]$WaitForProcessTree = $true,
+    [int]$TimeoutSeconds = 0) {
     <#
     Runs a build tool and turns a non-zero exit code into a described failure. By default,
     Start-Process -Wait waits for the whole process tree, since a .NET single-file bundle host may
@@ -126,20 +167,39 @@ function Invoke-Checked([string]$FilePath, [string[]]$Arguments, [string]$Descri
     Start-Process doesn't publish $LASTEXITCODE, so this sets it manually for callers that check it.
     -StepId emits the machine-readable form the installer's progress bar consumes (BuildStepIds in
     WiiCompiled.Setup/InstallProgress.cs); the human sentence stays on the same log line.
+    -TimeoutSeconds waits on the process itself and kills its tree when time runs out.
     #>
     if ($StepId) { Write-Host "${LogPrefix}:STEP:${StepId} $Description" }
     else { Write-Host "${LogPrefix}: $Description" }
     $quotedArguments = @($Arguments | ForEach-Object {
         if ($_.Contains('"')) { throw "A native build argument contains an unsupported quote: $_" }
-        '"' + $_ + '"'
+        # Backslashes directly before the closing quote would otherwise escape it.
+        '"' + ($_ -replace '(\\+)$', '$1$1') + '"'
     })
-    if ($WaitForProcessTree) {
+    if ($TimeoutSeconds -gt 0) {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments -NoNewWindow -PassThru
+        # Holding the handle keeps ExitCode readable once the process has exited.
+        $null = $process.Handle
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            # taskkill's stderr would end the script under 'Stop' before the message below.
+            try { & taskkill.exe /T /F /PID $process.Id 2>&1 | Out-Null } catch {}
+            throw "$Description did not finish within $TimeoutSeconds seconds and was stopped."
+        }
+        $exitCode = $process.ExitCode
+    } elseif ($WaitForProcessTree) {
         $process = Start-Process -FilePath $FilePath -ArgumentList $quotedArguments `
             -NoNewWindow -Wait -PassThru
         $exitCode = $process.ExitCode
     } else {
-        & $FilePath @Arguments
-        $exitCode = $LASTEXITCODE
+        # Tools report progress on stderr (CMake message()); only the exit code decides failure.
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $FilePath @Arguments
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
     }
     $global:LASTEXITCODE = $exitCode
     if ($exitCode -ne 0) { throw "$Description failed with exit code $exitCode." }
@@ -188,68 +248,121 @@ function Get-MkwDawnRuntimeSha256([string]$DependenciesDirectory) {
     return Get-MkwFileSha256 $runtime
 }
 
-function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
+function ConvertTo-MkwHex([byte[]]$Bytes) {
+    return [BitConverter]::ToString($Bytes).Replace('-', '').ToLowerInvariant()
+}
+
+function Get-MkwSourceTreeFingerprint([string]$Directory, [string[]]$ExcludedTopDirectories = @()) {
     <#
-    SHA-256 over runtime/third_party, the vendored sources behind the prebuilt package. The
-    precompiled Crypto++ archive is linked while first-party TUs compile against the same headers,
-    so a workspace whose vendored tree moved on must not consume archives harvested from an older
-    one (same reasoning as the aurora fingerprint below). Unlike that scan this hashes hidden files
-    too, since Build-Installer stages this tree with Copy-Item -Force. Returns '' when absent.
+    SHA-256 over "relative-path content-sha256" lines of a source tree. It must come out the same
+    under powershell.exe 5.1 and pwsh 7 and for any checkout's line endings, because the package is
+    harvested on a release machine and re-checked on every user's: paths are sorted ordinally (not
+    with Sort-Object, whose culture collation differs between NLS and ICU) and text content is hashed
+    with CRLF folded to LF. Dot-paths are skipped by name, not by the hidden attribute, which the
+    payload zip drops. Returns '' when the tree is absent.
     #>
-    if ([string]::IsNullOrWhiteSpace($ThirdPartyDirectory)) { return '' }
-    if (-not (Test-Path -LiteralPath $ThirdPartyDirectory -PathType Container)) { return '' }
-    $root = [IO.Path]::GetFullPath($ThirdPartyDirectory).TrimEnd('\')
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
+    if ([string]::IsNullOrWhiteSpace($Directory)) { return '' }
+    if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return '' }
+    $root = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    $relatives = [Collections.Generic.List[string]]::new()
+    foreach ($file in [IO.Directory]::EnumerateFiles($root, '*', [IO.SearchOption]::AllDirectories)) {
+        $relative = $file.Substring($root.Length + 1).Replace('\', '/')
+        $parts = $relative.Split('/')
+        if ($parts.Length -gt 1 -and $ExcludedTopDirectories -contains $parts[0]) { continue }
+        $hidden = $false
+        foreach ($part in $parts) { if ($part.StartsWith('.', [StringComparison]::Ordinal)) { $hidden = $true; break } }
+        if (-not $hidden) { $relatives.Add($relative) }
+    }
+    $sorted = $relatives.ToArray()
+    [Array]::Sort($sorted, [StringComparer]::Ordinal)
+
+    $latin1 = [Text.Encoding]::GetEncoding(28591)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         $builder = [Text.StringBuilder]::new()
-        foreach ($file in $files) {
-            $relative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
-            $content = Get-MkwFileSha256 $file.FullName
-            [void]$builder.Append($relative).Append(' ').Append($content).Append("`n")
+        foreach ($relative in $sorted) {
+            $bytes = [IO.File]::ReadAllBytes($root + '\' + $relative.Replace('/', '\'))
+            # Latin-1 maps bytes 1:1, so the round trip only changes the line endings.
+            $text = $latin1.GetString($bytes)
+            if ($text.IndexOf([char]0) -lt 0 -and $text.Contains("`r`n")) {
+                $bytes = $latin1.GetBytes($text.Replace("`r`n", "`n"))
+            }
+            [void]$builder.Append($relative).Append(' ').Append((ConvertTo-MkwHex $sha.ComputeHash($bytes))).Append("`n")
         }
-        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
+        return ConvertTo-MkwHex $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
     } finally { $sha.Dispose() }
-    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Get-MkwThirdPartySourceFingerprint([string]$ThirdPartyDirectory) {
+    <#
+    runtime/third_party, the vendored sources behind the prebuilt package. The precompiled Crypto++
+    archive is linked while first-party TUs compile against the same headers, so a workspace whose
+    vendored tree moved on must not consume archives harvested from an older one.
+    #>
+    return Get-MkwSourceTreeFingerprint $ThirdPartyDirectory
 }
 
 function Get-MkwAuroraSourceFingerprint([string]$AuroraDirectory) {
     <#
-    SHA-256 over the aurora sources the precompiled archives were harvested from. The compiler,
-    flag, and Dawn digests only prove the package agrees with its target environment; none notice
-    aurora itself moving on, and since the runtime calls aurora headers directly, a package
-    harvested before an aurora change links old code against new call sites (undefined symbol at
-    best, silently stale renderer at worst). extern/ is excluded because the payload ships those
-    trees separately. Returns '' when the tree is absent.
+    The aurora sources the precompiled archives were harvested from. The compiler, flag, and Dawn
+    digests only prove the package agrees with its target environment; none notice aurora itself
+    moving on, and since the runtime calls aurora headers directly, a package harvested before an
+    aurora change links old code against new call sites. extern/ is excluded because the payload
+    ships those trees separately.
     #>
-    if ([string]::IsNullOrWhiteSpace($AuroraDirectory)) { return '' }
-    if (-not (Test-Path -LiteralPath $AuroraDirectory -PathType Container)) { return '' }
-    $root = [IO.Path]::GetFullPath($AuroraDirectory).TrimEnd('\')
-    $excludedPrefixes = @(
-        (Join-Path $root 'extern') + '\',
-        (Join-Path $root 'build') + '\'
-    )
-    # Hidden files are skipped deliberately: Build-Installer.ps1 stages this tree
-    # with Copy-Item -Recurse (no -Force), so they never reach the payload and
-    # hashing them would make the two sides disagree by construction.
-    $files = Get-ChildItem -LiteralPath $root -Recurse -File |
-        Where-Object {
-            $full = $_.FullName
-            -not ($excludedPrefixes | Where-Object { $full.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
-        } |
-        Sort-Object { $_.FullName.Substring($root.Length + 1).Replace('\', '/') }
-    $sha = [Security.Cryptography.SHA256]::Create()
+    return Get-MkwSourceTreeFingerprint $AuroraDirectory @('extern', 'build')
+}
+
+function Resolve-MkwNativePrebuiltDirectory([string]$DependenciesDirectory, [string]$ToolchainBin,
+    [string]$AuroraDirectory, [string]$ThirdPartyDirectory) {
+    <#
+    The shipped precompiled aurora/third-party package, verified against its recorded provenance
+    (exact compiler, exact flags, sources) before use. Anything unexpected falls back to building
+    from source. Shared with Build-Installer.ps1, which runs it against the staged payload under
+    powershell.exe so a package users would reject never ships.
+    #>
+    $package = Join-Path $DependenciesDirectory 'native_prebuilt'
+    $provenancePath = Join-Path $package 'provenance.json'
+    if (-not (Test-Path -LiteralPath $provenancePath -PathType Leaf)) {
+        Write-Host 'MKWCBUILD: No precompiled aurora package was shipped; building it from source'
+        return ''
+    }
     try {
-        $builder = [Text.StringBuilder]::new()
-        foreach ($file in $files) {
-            $relative = $file.FullName.Substring($root.Length + 1).Replace('\', '/')
-            $content = Get-MkwFileSha256 $file.FullName
-            [void]$builder.Append($relative).Append(' ').Append($content).Append("`n")
+        $provenance = Get-Content -LiteralPath $provenancePath -Raw | ConvertFrom-Json
+        if ($provenance.CompilerSha256 -ne (Get-MkwFileSha256 (Join-Path $ToolchainBin 'clang-22.exe'))) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built by a different compiler; building it from source'
+            return ''
         }
-        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($builder.ToString()))
-    } finally { $sha.Dispose() }
-    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+        if ($provenance.FlagFingerprint -ne (Get-MkwNativeFlagFingerprint)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built with different flags; building it from source'
+            return ''
+        }
+        # The archives embed Dawn's headers and link its import library; a different Dawn is an
+        # ABI mismatch that only shows up as a crash inside the GPU backend.
+        $recordedDawn = $provenance.PSObject.Properties['DawnRuntimeSha256']
+        if ($null -eq $recordedDawn -or
+            $recordedDawn.Value -ne (Get-MkwDawnRuntimeSha256 $DependenciesDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built against a different Dawn; building it from source'
+            return ''
+        }
+        $recordedAurora = $provenance.PSObject.Properties['AuroraSourceFingerprint']
+        if ($null -eq $recordedAurora -or
+            $recordedAurora.Value -ne (Get-MkwAuroraSourceFingerprint $AuroraDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different aurora sources; building it from source'
+            return ''
+        }
+        $recordedThirdParty = $provenance.PSObject.Properties['ThirdPartySourceFingerprint']
+        if ($null -eq $recordedThirdParty -or
+            $recordedThirdParty.Value -ne (Get-MkwThirdPartySourceFingerprint $ThirdPartyDirectory)) {
+            Write-Host 'MKWCBUILD: The precompiled aurora package was built from different vendored third-party sources; building it from source'
+            return ''
+        }
+    } catch {
+        Write-Host "MKWCBUILD: The precompiled aurora package could not be validated ($($_.Exception.Message)); building it from source"
+        return ''
+    }
+    Write-Host 'MKWCBUILD: Using the precompiled aurora and third-party libraries'
+    return $package
 }
 
 function ConvertTo-MkwCMakePath([string]$Path) {
@@ -298,9 +411,9 @@ function Get-MkwNativeConfigureArguments {
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($NativePrebuiltDirectory)) {
-        $arguments += "-DMKW_NATIVE_PREBUILT_DIR=$(ConvertTo-MkwCMakePath $NativePrebuiltDirectory)"
-    }
+    # Always set, so a reused CMake cache can never keep a package this run rejected.
+    $arguments += if ([string]::IsNullOrWhiteSpace($NativePrebuiltDirectory)) { '-DMKW_NATIVE_PREBUILT_DIR=' }
+        else { "-DMKW_NATIVE_PREBUILT_DIR=$(ConvertTo-MkwCMakePath $NativePrebuiltDirectory)" }
 
     $arguments += $AdditionalArguments
     return $arguments

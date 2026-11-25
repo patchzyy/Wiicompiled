@@ -12,3 +12,4 @@
 #include "isa/ppc_isa_int.h"
 #include "isa/ppc_isa_float.h"
 #include "isa/ppc_isa_quantized.h"
+#include "memory.h"

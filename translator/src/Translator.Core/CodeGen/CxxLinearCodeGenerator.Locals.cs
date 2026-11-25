@@ -187,7 +187,8 @@ public sealed partial class CxxLinearCodeGenerator
 
     private sealed record PairedFlowStateMaps(
         Dictionary<string, HashSet<string>> In,
-        Dictionary<string, HashSet<string>> Out);
+        Dictionary<string, HashSet<string>> Out,
+        Dictionary<(string Block, int Index), HashSet<string>> Before);
 
     private static HashSet<string> CollectNonRegisterLocals(IrFunction function)
     {
@@ -253,6 +254,12 @@ public sealed partial class CxxLinearCodeGenerator
             ? index
             : -1;
 
+    private static uint ClearPairedBit(uint mask, string destination)
+    {
+        var bit = PairedFloatRegisterBit(destination);
+        return bit >= 0 ? mask & ~(1u << bit) : mask;
+    }
+
     private static HashSet<string> MaterializePairedFloatSet(uint mask, StringComparer comparer)
     {
         var set = new HashSet<string>(comparer);
@@ -270,7 +277,9 @@ public sealed partial class CxxLinearCodeGenerator
     private static PairedFlowStateMaps ComputePairedFlowStates(
         IrFunction func,
         IrCfg cfg,
-        IGuestFunctionAbiProvider guestAbiProvider)
+        IGuestFunctionAbiProvider guestAbiProvider,
+        IReadOnlyDictionary<string, IReadOnlySet<int>>? recordStatesBefore = null,
+        bool inlineGuestThunksKeepTags = false)
     {
         var comparer = StringComparer.OrdinalIgnoreCase;
         // f0..f31 occupy bits 0..31. The fixpoint used to seed a fresh
@@ -310,6 +319,167 @@ public sealed partial class CxxLinearCodeGenerator
                 .ToList();
         }
 
+        // One instruction's effect on the paired mask. The phi case reads the
+        // predecessors' current out masks, so it is only exact once they settle.
+        uint TransferPairedMask(IrInstruction ins, uint newOut)
+        {
+            switch (ins)
+            {
+                case IrPhi phi:
+                    {
+                        var destBit = PairedFloatRegisterBit(phi.Destination);
+                        if (destBit < 0)
+                        {
+                            break;
+                        }
+
+                        var allPaired = true;
+                        foreach (var (predLabel, src) in phi.Sources)
+                        {
+                            var srcBit = PairedFloatRegisterBit(src);
+                            if (srcBit < 0)
+                            {
+                                allPaired = false;
+                                break;
+                            }
+
+                            if (!blockIndices.TryGetValue(predLabel, out var predIndex) ||
+                                (outMasks[predIndex] & (1u << srcBit)) == 0)
+                            {
+                                allPaired = false;
+                                break;
+                            }
+                        }
+
+                        if (allPaired)
+                        {
+                            newOut |= 1u << destBit;
+                        }
+                        else
+                        {
+                            newOut &= ~(1u << destBit);
+                        }
+                        break;
+                    }
+                case IrCall call:
+                    {
+                        // The emitter expands save/restore thunks in place. Only
+                        // a restore changes tags, to scalar for what it reloads. A
+                        // resume label's recorded state has to match the emitter.
+                        if (inlineGuestThunksKeepTags &&
+                            TryParseAddress(call.Target, out var thunkAddress) &&
+                            TryGetInlineGuestThunkSpec(thunkAddress, out var thunkSpec))
+                        {
+                            if (thunkSpec.Kind == InlineGuestThunkKind.RestFpr)
+                            {
+                                for (var reg = thunkSpec.StartRegister; reg <= 31; reg++)
+                                {
+                                    newOut &= ~(1u << reg);
+                                }
+                            }
+                            break;
+                        }
+
+                        if (IsGuestCallTarget(call.Target))
+                        {
+                            // Normalize proven scalar arguments and treat f1 as the
+                            // conventional scalar return. Preserve f2-f13 representation
+                            // tags when the callee leaves their payloads untouched.
+                            newOut = ClearPairedGuestScalarFloatArguments(
+                                call.Target, call.Arguments, newOut, guestAbiProvider);
+                            newOut &= ~f1Bit;
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(call.Destination))
+                        {
+                            var destBit = PairedFloatRegisterBit(call.Destination);
+                            if (destBit < 0)
+                            {
+                                break;
+                            }
+                            if (IsPairedProducerTarget(call.Target))
+                            {
+                                newOut |= 1u << destBit;
+                            }
+                            else
+                            {
+                                newOut &= ~(1u << destBit);
+                            }
+                        }
+                        break;
+                    }
+                case IrIndirectCall icall when !string.IsNullOrWhiteSpace(icall.Destination):
+                    {
+                        newOut &= ~f1Bit;
+                        var destBit = PairedFloatRegisterBit(icall.Destination);
+                        if (destBit >= 0)
+                        {
+                            newOut &= ~(1u << destBit);
+                        }
+                        break;
+                    }
+                case IrIndirectCall icall:
+                    newOut &= ~f1Bit;
+                    break;
+                case IrAssign assign:
+                    {
+                        var destBit = PairedFloatRegisterBit(assign.Destination);
+                        if (destBit < 0)
+                        {
+                            break;
+                        }
+
+                        if (assign.Value.Kind == "register" && assign.Value.RegisterName != null)
+                        {
+                            var srcBit = PairedFloatRegisterBit(assign.Value.RegisterName);
+                            if (srcBit >= 0 && (newOut & (1u << srcBit)) != 0)
+                            {
+                                newOut |= 1u << destBit;
+                            }
+                            else
+                            {
+                                newOut &= ~(1u << destBit);
+                            }
+                        }
+                        else
+                        {
+                            newOut &= ~(1u << destBit);
+                        }
+                        break;
+                    }
+                case IrBinary bin:
+                    {
+                        var destBit = PairedFloatRegisterBit(bin.Destination);
+                        if (destBit >= 0)
+                        {
+                            newOut &= ~(1u << destBit);
+                        }
+                        break;
+                    }
+                case IrLoad load:
+                    newOut = ClearPairedBit(newOut, load.Destination);
+                    break;
+                case IrResolvedLoad load:
+                    newOut = ClearPairedBit(newOut, load.Destination);
+                    break;
+                case IrResolvedLoadPair pair:
+                    newOut = ClearPairedBit(newOut, pair.FirstDestination);
+                    newOut = ClearPairedBit(newOut, pair.SecondDestination);
+                    break;
+                case IrResolvedPsqLoad load:
+                    {
+                        var destBit = PairedFloatRegisterBit(load.Destination);
+                        if (destBit >= 0)
+                        {
+                            newOut |= 1u << destBit;
+                        }
+                        break;
+                    }
+            }
+
+            return newOut;
+        }
+
         var changed = true;
         while (changed)
         {
@@ -337,132 +507,7 @@ public sealed partial class CxxLinearCodeGenerator
                 var newOut = newIn;
                 foreach (var ins in block.Instructions)
                 {
-                    switch (ins)
-                    {
-                        case IrPhi phi:
-                            {
-                                var destBit = PairedFloatRegisterBit(phi.Destination);
-                                if (destBit < 0)
-                                {
-                                    break;
-                                }
-
-                                var allPaired = true;
-                                foreach (var (predLabel, src) in phi.Sources)
-                                {
-                                    var srcBit = PairedFloatRegisterBit(src);
-                                    if (srcBit < 0)
-                                    {
-                                        allPaired = false;
-                                        break;
-                                    }
-
-                                    if (!blockIndices.TryGetValue(predLabel, out var predIndex) ||
-                                        (outMasks[predIndex] & (1u << srcBit)) == 0)
-                                    {
-                                        allPaired = false;
-                                        break;
-                                    }
-                                }
-
-                                if (allPaired)
-                                {
-                                    newOut |= 1u << destBit;
-                                }
-                                else
-                                {
-                                    newOut &= ~(1u << destBit);
-                                }
-                                break;
-                            }
-                        case IrCall call:
-                            {
-                                if (IsGuestCallTarget(call.Target))
-                                {
-                                    // Normalize proven scalar arguments and treat f1 as the
-                                    // conventional scalar return. Preserve f2-f13 representation
-                                    // tags when the callee leaves their payloads untouched.
-                                    newOut = ClearPairedGuestScalarFloatArguments(
-                                        call.Target, call.Arguments, newOut, guestAbiProvider);
-                                    newOut &= ~f1Bit;
-                                }
-
-                                if (!string.IsNullOrWhiteSpace(call.Destination))
-                                {
-                                    var destBit = PairedFloatRegisterBit(call.Destination);
-                                    if (destBit < 0)
-                                    {
-                                        break;
-                                    }
-                                    if (IsPairedProducerTarget(call.Target))
-                                    {
-                                        newOut |= 1u << destBit;
-                                    }
-                                    else
-                                    {
-                                        newOut &= ~(1u << destBit);
-                                    }
-                                }
-                                break;
-                            }
-                        case IrIndirectCall icall when !string.IsNullOrWhiteSpace(icall.Destination):
-                            {
-                                newOut &= ~f1Bit;
-                                var destBit = PairedFloatRegisterBit(icall.Destination);
-                                if (destBit >= 0)
-                                {
-                                    newOut &= ~(1u << destBit);
-                                }
-                                break;
-                            }
-                        case IrIndirectCall icall:
-                            newOut &= ~f1Bit;
-                            break;
-                        case IrAssign assign:
-                            {
-                                var destBit = PairedFloatRegisterBit(assign.Destination);
-                                if (destBit < 0)
-                                {
-                                    break;
-                                }
-
-                                if (assign.Value.Kind == "register" && assign.Value.RegisterName != null)
-                                {
-                                    var srcBit = PairedFloatRegisterBit(assign.Value.RegisterName);
-                                    if (srcBit >= 0 && (newOut & (1u << srcBit)) != 0)
-                                    {
-                                        newOut |= 1u << destBit;
-                                    }
-                                    else
-                                    {
-                                        newOut &= ~(1u << destBit);
-                                    }
-                                }
-                                else
-                                {
-                                    newOut &= ~(1u << destBit);
-                                }
-                                break;
-                            }
-                        case IrBinary bin:
-                            {
-                                var destBit = PairedFloatRegisterBit(bin.Destination);
-                                if (destBit >= 0)
-                                {
-                                    newOut &= ~(1u << destBit);
-                                }
-                                break;
-                            }
-                        case IrLoad load:
-                            {
-                                var destBit = PairedFloatRegisterBit(load.Destination);
-                                if (destBit >= 0)
-                                {
-                                    newOut &= ~(1u << destBit);
-                                }
-                                break;
-                            }
-                    }
+                    newOut = TransferPairedMask(ins, newOut);
                 }
 
                 if (newIn != inMasks[b])
@@ -487,7 +532,32 @@ public sealed partial class CxxLinearCodeGenerator
             outMap[blocks[i].Label] = MaterializePairedFloatSet(outMasks[i], comparer);
         }
 
-        return new PairedFlowStateMaps(inMap, outMap);
+        // The settled state in front of selected instructions, for labels a
+        // resume can reach in the middle of a block.
+        var beforeMap = new Dictionary<(string Block, int Index), HashSet<string>>();
+        if (recordStatesBefore is not null)
+        {
+            for (var b = 0; b < blockCount; b++)
+            {
+                var block = blocks[b];
+                if (!recordStatesBefore.TryGetValue(block.Label, out var indices) || indices.Count == 0)
+                {
+                    continue;
+                }
+
+                var mask = inMasks[b];
+                for (var i = 0; i < block.Instructions.Count; i++)
+                {
+                    if (indices.Contains(i))
+                    {
+                        beforeMap[(block.Label, i)] = MaterializePairedFloatSet(mask, comparer);
+                    }
+                    mask = TransferPairedMask(block.Instructions[i], mask);
+                }
+            }
+        }
+
+        return new PairedFlowStateMaps(inMap, outMap, beforeMap);
     }
 
     private static uint ClearPairedGuestScalarFloatArguments(

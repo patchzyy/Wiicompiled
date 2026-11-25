@@ -12,7 +12,6 @@
 #include <cctype>
 
 static constexpr uint32_t MKW_TITLE_ID_HI = 0x00010004;
-static constexpr uint32_t MKW_TITLE_ID_LO = 0x524D4350; // "RMCP" fallback
 
 static bool IsValidEspTitleCode(uint32_t code) {
     for (int shift = 24; shift >= 0; shift -= 8) {
@@ -32,7 +31,7 @@ static uint32_t CurrentTitleIdLo() {
         }
     }
 
-    return MKW_TITLE_ID_LO;
+    return ::GuestRegion::CurrentFacts().gameCode;
 }
 
 // The guest asked for its title ID or data directory through a pointer we cannot

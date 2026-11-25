@@ -15,6 +15,8 @@ internal static class DesktopEntry
 
     public static void Create(string profile, string displayName, string exePath)
     {
+        // macOS has no freedesktop menu; the installed .app bundle is the launchable entry itself.
+        if (OperatingSystem.IsMacOS()) return;
         // exePath is the installed native runtime binary itself (e.g.
         // .../Install/Base/WiiCompiled) - each profile already gets its own .desktop file here,
         // so there is no need to route through the setup tool's own launch-base/launch-retro
