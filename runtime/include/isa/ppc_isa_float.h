@@ -436,50 +436,69 @@ inline double PpcPackIntegerWordInline(int32_t value)
 // A float product is exact in double, so a*c+b computed in double rounds once before the
 // conversion to float (a contracted double FMA gives the same sum). That double rounding equals
 // the single fused rounding unless the double sum lands exactly on a float halfway point, and the
-// halfway check below only knows where that point sits for normal floats. Halfway sums, results
-// at or below FLT_MIN and non-finite results therefore go to std::fma. So do subnormal operands:
-// under DAZ the conversion zeroes them, and the CRT's software fmaf does not treat them that way.
+// halfway check below only knows where that point sits for normal floats. Halfway sums and results
+// at or below FLT_MIN therefore go to std::fma. So do subnormal operands (under DAZ the conversion
+// zeroes them, unlike the CRT's software fmaf) and non-finite operands (evaluating 0*Inf or
+// converting an sNaN in double would raise FE_INVALID before falling back to std::fma).
 inline float PpcFusedMultiplyAddFloatViaDoubleInline(float a, float c, float b)
 {
-    const auto isSubnormal = [](float value) {
-        return (PpcBitCastToU32Inline(value) & 0x7FFFFFFFu) - 1u < 0x007FFFFFu;
+    const auto isNormalOrZero = [](float value) {
+        const uint32_t absBits = PpcBitCastToU32Inline(value) & 0x7FFFFFFFu;
+        return absBits == 0u || (absBits - 0x00800000u) < 0x7F000000u;
     };
-    if (!isSubnormal(a) && !isSubnormal(c) && !isSubnormal(b)) [[likely]] {
+    if (isNormalOrZero(a) && isNormalOrZero(c) && isNormalOrZero(b)) [[likely]] {
         const double sum =
             static_cast<double>(a) * static_cast<double>(c) + static_cast<double>(b);
         const uint64_t bits = PpcBitCastToU64Inline(sum);
         const uint64_t magnitude = bits & 0x7FFFFFFFFFFFFFFFULL;
         constexpr uint64_t kFloatMinNormal = 0x3810000000000000ULL;
-        constexpr uint64_t kInfinity = 0x7FF0000000000000ULL;
         // The 29 low bits double keeps below a normal float's last bit, and a float halfway point.
         constexpr uint64_t kBelowFloatLsbMask = 0x1FFFFFFFULL;
         constexpr uint64_t kFloatHalfway = 0x10000000ULL;
-        const bool normalOrZero =
-            magnitude == 0 || (magnitude > kFloatMinNormal && magnitude < kInfinity);
-        if (normalOrZero && (bits & kBelowFloatLsbMask) != kFloatHalfway) [[likely]]
+        if ((magnitude == 0 || magnitude > kFloatMinNormal) &&
+            (bits & kBelowFloatLsbMask) != kFloatHalfway) [[likely]]
             return static_cast<float>(sum);
     }
     return std::fma(a, c, b);
 }
 
-// x86-64-v2 has no FMA instruction, so std::fma(float) is a CRT call there. On a CPU without FMA3
-// the CRT computes it in software at roughly 12x the cost of the hardware instruction, and the
-// paired madd family makes two calls per instruction, which slows THP video decoding several
-// times over on those CPUs. A v2 build also runs on CPUs that have FMA3 but not the rest of v3
-// (AMD Piledriver, for one), where the CRT reaches the hardware instruction and stays cheaper.
+// x86-64-v2 has no FMA instruction, so std::fma(float) is a CRT call there. On a CPU without
+// hardware FMA the CRT computes it in software at roughly 12x the cost of the hardware
+// instruction, and the paired madd family makes two calls per instruction, which slows THP video
+// decoding several times over on those CPUs. A v2 build also runs on CPUs that have hardware FMA
+// without the rest of v3 (AMD Piledriver with FMA3, or first-gen Bulldozer with FMA4 on glibc),
+// where the CRT reaches the hardware instruction and stays cheaper.
 inline float PpcFusedMultiplyAddFloatInline(float a, float c, float b)
 {
-#if defined(__x86_64__) && !defined(__FMA__)
-    if (!__builtin_cpu_supports("fma"))
+#if defined(__x86_64__) && !defined(__FMA__) && !(defined(__GLIBC__) && defined(__FMA4__))
+    bool crtHasHardwareFma = __builtin_cpu_supports("fma");
+#if defined(__GLIBC__)
+    // glibc's fmaf also dispatches to FMA4.
+    crtHasHardwareFma = crtHasHardwareFma ||
+                        (__builtin_cpu_supports("fma4") && __builtin_cpu_supports("avx"));
+#endif
+    if (!crtHasHardwareFma)
         return PpcFusedMultiplyAddFloatViaDoubleInline(a, c, b);
 #endif
     return std::fma(a, c, b);
 }
 
+// The addend a lane FMA sees. A NaN subtractor stays unnegated: x86 vfmsub (the v3 path), the NEON
+// path and Gekko all return it with its sign intact, and negating it first would flip that sign.
+template <bool Subtract>
+inline float PpcPsMaddLaneAddendInline(float b)
+{
+    if constexpr (Subtract) {
+        if ((PpcBitCastToU32Inline(b) & 0x7FFFFFFFu) <= 0x7F800000u)
+            return -b;
+    }
+    return b;
+}
+
 template <bool Subtract>
 inline float PpcAccuratePsMaddLaneInline(float a, float c, float b)
 {
-    const float signedB = Subtract ? -b : b;
+    const float signedB = PpcPsMaddLaneAddendInline<Subtract>(b);
     // Paired values are stored as exact float32 lanes in this runtime.  An
     // explicit float FMA therefore matches Gekko's single rounding point;
     // multiplying and adding separately can differ by an ULP on ordinary
@@ -490,7 +509,7 @@ inline float PpcAccuratePsMaddLaneInline(float a, float c, float b)
 template <bool Subtract>
 inline float PpcAccuratePsMaddLaneNoNiInline(float a, float c, float b)
 {
-    const float signedB = Subtract ? -b : b;
+    const float signedB = PpcPsMaddLaneAddendInline<Subtract>(b);
     return PpcFusedMultiplyAddFloatInline(a, c, signedB);
 }
 

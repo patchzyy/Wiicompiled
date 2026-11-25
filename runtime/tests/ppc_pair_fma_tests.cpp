@@ -1,6 +1,7 @@
 #include "isa/ppc_isa_float.h"
 
 #include <array>
+#include <cfenv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -18,29 +19,41 @@ bool SameBits(double lhs, double rhs)
     return PpcBitCastToU64Inline(lhs) == PpcBitCastToU64Inline(rhs);
 }
 
+// The addend of a fused subtract: a NaN subtractor keeps its sign, as x86 vfmsub and Gekko leave it.
+float SubtractAddend(float b, bool subtract)
+{
+    return subtract && !std::isnan(b) ? -b : b;
+}
+
 bool CheckPair(double actual, float a0, float a1, float c0, float c1, float b0, float b1,
                bool subtract, const char* operation)
 {
-    const float expected0 = subtract ? std::fma(a0, c0, -b0) : std::fma(a0, c0, b0);
-    const float expected1 = subtract ? std::fma(a1, c1, -b1) : std::fma(a1, c1, b1);
+    const float expected0 = std::fma(a0, c0, SubtractAddend(b0, subtract));
+    const float expected1 = std::fma(a1, c1, SubtractAddend(b1, subtract));
     const double expected = PpcPackPairedInline(expected0, expected1);
     if (SameBits(actual, expected)) {
         return true;
     }
-    std::fprintf(stderr, "%s produced the wrong paired lanes\n", operation);
+    std::fprintf(stderr, "%s produced the wrong paired lanes (0x%016llx, expected 0x%016llx)\n",
+                 operation, static_cast<unsigned long long>(PpcBitCastToU64Inline(actual)),
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(expected)));
     return false;
 }
 
 bool CheckNegatedPair(double actual, float a0, float a1, float c0, float c1, float b0, float b1,
                       bool subtract, const char* operation)
 {
-    const float expected0 = -std::fma(a0, c0, subtract ? -b0 : b0);
-    const float expected1 = -std::fma(a1, c1, subtract ? -b1 : b1);
+    const float raw0 = std::fma(a0, c0, SubtractAddend(b0, subtract));
+    const float raw1 = std::fma(a1, c1, SubtractAddend(b1, subtract));
+    const float expected0 = std::isnan(raw0) ? raw0 : -raw0;
+    const float expected1 = std::isnan(raw1) ? raw1 : -raw1;
     const double expected = PpcPackPairedInline(expected0, expected1);
     if (SameBits(actual, expected)) {
         return true;
     }
-    std::fprintf(stderr, "%s produced the wrong paired lanes\n", operation);
+    std::fprintf(stderr, "%s produced the wrong paired lanes (0x%016llx, expected 0x%016llx)\n",
+                 operation, static_cast<unsigned long long>(PpcBitCastToU64Inline(actual)),
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(expected)));
     return false;
 }
 
@@ -53,9 +66,119 @@ bool CheckPairedFamily(float a0, float a1, float c0, float c1, float b0, float b
     bool ok = true;
     ok &= CheckPair(PPC_PsMaddNoNiInline(a, c, b), a0, a1, c0, c1, b0, b1, false, "ps_madd");
     ok &= CheckPair(PPC_PsMsubNoNiInline(a, c, b), a0, a1, c0, c1, b0, b1, true, "ps_msub");
+    ok &= CheckPair(PPC_PsMadds0Inline(a, c, b), a0, a1, c0, c0, b0, b1, false, "ps_madds0");
+    ok &= CheckPair(PPC_PsMadds1Inline(a, c, b), a0, a1, c1, c1, b0, b1, false, "ps_madds1");
     ok &= CheckNegatedPair(PPC_PsNmaddInline(a, c, b), a0, a1, c0, c1, b0, b1, false, "ps_nmadd");
     ok &= CheckNegatedPair(PPC_PsNmsubNoNiInline(a, c, b), a0, a1, c0, c1, b0, b1, true,
                            "ps_nmsub");
+    return ok;
+}
+
+bool CheckPairedSpecialCases()
+{
+    const float posQNaN = PpcBitCastToFloatInline(0x7FC12345u);
+    const float negQNaN = PpcBitCastToFloatInline(0xFFC54321u);
+    const float sNaN = PpcBitCastToFloatInline(0x7F812345u);
+
+    bool ok = true;
+    // Signed-zero propagation and exact cancellation across both lanes and broadcast ops.
+    ok &= CheckPairedFamily(0.0f, -0.0f, 1.0f, 1.0f, 0.0f, -0.0f);
+    ok &= CheckPairedFamily(-0.0f, 0.0f, 1.0f, -1.0f, -0.0f, -0.0f);
+    ok &= CheckPairedFamily(3.0f, -3.0f, 2.0f, 2.0f, -6.0f, 6.0f);
+    // Distinct broadcast multiplier lanes to catch ps_madds0 / ps_madds1 lane selection bugs.
+    ok &= CheckPairedFamily(2.0f, 5.0f, 7.0f, -11.0f, 13.0f, -17.0f);
+    // Quiet and signaling NaNs: verify negated ops preserve NaN sign bits.
+    ok &= CheckPairedFamily(posQNaN, 2.0f, 3.0f, -4.0f, 1.0f, negQNaN);
+    ok &= CheckPairedFamily(sNaN, 1.0f, 2.0f, 3.0f, 4.0f, sNaN);
+    return ok;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+#define PPC_FMA_TEST_NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define PPC_FMA_TEST_NOINLINE __declspec(noinline)
+#else
+#define PPC_FMA_TEST_NOINLINE
+#endif
+
+PPC_FMA_TEST_NOINLINE float EvalStdFma(float a, float c, float b)
+{
+    return std::fma(a, c, b);
+}
+
+PPC_FMA_TEST_NOINLINE float EvalViaDoubleFma(float a, float c, float b)
+{
+    return PpcFusedMultiplyAddFloatViaDoubleInline(a, c, b);
+}
+
+PPC_FMA_TEST_NOINLINE float EvalDispatchedFma(float a, float c, float b)
+{
+    return PpcFusedMultiplyAddFloatInline(a, c, b);
+}
+
+// The operands are read from volatiles after feclearexcept and the result is stored to one before
+// fetestexcept. Clang otherwise treats the noinline FP call as side-effect free and is free to move
+// it past either flag call.
+float EvaluateTrackingInvalid(float (*eval)(float, float, float), float a, float c, float b,
+                              bool& invalid)
+{
+    volatile float va = a;
+    volatile float vc = c;
+    volatile float vb = b;
+    volatile float result;
+    std::feclearexcept(FE_ALL_EXCEPT);
+    result = eval(va, vc, vb);
+    invalid = std::fetestexcept(FE_INVALID) != 0;
+    return result;
+}
+
+bool CheckInvalidExceptionParity(const char* mode)
+{
+    constexpr float kInf = std::numeric_limits<float>::infinity();
+    const float posQNaN = PpcBitCastToFloatInline(0x7FC01234u);
+    const float negQNaN = PpcBitCastToFloatInline(0xFFC05678u);
+    const float sNaN = PpcBitCastToFloatInline(0x7F801234u);
+
+    struct Case {
+        float a;
+        float c;
+        float b;
+        const char* label;
+    };
+    const std::array<Case, 7> cases{{
+        {0.0f, kInf, posQNaN, "0 * +Inf + qNaN"},
+        {kInf, 0.0f, posQNaN, "+Inf * 0 + qNaN"},
+        {-0.0f, -kInf, posQNaN, "-0 * -Inf + qNaN"},
+        {0.0f, -kInf, negQNaN, "0 * -Inf + -qNaN"},
+        {kInf, 1.0f, -kInf, "+Inf * 1 + -Inf"},
+        {sNaN, 1.0f, 0.0f, "sNaN * 1 + 0"},
+        {1.0f, 1.0f, posQNaN, "1 * 1 + qNaN"},
+    }};
+
+    bool ok = true;
+    for (const Case& tc : cases) {
+        bool expectedInvalid = false;
+        const float expected = EvaluateTrackingInvalid(&EvalStdFma, tc.a, tc.c, tc.b, expectedInvalid);
+
+        const auto verifyPath = [&](const char* path, float (*eval)(float, float, float)) {
+            bool actualInvalid = false;
+            const float actual = EvaluateTrackingInvalid(eval, tc.a, tc.c, tc.b, actualInvalid);
+            if (PpcBitCastToU32Inline(actual) != PpcBitCastToU32Inline(expected) ||
+                actualInvalid != expectedInvalid) {
+                std::fprintf(stderr,
+                             "%s %s (%s): got 0x%08x (FE_INVALID=%d), expected 0x%08x "
+                             "(FE_INVALID=%d)\n",
+                             mode, path, tc.label, PpcBitCastToU32Inline(actual),
+                             actualInvalid ? 1 : 0, PpcBitCastToU32Inline(expected),
+                             expectedInvalid ? 1 : 0);
+                return false;
+            }
+            return true;
+        };
+
+        ok &= verifyPath("via double", &EvalViaDoubleFma);
+        ok &= verifyPath("dispatched", &EvalDispatchedFma);
+    }
     return ok;
 }
 
@@ -227,6 +350,7 @@ struct FlushToZeroScope {
 bool CheckAgainstReference(const char* reference)
 {
     bool ok = CheckPairedFamily(1.000000119f, -123.25f, 33554431.0f, 0.0625f, -33554430.0f, 7.75f);
+    ok &= CheckPairedSpecialCases();
     ok &= CheckHalfwayDoubleRounding();
     ok &= CheckSubnormalHalfwayDoubleRounding();
 
@@ -234,6 +358,7 @@ bool CheckAgainstReference(const char* reference)
         FlushToZeroScope scope(flushToZero);
         char mode[64];
         std::snprintf(mode, sizeof(mode), "%s, %s", reference, flushToZero ? "FTZ/DAZ" : "IEEE");
+        ok &= CheckInvalidExceptionParity(mode);
         ok &= CheckEdgeValues(mode);
         ok &= CheckRandomized(mode);
     }
