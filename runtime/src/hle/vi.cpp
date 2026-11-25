@@ -9,6 +9,7 @@
 #include "platform/host_platform.h"
 #include "runtime_log.h"
 #include "perf_stats.h"
+#include "late_tick_start.h"
 
 #include <dolphin/vi.h>
 
@@ -489,7 +490,8 @@ uint64_t s_lastPresentAnchorNanos = 0;
 
 // Sleeps to the same VI retrace boundary VIWaitForRetrace targets, servicing alarms every 1 ms so audio
 // DMA and timers keep running, then delivers that retrace so guest logic starts exactly on the grid.
-void PaceToRetraceBoundary(Clock::time_point deadline) {
+// Holds the producer until `deadline` while keeping alarms and audio serviced.
+void HoldUntil(Clock::time_point deadline) {
     constexpr auto kServiceSlice = 1ms;
     for (;;) {
         const auto now = Clock::now();
@@ -509,7 +511,58 @@ void PaceToRetraceBoundary(Clock::time_point deadline) {
         SleepPreciselyUntil(deadline, true, kFinalSpinWindow);
         break;
     }
+}
+
+void PaceToRetraceBoundary(Clock::time_point deadline) {
+    HoldUntil(deadline);
     VI_HLE_ProcessRetracesDeferred(1);
+}
+
+std::atomic<bool> s_lateTickStart{false};
+std::atomic<uint32_t> s_drawThread{0};
+std::mutex s_lateTickMutex;
+LateTickStart::WorkMeter s_lateTickWork;
+double s_lateTickMissPenaltyMs = 0.0;
+
+uint64_t SteadyNanos() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
+}
+
+uint32_t CurrentGuestThread() {
+    return Fiber::GuestFiberManager::IsInitialized() ? Fiber::GuestFiberManager::GetCurrentGuestThread() : 0;
+}
+
+// Starts the next tick late enough that its controller read lands shortly before the retrace the
+// game will wait for. `retracesElapsed` describes the frame just sealed.
+void HoldForLateTickStart(uint32_t retracesElapsed) {
+    double workP99Ms = 0.0;
+    bool haveWork = false;
+    {
+        std::lock_guard<std::mutex> lock(s_lateTickMutex);
+        s_lateTickMissPenaltyMs = LateTickStart::NextMissPenalty(s_lateTickMissPenaltyMs, retracesElapsed >= 2);
+        haveWork = s_lateTickWork.P99(workP99Ms);
+    }
+    if (!haveWork) {
+        return;
+    }
+    // Read after pacing: it may just have committed a new interval (50/60 Hz switch).
+    Clock::time_point nextRetrace;
+    uint64_t intervalNanos = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_viMutex);
+        nextRetrace = g_vi.lastRetrace + g_vi.retraceInterval;
+        intervalNanos = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(g_vi.retraceInterval).count());
+    }
+    const uint64_t lead = LateTickStart::LeadNanos(workP99Ms, s_lateTickMissPenaltyMs, intervalNanos);
+    if (lead == 0) {
+        return;
+    }
+    const auto holdUntil = nextRetrace - std::chrono::nanoseconds(lead);
+    if (holdUntil > Clock::now()) {
+        HoldUntil(holdUntil);
+    }
 }
 
 } // namespace
@@ -517,6 +570,19 @@ void PaceToRetraceBoundary(Clock::time_point deadline) {
 // Single owner of the Aurora frame presentation sequence: seals the active frame, optionally paces the
 // producer to the VI retrace boundary, and pre-warms the next frame. Paced from GXCopyDisp; unpaced for
 // the retrace-context black/boot present path in AdvanceRetrace.
+void VI_HLE_SetLateTickStart(bool enabled) { s_lateTickStart.store(enabled, std::memory_order_relaxed); }
+
+void VI_HLE_NoteDrawThread() { s_drawThread.store(CurrentGuestThread(), std::memory_order_relaxed); }
+
+void VI_HLE_NoteGuestWait() {
+    const uint32_t thread = CurrentGuestThread();
+    if (thread == 0 || thread != s_drawThread.load(std::memory_order_relaxed)) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(s_lateTickMutex);
+    s_lateTickWork.OnWaitStart(SteadyNanos());
+}
+
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
@@ -526,6 +592,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     } sequenceGuard;
     Clock::time_point paceDeadline{};
     bool paceThisFrame = false;
+    uint32_t retracesElapsed = 0;
     if (paceToRetrace) {
         uint64_t baseNanos = 0;
         uint64_t intervalNanos = 0;
@@ -548,7 +615,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         // immediately: hardware would quantize down to the next vblank here,
         // but free-running late frames matches the previous pacer and keeps a
         // heavy scene at e.g. 50 fps instead of hard 30.
-        const uint32_t retracesElapsed = retraceCount - s_lastPacedRetraceCount;
+        retracesElapsed = retraceCount - s_lastPacedRetraceCount;
         paceThisFrame = retracesElapsed == 0;
         s_lastPacedRetraceCount = retraceCount;
         // aurora_report_producer_paced needs a different signal than the pace-wait above: the guest
@@ -584,6 +651,14 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         PaceToRetraceBoundary(paceDeadline);
         std::lock_guard<std::mutex> lock(g_viMutex);
         s_lastPacedRetraceCount = g_vi.retraceCount;
+    }
+    if (paceToRetrace && s_lateTickStart.load(std::memory_order_relaxed)) {
+        HoldForLateTickStart(retracesElapsed);
+    }
+    {
+        // The next tick starts here.
+        std::lock_guard<std::mutex> lock(s_lateTickMutex);
+        s_lateTickWork.OnTickStart(SteadyNanos());
     }
     settings_overlay::AdvancePresentedFrame();
     PerfStats::OnFramePresented();

@@ -436,6 +436,9 @@ extern "C" void OSSleepThread_HLE_801aa9b8(CpuContext* ctx)
             return;
         }
 
+        // The sleep goes ahead: late tick start times the drawing thread's work up to here.
+        VI_HLE_NoteGuestWait();
+
         // Mark thread as WAITING
         ::Memory::Write16(currentThread + 0x2C8u, 4);
 
