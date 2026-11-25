@@ -116,9 +116,7 @@ PPC_FMA_TEST_NOINLINE float EvalDispatchedFma(float a, float c, float b)
     return PpcFusedMultiplyAddFloatInline(a, c, b);
 }
 
-// The operands are read from volatiles after feclearexcept and the result is stored to one before
-// fetestexcept. Clang otherwise treats the noinline FP call as side-effect free and is free to move
-// it past either flag call.
+// Volatiles pin the call between feclearexcept and fetestexcept; Clang would otherwise move it.
 float EvaluateTrackingInvalid(float (*eval)(float, float, float), float a, float c, float b,
                               bool& invalid)
 {
@@ -156,12 +154,8 @@ double EvaluatePairTrackingInvalid(double (*eval)(double, double, double), doubl
     return result;
 }
 
-// ps_msub/ps_nmsub return a NaN subtractor with its sign intact and quieted, raising FE_INVALID
-// only for a signaling one, and compute a*c - b in the right operand order. These operands are
-// loaded at run time; the constant ones in CheckPairedSpecialCases catch compile-time folding.
-// The CRT's software fmaf (what std::fma is on a CPU without FMA3) returns a signaling NaN
-// unquieted and without FE_INVALID, and v2 lanes are std::fma by contract, so that reference
-// skips the signaling cases.
+// ps_msub/ps_nmsub keep a NaN subtractor's sign and raise FE_INVALID only for sNaN, on run-time
+// operands. The CRT's software fmaf doesn't quiet sNaN, so that reference skips those cases.
 bool CheckRuntimeFusedSubtract(const char* mode, bool crtSoftwareReference)
 {
     struct Case {
@@ -283,8 +277,7 @@ bool CheckFmaResult(float actual, float expected, float a, float c, float b, con
     return false;
 }
 
-// The double-based path is what a CPU without FMA3 takes; check it directly so hosts that have
-// FMA3 (and dispatch to std::fma) still cover it.
+// Check the double path directly so hosts with FMA3 still cover it.
 bool CheckScalarFma(float a, float c, float b, const char* context)
 {
     const float expected = std::fma(a, c, b);
@@ -295,9 +288,8 @@ bool CheckScalarFma(float a, float c, float b, const char* context)
     return ok;
 }
 
-// a*c = 2^6 - 2^-40 sits just below the float halfway point between b and the next float, so the
-// fused result is b. Rounded to double first, the sum lands exactly on that halfway point and
-// ties-to-even then picks the next float, which is what a plain double evaluation returns.
+// a*c sits just below a float halfway point, so fused gives b; rounding to double first lands on
+// the halfway point and ties-to-even picks the next float.
 bool CheckHalfwayDoubleRounding()
 {
     const float a = 1.0f + std::ldexp(1.0f, -23);
@@ -318,10 +310,8 @@ bool CheckHalfwayDoubleRounding()
     return ok;
 }
 
-// FLT_MIN - 3*2^-150 + 3*2^-190 lies just above the halfway point between the subnormals
-// 0x007FFFFE and 0x007FFFFF. Double rounding drops the 2^-190 term, lands on that halfway point
-// and ties to the even 0x007FFFFE. The normal-float halfway check cannot see this: the subnormal
-// halfway bit sits one position higher in the double.
+// Same double-rounding trap between two subnormals, where the normal-float halfway check can't see
+// it; this is why results <= FLT_MIN fall back to std::fma.
 bool CheckSubnormalHalfwayDoubleRounding()
 {
     const float a = -std::ldexp(3.0f + std::ldexp(3.0f, -20), -75);
@@ -434,11 +424,8 @@ struct FlushToZeroScope {
 #endif
 };
 
-// The same ps_msub on both sides of an NI toggle: 2^-149 * 2^23 - 0 is FLT_MIN while DAZ is off
-// and 0 once it is on. Plain locals and identical operands let the compiler merge the two calls
-// unless the v3 vfmsub asm is ordered against the MXCSR write. The v2 lanes are ordinary
-// std::fma, which the compiler may merge or move across MXCSR writes like any other FP operation
-// in translated code, so only the asm path is checked.
+// Same ps_msub either side of an NI toggle must give FLT_MIN then 0; catches the v3 asm being
+// merged or moved across the MXCSR write.
 bool CheckFusedSubtractFollowsNiMode()
 {
 #if defined(__x86_64__) && defined(__FMA__)
@@ -503,8 +490,7 @@ int main()
 {
     bool ok = CheckFusedSubtractFollowsNiMode();
 #if defined(PPC_FMA_TEST_CRT_SOFTWARE_FMAF)
-    // On a CPU without FMA3 the CRT starts with its software fmaf; elsewhere force that path for
-    // a second pass, since it is what std::fma is on the CPUs the double path exists for.
+    // Also force the CRT's software fmaf for a second pass when this CPU has FMA3.
     const int initialFma3 = _get_FMA3_enable();
     ok &= CheckAgainstReference(initialFma3 != 0 ? "CRT default (FMA3)" : "CRT default (software fmaf)",
                                 initialFma3 == 0);

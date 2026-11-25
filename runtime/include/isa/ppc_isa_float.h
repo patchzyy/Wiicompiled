@@ -431,15 +431,8 @@ inline double PpcPackIntegerWordInline(int32_t value)
         static_cast<uint64_t>(static_cast<uint32_t>(value)));
 }
 
-// std::fma(a, c, b) for floats, computed without an FMA instruction and bit-identical to it.
-//
-// A float product is exact in double, so a*c+b computed in double rounds once before the
-// conversion to float (a contracted double FMA gives the same sum). That double rounding equals
-// the single fused rounding unless the double sum lands exactly on a float halfway point, and the
-// halfway check below only knows where that point sits for normal floats. Halfway sums and results
-// at or below FLT_MIN therefore go to std::fma. So do subnormal operands (under DAZ the conversion
-// zeroes them, unlike the CRT's software fmaf) and non-finite operands (evaluating 0*Inf or
-// converting an sNaN in double would raise FE_INVALID before falling back to std::fma).
+// Bit-identical std::fma(float) without an FMA instruction: a float product is exact in double.
+// Halfway sums, results <= FLT_MIN and subnormal/non-finite operands fall back to std::fma.
 inline float PpcFusedMultiplyAddFloatViaDoubleInline(float a, float c, float b)
 {
     const auto isNormalOrZero = [](float value) {
@@ -452,7 +445,7 @@ inline float PpcFusedMultiplyAddFloatViaDoubleInline(float a, float c, float b)
         const uint64_t bits = PpcBitCastToU64Inline(sum);
         const uint64_t magnitude = bits & 0x7FFFFFFFFFFFFFFFULL;
         constexpr uint64_t kFloatMinNormal = 0x3810000000000000ULL;
-        // The 29 low bits double keeps below a normal float's last bit, and a float halfway point.
+        // Double bits below a normal float's LSB, and the halfway pattern within them.
         constexpr uint64_t kBelowFloatLsbMask = 0x1FFFFFFFULL;
         constexpr uint64_t kFloatHalfway = 0x10000000ULL;
         if ((magnitude == 0 || magnitude > kFloatMinNormal) &&
@@ -462,12 +455,8 @@ inline float PpcFusedMultiplyAddFloatViaDoubleInline(float a, float c, float b)
     return std::fma(a, c, b);
 }
 
-// x86-64-v2 has no FMA instruction, so std::fma(float) is a CRT call there. On a CPU without
-// hardware FMA the CRT computes it in software at roughly 12x the cost of the hardware
-// instruction, and the paired madd family makes two calls per instruction, which slows THP video
-// decoding several times over on those CPUs. A v2 build also runs on CPUs that have hardware FMA
-// without the rest of v3 (AMD Piledriver with FMA3, or first-gen Bulldozer with FMA4 on glibc),
-// where the CRT reaches the hardware instruction and stays cheaper.
+// On v2, std::fma is a CRT call that is ~12x slower in software without hardware FMA (THP decode).
+// Use the double path there; CPUs with FMA3/FMA4 keep the CRT's hardware path.
 inline float PpcFusedMultiplyAddFloatInline(float a, float c, float b)
 {
 #if defined(__x86_64__) && !defined(__FMA__) && !(defined(__GLIBC__) && defined(__FMA4__))
@@ -483,8 +472,7 @@ inline float PpcFusedMultiplyAddFloatInline(float a, float c, float b)
     return std::fma(a, c, b);
 }
 
-// The addend a lane FMA sees. A NaN subtractor stays unnegated: x86 vfmsub (the v3 path), the NEON
-// path and Gekko all return it with its sign intact, and negating it first would flip that sign.
+// The addend a lane FMA sees; a NaN subtractor stays unnegated so its sign matches Gekko/vfmsub.
 template <bool Subtract>
 inline float PpcPsMaddLaneAddendInline(float b)
 {
@@ -707,11 +695,8 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
 {
 #if defined(__x86_64__)
 #if defined(__FMA__)
-    // Not _mm_fmsub_ps: Clang lowers it to an FMA with a negated addend, which it may fold into a
-    // constant subtractor and emit as vfmadd, flipping the sign of a NaN subtractor. vfmsub213ps
-    // keeps that sign. dst = multiplier * multiplicand - subtractor. Volatile with a memory clobber
-    // so it is neither merged nor moved across an MXCSR write (NI mode) or fenv call, nor dropped
-    // with the FE_INVALID it raises when the result goes unused.
+    // Asm, not _mm_fmsub_ps: Clang can fold that into vfmadd and flip a NaN subtractor's sign.
+    // Volatile + memory clobber keeps it ordered against MXCSR (NI mode) and fenv calls.
     PpcPairVec result = multiplicand;
     __asm__ __volatile__("vfmsub213ps {%2, %1, %0|%0, %1, %2}"
                          : "+x"(result)
