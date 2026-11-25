@@ -709,11 +709,14 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
 #if defined(__FMA__)
     // Not _mm_fmsub_ps: Clang lowers it to an FMA with a negated addend, which it may fold into a
     // constant subtractor and emit as vfmadd, flipping the sign of a NaN subtractor. vfmsub213ps
-    // keeps that sign. dst = multiplier * multiplicand - subtractor.
+    // keeps that sign. dst = multiplier * multiplicand - subtractor. Volatile with a memory clobber
+    // so it is neither merged nor moved across an MXCSR write (NI mode) or fenv call, nor dropped
+    // with the FE_INVALID it raises when the result goes unused.
     PpcPairVec result = multiplicand;
-    __asm__("vfmsub213ps {%2, %1, %0|%0, %1, %2}"
-            : "+x"(result)
-            : "x"(multiplier), "x"(subtractor));
+    __asm__ __volatile__("vfmsub213ps {%2, %1, %0|%0, %1, %2}"
+                         : "+x"(result)
+                         : "x"(multiplier), "x"(subtractor)
+                         : "memory");
     return result;
 #else
     const double a = PpcM128ToPsInline(multiplicand);

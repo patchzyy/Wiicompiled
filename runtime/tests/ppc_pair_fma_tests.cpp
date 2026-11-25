@@ -434,6 +434,43 @@ struct FlushToZeroScope {
 #endif
 };
 
+// The same ps_msub on both sides of an NI toggle: 2^-149 * 2^23 - 0 is FLT_MIN while DAZ is off
+// and 0 once it is on. Plain locals and identical operands let the compiler merge the two calls
+// unless the v3 vfmsub asm is ordered against the MXCSR write. The v2 lanes are ordinary
+// std::fma, which the compiler may merge or move across MXCSR writes like any other FP operation
+// in translated code, so only the asm path is checked.
+bool CheckFusedSubtractFollowsNiMode()
+{
+#if defined(__x86_64__) && defined(__FMA__)
+    const float denormal = PpcBitCastToFloatInline(0x00000001u);
+    const double a = PpcPackPairedInline(denormal, 2.0f);
+    const double c = PpcPackPairedInline(std::ldexp(1.0f, 23), 3.0f);
+    const double b = PpcPackPairedInline(0.0f, 1.0f);
+
+    MkwApplyHostNiMode(0);
+    const double ieee = PPC_PsMsubNoNiInline(a, c, b);
+    MkwApplyHostNiMode(0x4u);
+    const double flushed = PPC_PsMsubNoNiInline(a, c, b);
+    MkwApplyHostNiMode(0);
+
+    const double expectedIeee = PpcPackPairedInline(PpcBitCastToFloatInline(0x00800000u), 5.0f);
+    const double expectedFlushed = PpcPackPairedInline(0.0f, 5.0f);
+    if (SameBits(ieee, expectedIeee) && SameBits(flushed, expectedFlushed)) {
+        return true;
+    }
+    std::fprintf(stderr,
+                 "ps_msub across an NI toggle: got 0x%016llx then 0x%016llx, expected 0x%016llx "
+                 "then 0x%016llx\n",
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(ieee)),
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(flushed)),
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(expectedIeee)),
+                 static_cast<unsigned long long>(PpcBitCastToU64Inline(expectedFlushed)));
+    return false;
+#else
+    return true;
+#endif
+}
+
 bool CheckAgainstReference(const char* reference, bool crtSoftwareReference)
 {
     bool ok = CheckPairedFamily(1.000000119f, -123.25f, 33554431.0f, 0.0625f, -33554430.0f, 7.75f);
@@ -458,17 +495,26 @@ bool CheckAgainstReference(const char* reference, bool crtSoftwareReference)
 // Only a build without __FMA__ calls the CRT's fmaf; a v3 build compiles std::fma to vfmadd.
 #if defined(_WIN32) && defined(__x86_64__) && !defined(__FMA__)
 #define PPC_FMA_TEST_CRT_SOFTWARE_FMAF 1
+extern "C" __declspec(dllimport) int _get_FMA3_enable(void);
 extern "C" __declspec(dllimport) int _set_FMA3_enable(int flag);
 #endif
 
 int main()
 {
-    bool ok = CheckAgainstReference("CRT default", false);
+    bool ok = CheckFusedSubtractFollowsNiMode();
 #if defined(PPC_FMA_TEST_CRT_SOFTWARE_FMAF)
-    // A CPU without FMA3 gets the CRT's software fmaf as std::fma; compare against that too.
-    _set_FMA3_enable(0);
-    ok &= CheckAgainstReference("CRT software fmaf", true);
-    _set_FMA3_enable(1);
+    // On a CPU without FMA3 the CRT starts with its software fmaf; elsewhere force that path for
+    // a second pass, since it is what std::fma is on the CPUs the double path exists for.
+    const int initialFma3 = _get_FMA3_enable();
+    ok &= CheckAgainstReference(initialFma3 != 0 ? "CRT default (FMA3)" : "CRT default (software fmaf)",
+                                initialFma3 == 0);
+    if (initialFma3 != 0) {
+        _set_FMA3_enable(0);
+        ok &= CheckAgainstReference("CRT software fmaf", true);
+        _set_FMA3_enable(initialFma3);
+    }
+#else
+    ok &= CheckAgainstReference("CRT default", false);
 #endif
     return ok ? 0 : 1;
 }
