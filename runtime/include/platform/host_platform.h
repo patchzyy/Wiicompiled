@@ -23,4 +23,7 @@ std::filesystem::path LogDirectory(std::string_view applicationName);
 
 uint64_t CurrentProcessId() noexcept;
 
+// Starts a new instance of this executable. False if it could not be started.
+bool RelaunchSelf() noexcept;
+
 } // namespace RuntimePlatform

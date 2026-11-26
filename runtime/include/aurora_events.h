@@ -4,6 +4,7 @@
 #include "settings_overlay.h"
 #include "steam_input_layout.h"
 #include "runtime_config.h"
+#include "platform/host_platform.h"
 #include "gx_worker.h"
 #include "perf_stats.h"
 
@@ -62,15 +63,30 @@ inline void Flush(bool force = false) {
 // fiber re-enters runtime teardown and can fault while the fiber machinery is
 // still active.  A window close is an intentional successful exit, so end the
 // process directly and do not run the crash/atexit paths.
-[[noreturn]] inline void ExitForAuroraWindowClose() noexcept {
-    settings_overlay::ReleaseControllers();
-    SteamInputLayout::Release();
-    WindowPlacementPersistence::Flush(true);
+[[noreturn]] inline void ExitAuroraProcess() noexcept {
 #if defined(_WIN32)
     ::ExitProcess(0);
 #else
     std::_Exit(EXIT_SUCCESS);
 #endif
+}
+
+[[noreturn]] inline void ExitForAuroraWindowClose() noexcept {
+    settings_overlay::ReleaseControllers();
+    SteamInputLayout::Release();
+    WindowPlacementPersistence::Flush(true);
+    ExitAuroraProcess();
+}
+
+// Returns only if the new instance could not be started; the LED is left for the new instance to set.
+inline void RestartForAuroraWindowClose() noexcept {
+    WindowPlacementPersistence::Flush(true);
+    settings_overlay::ReleaseControllers(false);
+    // The Steam Input layout is only restored once the new instance exists, so a failed restart keeps it.
+    if (RuntimePlatform::RelaunchSelf()) {
+        SteamInputLayout::Release();
+        ExitAuroraProcess();
+    }
 }
 
 // Update cached Aurora window/framebuffer dimensions based on pending events.
