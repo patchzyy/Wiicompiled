@@ -33,6 +33,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 #if defined(_WIN32)
@@ -1024,6 +1025,54 @@ void DrawPlayerRow(uint32_t port) {
     ImGui::PopID();
 }
 
+struct PollRate {
+    uint64_t startNs = 0;
+    uint32_t samples = 0;
+    int hz = 0;
+    bool ownsSensor = false;
+};
+std::unordered_map<SDL_JoystickID, PollRate> g_pollRates;
+bool g_pollRateWanted = false;
+bool g_pollRateActive = false;
+
+// Accel reports arrive once per HID report. Wii Remotes never show up here while the game's own
+// Bluetooth stack owns them (Wiimote::ConfigureSdlHints keeps SDL off them).
+void UpdatePollRateSensors() {
+    if (g_pollRateWanted) {
+        g_pollRateActive = true;
+        for (uint32_t index = 0; index < PADCount(); ++index) {
+            SDL_Gamepad* pad = PADGetSDLGamepadForIndex(index);
+            if (pad && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL) &&
+                !SDL_GamepadSensorEnabled(pad, SDL_SENSOR_ACCEL) &&
+                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, true)) {
+                g_pollRates[SDL_GetGamepadID(pad)].ownsSensor = true;
+            }
+        }
+        return;
+    }
+    if (!g_pollRateActive) return;
+    g_pollRateActive = false;
+    for (const auto& [id, rate] : g_pollRates) {
+        if (SDL_Gamepad* pad = SDL_GetGamepadFromID(id); pad && rate.ownsSensor) {
+            SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, false);
+        }
+    }
+    g_pollRates.clear();
+}
+
+std::string PollRateLabel(uint32_t port) {
+    const s32 index = PADGetIndexForPort(port);
+    SDL_Gamepad* pad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+    const auto it = pad ? g_pollRates.find(SDL_GetGamepadID(pad)) : g_pollRates.end();
+    if (it == g_pollRates.end() || it->second.hz <= 0) return {};
+    std::string label = std::to_string(it->second.hz) + " Hz";
+    if (it->second.hz < 900 && SDL_GetGamepadType(pad) == SDL_GAMEPAD_TYPE_PS5 &&
+        SDL_GetGamepadConnectionState(pad) == SDL_JOYSTICK_CONNECTION_WIRED) {
+        label += " - hidusbf can raise this to 1000 Hz";
+    }
+    return label;
+}
+
 void DrawControllerSettings() {
     ImGui::Dummy(ImVec2(kControllerMenuWidth, 0.0f));
     for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
@@ -1054,6 +1103,11 @@ void DrawControllerSettings() {
         }
     } else {
         ImGui::TextUnformatted("Ready to play.");
+        g_pollRateWanted = true;
+        if (const std::string rate = PollRateLabel(port); !rate.empty()) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", rate.c_str());
+        }
         DrawMotionTrickSettings(port);
         if (ImGui::CollapsingHeader("Customize buttons")) {
             ImGui::Indent();
@@ -1693,6 +1747,19 @@ void HandleEvents(const AuroraEvent* events) noexcept {
         if (IsMouseActivity(ev->sdl)) {
             g_lastMouseActivity = Clock::now();
         }
+        if (g_pollRateActive && ev->sdl.type == SDL_EVENT_GAMEPAD_SENSOR_UPDATE &&
+            ev->sdl.gsensor.sensor == SDL_SENSOR_ACCEL) {
+            PollRate& rate = g_pollRates[ev->sdl.gsensor.which];
+            const uint64_t ns = ev->sdl.gsensor.sensor_timestamp;
+            if (rate.samples++ == 0 || ns <= rate.startNs) {
+                rate.startNs = ns;
+                rate.samples = 1;
+            } else if (ns - rate.startNs >= 250'000'000) {
+                rate.hz = static_cast<int>(std::lround((rate.samples - 1) * 1e9 / static_cast<double>(ns - rate.startNs)));
+                rate.startNs = ns;
+                rate.samples = 1;
+            }
+        }
     }
 }
 
@@ -1720,6 +1787,7 @@ void ReleaseControllers() noexcept {
 
 void Draw() noexcept {
     // ImGui is only touched on this thread; the render worker replays a frozen copy.
+    g_pollRateWanted = false;
     ApplyConfiguredMappings();
     PersistDisplayModeIfChanged();
     UpdateCursorAutoHide();
@@ -1733,6 +1801,7 @@ void Draw() noexcept {
     DrawRestartPrompt();
     controller_mapping_wizard::Draw();
     ApplyInputBlockState();
+    UpdatePollRateSensors();
     DrawStartupScreen();
 }
 
