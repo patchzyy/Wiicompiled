@@ -29,6 +29,15 @@ internal sealed class ProductRepairService
         /// snapshot lives in operation scratch, so it can never be the durable value.
         /// </summary>
         public string? CanonicalRetroRewindRoot { get; init; }
+
+        /// <summary>
+        /// Identities the caller already proved for exactly the toolkit now installed: an install or
+        /// update verified every file it streamed out of the payload, and stat-checked every file it
+        /// reused, against the release's inventory. A compile then skips re-hashing the toolkit.
+        /// Standalone repair, a re-applied release, and every Broken/Blocked rebuild leave it null
+        /// (or ignore it) and hash the installed toolkit in full.
+        /// </summary>
+        public ToolkitFingerprintComponents? PreverifiedToolkitComponents { get; init; }
     }
 
     internal sealed record ReconciliationResult(
@@ -215,16 +224,26 @@ internal sealed class ProductRepairService
         if (rebuildBase || rebuildRetro)
         {
             EnsureSufficientRepairDiskSpace();
-            _reporter.Progress(InstallStages.PrepareRetro,
-                "Verifying the installed recompilation toolkit...", 4);
-            var toolkitComponents = VerifyToolkitForCompilation(toolkitFingerprint, cancellationToken);
-            RefreshTranslationAssets(expectedDolSha256, expectedRelSha256, cancellationToken);
-
             // A broken or blocked product may mean the caches themselves are damaged, so nothing
             // recorded on disk is allowed to contribute to the repaired product.
             var forceCleanBuild =
                 (rebuildBase && baseState.Status is ProductStatus.Broken or ProductStatus.Blocked) ||
                 (rebuildRetro && retroState.Status is ProductStatus.Broken or ProductStatus.Blocked);
+            // Not even a toolkit identity proved earlier in this operation is trusted then: the
+            // toolkit is hashed in full again. A product that was never produced at all (a fresh
+            // installation reports its missing executable as broken) has nothing that could be
+            // damaged, so the identities this operation proved still stand for it.
+            var damagedProduct =
+                (rebuildBase && baseState.Status is ProductStatus.Broken or ProductStatus.Blocked &&
+                 Directory.Exists(_installation.BaseDirectory)) ||
+                (rebuildRetro && retroState.Status is ProductStatus.Broken or ProductStatus.Blocked &&
+                 Directory.Exists(_installation.RetroDirectory));
+            _reporter.Progress(InstallStages.PrepareRetro,
+                "Verifying the installed recompilation toolkit...", 4);
+            var toolkitComponents = VerifyToolkitForCompilation(toolkitFingerprint, cancellationToken,
+                damagedProduct ? null : options.PreverifiedToolkitComponents);
+            RefreshTranslationAssets(expectedDolSha256, expectedRelSha256, cancellationToken);
+            var nativePrebuiltGate = _installation.ReadToolkitState()?.NativePrebuiltGateProvenanceSha256;
             var (dolSha, relSha) = TranslationInputHashes();
 
             if (rebuildBase && rebuildRetro)
@@ -241,7 +260,7 @@ internal sealed class ProductRepairService
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.Both, retroOutput,
                         requestedPayloadMode, payloadSnapshot?.Directory, payloadGameId, cancellationToken,
-                        toolkitComponents, clean,
+                        toolkitComponents, clean, nativePrebuiltGate,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildBase, 5, 92),
                         retroRewindPackageDirectory: compileInputs.RetroRewindRoot,
                         baseOutputDirectory: baseOutput));
@@ -260,7 +279,7 @@ internal sealed class ProductRepairService
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.Base, baseOutput,
                         RetroWfcPayloadMode.NotApplicable, null, null, cancellationToken,
-                        toolkitComponents, clean,
+                        toolkitComponents, clean, nativePrebuiltGate,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildBase, 5, 92)));
                 LocalBuildService.WriteFingerprint(baseOutput, BuildProfile.Base, toolkitFingerprint,
                     dolSha, relSha, "", RetroWfcPayloadMode.NotApplicable);
@@ -275,7 +294,7 @@ internal sealed class ProductRepairService
                 await BuildWithCleanRetryAsync(forceCleanBuild, clean =>
                     builder.BuildAsync(_installation.Root, BuildProfile.RetroRewind, retroOutput,
                         requestedPayloadMode, payloadSnapshot?.Directory, payloadGameId, cancellationToken,
-                        toolkitComponents, clean,
+                        toolkitComponents, clean, nativePrebuiltGate,
                         progress: new BuildProgressWindow(_reporter, InstallStages.BuildRetro, 5, 92),
                         retroRewindPackageDirectory: compileInputs.RetroRewindRoot));
                 LocalBuildService.WriteFingerprint(retroOutput, BuildProfile.RetroRewind,
@@ -496,8 +515,13 @@ internal sealed class ProductRepairService
             localBuildAllowance + safetyAllowance, "Local recompilation");
     }
 
+    /// <summary>
+    /// The toolkit identities a compile may use. The installed toolkit is hashed in full (a
+    /// standalone repair has no cheaper proof) unless <paramref name="preverified"/> carries
+    /// identities the calling install already proved for exactly this toolkit.
+    /// </summary>
     internal ToolkitFingerprintComponents VerifyToolkitForCompilation(string authoritativeFingerprint,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, ToolkitFingerprintComponents? preverified = null)
     {
         var state = _installation.ReadToolkitState();
         if (state is not { SchemaVersion: 2 } ||
@@ -508,10 +532,19 @@ internal sealed class ProductRepairService
                 "The installed toolkit provenance is missing or does not match this repair operation.");
         }
 
-        var components = ToolkitFingerprint.ComputeComponents(_installation.Root, cancellationToken);
+        if (preverified is not null &&
+            preverified.Compile.Equals(authoritativeFingerprint, StringComparison.Ordinal))
+        {
+            _reporter.Diagnostic(
+                "The toolkit was verified while it was installed by this operation; it is not hashed again.");
+            return preverified;
+        }
+
+        var components = ToolkitFingerprint.ComputeComponents(_installation.Root, cancellationToken,
+            diagnostic: _reporter.Diagnostic);
         if (!components.Compile.Equals(authoritativeFingerprint, StringComparison.Ordinal))
         {
-            throw new InvalidDataException(
+            throw ToolkitIntegrity.Failure(
                 "The installed recompilation toolkit was modified or is incomplete. Apply the current setup release before compiling products.");
         }
         return components;
@@ -669,4 +702,24 @@ internal sealed class ProductRepairService
         if (Directory.Exists(config))
             FileSystemUtilities.CopyDirectory(config, Path.Combine(preparedProduct, "config"));
     }
+}
+
+/// <summary>
+/// The installed toolkit's files no longer hash to its recorded identity (for example antivirus
+/// quarantined one). Setup recovers from it by publishing the release's toolkit again; a repair
+/// operation alone cannot. It stays an ordinary <see cref="InvalidDataException"/> for every other
+/// caller, marked so setup can tell it apart.
+/// </summary>
+internal static class ToolkitIntegrity
+{
+    private const string Marker = "WiiCompiled.ToolkitIntegrityFailure";
+
+    public static InvalidDataException Failure(string message)
+    {
+        var exception = new InvalidDataException(message);
+        exception.Data[Marker] = true;
+        return exception;
+    }
+
+    public static bool IsFailure(Exception exception) => exception.Data[Marker] is true;
 }

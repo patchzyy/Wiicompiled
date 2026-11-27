@@ -60,6 +60,29 @@ internal sealed class PayloadManifest
     public string RuntimeAssetsFingerprint { get; set; } = "";
     public string TranslationFingerprint { get; set; } = "";
     public string NativeToolchainFingerprint { get; set; } = "";
+
+    // Optional, additive identities (schema 3 is unchanged: a reader that does not know them, and a
+    // payload that lacks them, both fall back to the whole-toolkit identities above).
+
+    /// <summary><c>Toolkit/</c> minus <c>Toolkit/Translator/</c>.</summary>
+    public string ToolchainPackageFingerprint { get; set; } = "";
+
+    /// <summary><c>Toolkit/Translator/</c> alone.</summary>
+    public string TranslatorPackageFingerprint { get; set; } = "";
+
+    /// <summary>
+    /// The translation identity narrowed to the files each translation project (keyed by its
+    /// <c>projects/</c> directory name) reads, so a change to one release's project keeps the
+    /// others' completed base translations.
+    /// </summary>
+    public Dictionary<string, string> TranslationFingerprintsByRelease { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// SHA-256 of the shipped <c>native_prebuilt/provenance.json</c> that Windows PowerShell 5.1
+    /// accepted against this exact toolkit at release-build time, so a build verified to use this
+    /// compile identity can skip re-proving it.
+    /// </summary>
+    public string NativePrebuiltGateProvenanceSha256 { get; set; } = "";
 }
 
 internal sealed class DiscHeader
@@ -161,6 +184,14 @@ internal sealed class ToolkitState
     public string TranslationFingerprint { get; set; } = "";
     public string NativeToolchainFingerprint { get; set; } = "";
     public string ToolkitReleaseTag { get; set; } = "";
+
+    // Optional, additive fields (schema 2 is unchanged); an older installation without them falls
+    // back to refreshing the whole Toolkit and to the whole-toolkit identities.
+    public string ToolchainPackageFingerprint { get; set; } = "";
+    public string TranslatorPackageFingerprint { get; set; } = "";
+    public Dictionary<string, string> TranslationFingerprintsByRelease { get; set; } = new(StringComparer.Ordinal);
+    public string NativePrebuiltGateProvenanceSha256 { get; set; } = "";
+
     public string SetupVersion { get; set; } = ProductInfo.Version;
     public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
 

@@ -37,6 +37,7 @@ internal sealed class InstallerEngine
 
         using var payload = PayloadArchive.OpenCurrent();
         var manifest = payload.ReadManifest();
+        var inventory = payload.TryReadInventory(manifest, _reporter.Diagnostic);
         var toolkit = InstalledLayout.Toolkit(staging);
         var workspace = InstalledLayout.Workspace(staging);
 
@@ -79,30 +80,34 @@ internal sealed class InstallerEngine
         var samePackageContent = existing.IsPresent &&
                                  installedToolkitPackageFingerprint.Equals(
                                      candidateToolkitPackageFingerprint, StringComparison.Ordinal);
-        var sameToolkitPackage = sameToolkit && samePackageContent;
         var hadRetro = existing.HasRetroProduct || previousState?.RetroRewindInstalled == true;
 
         var runtimeAssetsCurrent = sameToolkit && RuntimeAssetsAreCurrent(existing,
             candidateRuntimeAssetsFingerprint, cancellationToken);
         var installedNodTool = Path.Combine(existing.ToolkitDirectory, "nodtool.exe");
-        var extractToolkit = MustRefreshToolkit(sameToolkit, samePackageContent,
-            File.Exists(installedNodTool));
-        var extractWorkspace = !sameToolkit || !runtimeAssetsCurrent;
 
         _reporter.Progress(InstallStages.ExtractToolkit,
             "Inspecting the release's local recompilation toolkit...", 4);
-        if (extractToolkit) payload.ExtractDirectory(InstalledLayout.ToolkitDirectoryName, toolkit);
-        if (extractWorkspace)
-        {
-            payload.ExtractDirectory(InstalledLayout.WorkspaceDirectoryName, workspace);
-            WorkspaceTimestamps.MarkChangedFiles(existing.WorkspaceDirectory, workspace,
-                _reporter.Diagnostic, cancellationToken);
-        }
+        var toolkitRefresh = DecideToolkitRefresh(existing, manifest, inventory, sameToolkit,
+            samePackageContent, File.Exists(installedNodTool), cancellationToken);
+        // An unchanged toolkit only ever needs the copied runtime assets refreshed: nothing else in
+        // the workspace is published on that path, so nothing else is extracted (or re-stamped).
+        var workspaceExtraction = !sameToolkit ? WorkspaceExtraction.Full
+            : runtimeAssetsCurrent ? WorkspaceExtraction.None
+            : WorkspaceExtraction.RuntimeAssetsOnly;
+
+        var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        ExtractToolkit(payload, toolkitRefresh, toolkit, extracted);
+        ExtractWorkspace(payload, workspaceExtraction, existing, workspace, extracted, cancellationToken);
+        VerifyExtraction(inventory, toolkitRefresh, workspaceExtraction, extracted);
         payload.ExtractEntry("host/WiiCompiled-Setup.exe",
             Path.Combine(staging, ProductInfo.SetupCopyName));
         payload.ExtractDirectory("licenses", Path.Combine(staging, "licenses"));
         payload.ExtractEntry(InstalledLayout.PayloadManifestFileName,
             Path.Combine(staging, InstalledLayout.PayloadManifestFileName));
+
+        var install = new InstallContext(existing, staging, payload, manifest, inventory, release,
+            previousState, options, canonicalRetroRoot, retroCompileInputs, firstInstall);
 
         if (sameToolkit)
         {
@@ -113,9 +118,22 @@ internal sealed class InstallerEngine
                     "This release changes the clean game inputs used by the installed Retro Rewind product. " +
                     "Supply Wheel Wizard's current Retro Rewind folder explicitly so it can be rebuilt safely.");
 
-            var reconciliation = await ReconcileSameToolkitAsync(existing, retroCompileInputs,
-                canonicalRetroRoot, options.RetroWfcPayloadMode, Path.Combine(staging, "repair"),
-                release.DolSha256, release.RelSha256, cancellationToken);
+            ProductRepairService.ReconciliationResult reconciliation;
+            try
+            {
+                reconciliation = await ReconcileSameToolkitAsync(existing, retroCompileInputs,
+                    canonicalRetroRoot, options.RetroWfcPayloadMode, Path.Combine(staging, "repair"),
+                    release.DolSha256, release.RelSha256, cancellationToken);
+            }
+            catch (InvalidDataException ex) when (ToolkitIntegrity.IsFailure(ex))
+            {
+                // Without this, re-running setup would find the same "current" toolkit and fail the
+                // same way forever. Nothing was published yet; publish the release's files and retry once.
+                _reporter.Diagnostic(ex.Message + " Publishing the release's toolkit again and retrying once.");
+                await RecoverToolkitAndReconcileAsync(install,
+                    toolkitStaged: toolkitRefresh == ToolkitRefresh.Full, cancellationToken);
+                return;
+            }
             var remainingCancellation = reconciliation.PublicationCommitted
                 ? CancellationToken.None
                 : cancellationToken;
@@ -135,9 +153,9 @@ internal sealed class InstallerEngine
             remainingCancellation.ThrowIfCancellationRequested();
 
             var releaseEntries = new List<InstallTransactionEntry>();
-            if (!sameToolkitPackage)
-                AddComponent(releaseEntries, staging, installDirectory,
-                    InstalledLayout.ToolkitDirectoryName);
+            // Keyed on what was extracted, so a toolkit refreshed only to restore a missing
+            // nodtool.exe is actually published.
+            AddToolkitEntries(releaseEntries, toolkitRefresh, staging, installDirectory);
             if (!runtimeAssetsCurrent)
                 AddRuntimeAssetPublicationEntries(releaseEntries, staging, installDirectory,
                     updatedState.RetroRewindInstalled, candidateRuntimeAssetsFingerprint,
@@ -163,16 +181,154 @@ internal sealed class InstallerEngine
                 Path.Combine(staging, "GameAssets"), release, cancellationToken);
         }
 
-        await PublishToolkitAndReconcileProductsAsync(existing, staging, workspace, manifest,
-            release, previousState, options, canonicalRetroRoot, retroCompileInputs,
-            publishGameAssets: reusableGameAssets is null, createShortcuts: firstInstall,
-            cancellationToken: cancellationToken);
+        await PublishToolkitAndReconcileProductsAsync(install, toolkitRefresh,
+            publishGameAssets: reusableGameAssets is null, cancellationToken);
     }
 
+    /// <summary>Everything one install operation shares between its publication paths.</summary>
+    internal sealed record InstallContext(Installation Existing, string Staging, PayloadArchive Payload,
+        PayloadManifest Manifest, PayloadInventory? Inventory, GameRelease Release, InstallState? PreviousState,
+        InstallOptions Options, string? CanonicalRetroRoot, RetroRewindCompileInputs? RetroCompileInputs,
+        bool FirstInstall);
 
-    internal static bool MustRefreshToolkit(bool sameToolkit, bool samePackageContent,
-        bool nodToolPresent) =>
-        !sameToolkit || !samePackageContent || !nodToolPresent;
+    /// <summary>
+    /// Re-extract <c>Toolkit/</c> if and only if its package identity changed, nodtool.exe is
+    /// missing, or the installed copy fails the stat check against the release inventory; when only
+    /// the translator changed and the installed toolchain passes, just <c>Toolkit/Translator</c>.
+    /// Without an inventory this is the original rule: refresh unless the whole toolkit is unchanged.
+    /// </summary>
+    internal static ToolkitRefresh PlanToolkitRefresh(bool inventoryAvailable, bool sameToolkit,
+        bool samePackageContent, bool nodToolPresent, Func<bool> toolkitStatOk,
+        bool sameToolchainPackage, Func<bool> toolchainStatOk)
+    {
+        if (!inventoryAvailable)
+            return sameToolkit && samePackageContent && nodToolPresent ? ToolkitRefresh.None : ToolkitRefresh.Full;
+        if (!nodToolPresent) return ToolkitRefresh.Full;
+        if (samePackageContent) return toolkitStatOk() ? ToolkitRefresh.None : ToolkitRefresh.Full;
+        if (sameToolchainPackage && toolchainStatOk()) return ToolkitRefresh.TranslatorOnly;
+        return ToolkitRefresh.Full;
+    }
+
+    private ToolkitRefresh DecideToolkitRefresh(Installation existing, PayloadManifest manifest,
+        PayloadInventory? inventory, bool sameToolkit, bool samePackageContent, bool nodToolPresent,
+        CancellationToken cancellationToken)
+    {
+        bool StatOk(string description, IReadOnlyCollection<string>? excluded)
+        {
+            var problems = inventory!.StatCheck(existing.Root, InstalledLayout.ToolkitEntryPrefix,
+                requireNormalizedTimestamp: true, excluded, cancellationToken);
+            if (problems.Count == 0) return true;
+            _reporter.Diagnostic($"The installed {description} cannot be reused as it is: " +
+                                 string.Join("; ", problems));
+            return false;
+        }
+
+        var state = existing.IsPresent && existing.ResolveToolkitPackageFingerprint().Length > 0
+            ? existing.ReadToolkitState()
+            : null;
+        var sameToolchainPackage = state is not null &&
+                                   !string.IsNullOrWhiteSpace(manifest.ToolchainPackageFingerprint) &&
+                                   manifest.ToolchainPackageFingerprint.Equals(
+                                       state.ToolchainPackageFingerprint ?? "", StringComparison.Ordinal);
+        var refresh = PlanToolkitRefresh(inventory is not null, sameToolkit, samePackageContent, nodToolPresent,
+            () => StatOk("toolkit", null),
+            sameToolchainPackage,
+            () => StatOk("toolchain", [ToolkitFingerprint.TranslatorPrefix]));
+        _reporter.Diagnostic(refresh switch
+        {
+            ToolkitRefresh.None => "The installed toolkit is this release's and is reused.",
+            ToolkitRefresh.TranslatorOnly => "Only the translator changed; the installed toolchain is reused.",
+            _ => "The release's toolkit is extracted."
+        });
+        return refresh;
+    }
+
+    private static void ExtractToolkit(PayloadArchive payload, ToolkitRefresh refresh, string stagedToolkit,
+        IDictionary<string, PayloadFileIdentity> extracted)
+    {
+        if (refresh == ToolkitRefresh.Full)
+            payload.ExtractDirectory(InstalledLayout.ToolkitDirectoryName, stagedToolkit, extracted);
+        else if (refresh == ToolkitRefresh.TranslatorOnly)
+            payload.ExtractDirectory(ToolkitFingerprint.TranslatorPrefix,
+                Path.Combine(stagedToolkit, "Translator"), extracted);
+    }
+
+    private void ExtractWorkspace(PayloadArchive payload, WorkspaceExtraction extraction, Installation existing,
+        string stagedWorkspace, IDictionary<string, PayloadFileIdentity> extracted,
+        CancellationToken cancellationToken)
+    {
+        if (extraction == WorkspaceExtraction.Full)
+        {
+            payload.ExtractDirectory(InstalledLayout.WorkspaceDirectoryName, stagedWorkspace, extracted);
+            WorkspaceTimestamps.MarkChangedFiles(existing.WorkspaceDirectory, stagedWorkspace,
+                _reporter.Diagnostic, cancellationToken);
+        }
+        else if (extraction == WorkspaceExtraction.RuntimeAssetsOnly)
+        {
+            // Only published as copied runtime support files, never compiled, so their timestamps
+            // carry no meaning for the incremental build.
+            payload.ExtractDirectory(RuntimeAssetsEntryPrefix,
+                Path.Combine(stagedWorkspace, "runtime", "assets"), extracted);
+        }
+    }
+
+    private const string RuntimeAssetsEntryPrefix = InstalledLayout.WorkspaceEntryPrefix + "runtime/assets/";
+
+    /// <summary>Every byte streamed out of the payload must be exactly what the release inventory lists.</summary>
+    private static void VerifyExtraction(PayloadInventory? inventory, ToolkitRefresh toolkit,
+        WorkspaceExtraction workspace, IReadOnlyDictionary<string, PayloadFileIdentity> extracted)
+    {
+        if (inventory is null) return;
+        if (toolkit == ToolkitRefresh.Full) inventory.VerifyExtracted(InstalledLayout.ToolkitEntryPrefix, extracted);
+        else if (toolkit == ToolkitRefresh.TranslatorOnly)
+            inventory.VerifyExtracted(ToolkitFingerprint.TranslatorPrefix, extracted);
+        if (workspace == WorkspaceExtraction.Full)
+            inventory.VerifyExtracted(InstalledLayout.WorkspaceEntryPrefix, extracted);
+        else if (workspace == WorkspaceExtraction.RuntimeAssetsOnly)
+            inventory.VerifyExtracted(RuntimeAssetsEntryPrefix, extracted);
+    }
+
+    /// <summary>
+    /// Never overlaps <c>Toolkit</c> and <c>Toolkit/Translator</c>: a transaction rejects overlapping
+    /// destinations, and the translator-only plan staged nothing else.
+    /// </summary>
+    internal static void AddToolkitEntries(List<InstallTransactionEntry> entries, ToolkitRefresh refresh,
+        string staging, string installDirectory)
+    {
+        if (refresh == ToolkitRefresh.Full)
+            AddComponent(entries, staging, installDirectory, InstalledLayout.ToolkitDirectoryName);
+        else if (refresh == ToolkitRefresh.TranslatorOnly)
+            entries.Add(InstallTransactionEntry.Directory(
+                Path.Combine(InstalledLayout.Toolkit(staging), "Translator"),
+                Path.Combine(InstalledLayout.Toolkit(installDirectory), "Translator")));
+    }
+
+    /// <summary>
+    /// The installed toolkit failed integrity verification although it is this release's. Extract
+    /// the release's Toolkit and BuildWorkspace afresh (keeping the build caches) and run the normal
+    /// publish-then-reconcile path, which itself re-verifies what it published and retries once.
+    /// </summary>
+    private async Task RecoverToolkitAndReconcileAsync(InstallContext install, bool toolkitStaged,
+        CancellationToken cancellationToken)
+    {
+        var toolkit = InstalledLayout.Toolkit(install.Staging);
+        var workspace = InstalledLayout.Workspace(install.Staging);
+        // A whole toolkit this operation already extracted (and verified) is complete; anything
+        // else staged so far was partial and is replaced.
+        if (!toolkitStaged && Directory.Exists(toolkit)) Directory.Delete(toolkit, recursive: true);
+        if (Directory.Exists(workspace)) Directory.Delete(workspace, recursive: true);
+        _reporter.Progress(InstallStages.ExtractToolkit,
+            "Restoring the release's local recompilation toolkit...", 4);
+        var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        var toolkitPlan = toolkitStaged ? ToolkitRefresh.None : ToolkitRefresh.Full;
+        ExtractToolkit(install.Payload, toolkitPlan, toolkit, extracted);
+        ExtractWorkspace(install.Payload, WorkspaceExtraction.Full, install.Existing, workspace, extracted,
+            cancellationToken);
+        VerifyExtraction(install.Inventory, toolkitPlan, WorkspaceExtraction.Full, extracted);
+        EnsureSufficientRemainingDiskSpace(install.Existing.Root, needsExtractedDisc: false, needsLocalBuild: true);
+        await PublishToolkitAndReconcileProductsAsync(install, ToolkitRefresh.Full, publishGameAssets: false,
+            cancellationToken);
+    }
 
     private static void AddComponent(List<InstallTransactionEntry> entries, string staging,
         string installDirectory, string name) =>
@@ -184,58 +340,209 @@ internal sealed class InstallerEngine
     /// the staged one, carrying the base translation, native build dir, verified inputs, and Retro-WFC payload cache
     /// across a toolkit update. Each is re-validated by the build, so stale caches degrade to a clean rebuild, never reuse.
     /// </summary>
-    private static readonly string[] WorkspaceCacheDirectories =
-        ["generated", "build", "native-build", "Assets", "PulsarPacks"];
+    private static readonly string[] WorkspaceCacheDirectories = PayloadInventory.WorkspaceCacheDirectories;
 
-    private async Task PublishToolkitAndReconcileProductsAsync(Installation existing, string staging,
-        string stagedWorkspace, PayloadManifest manifest, GameRelease release, InstallState? previousState,
-        InstallOptions options, string? canonicalRetroRoot,
-        RetroRewindCompileInputs? retroCompileInputs,
-        bool publishGameAssets, bool createShortcuts, CancellationToken cancellationToken)
+    private async Task PublishToolkitAndReconcileProductsAsync(InstallContext install,
+        ToolkitRefresh toolkitRefresh, bool publishGameAssets, CancellationToken cancellationToken)
     {
+        var existing = install.Existing;
+        var staging = install.Staging;
+        var manifest = install.Manifest;
+        var release = install.Release;
         var installDirectory = existing.Root;
 
+        GraftWorkspaceCaches(existing.WorkspaceDirectory, InstalledLayout.Workspace(staging), cancellationToken);
 
-        foreach (var cacheDirectory in WorkspaceCacheDirectories)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var source = Path.Combine(existing.WorkspaceDirectory, cacheDirectory);
-            if (!Directory.Exists(source)) continue;
-            var destination = Path.Combine(stagedWorkspace, cacheDirectory);
-            if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
-            Directory.Move(source, destination);
-        }
-
-
-        var state = BuildInstallState(previousState, installDirectory, manifest, release,
-            compileInputs: null, canonicalRetroRoot, options.RetroWfcPayloadMode);
+        var state = BuildInstallState(install.PreviousState, installDirectory, manifest, release,
+            compileInputs: null, install.CanonicalRetroRoot, install.Options.RetroWfcPayloadMode);
         PrepareMetadata(staging, manifest, state);
 
         cancellationToken.ThrowIfCancellationRequested();
         var entries = new List<InstallTransactionEntry>();
 
-        AddComponent(entries, staging, installDirectory, InstalledLayout.ToolkitDirectoryName);
+        AddToolkitEntries(entries, toolkitRefresh, staging, installDirectory);
         AddComponent(entries, staging, installDirectory, InstalledLayout.WorkspaceDirectoryName);
         if (publishGameAssets) AddComponent(entries, staging, installDirectory, "GameAssets");
 
-        Publish(staging, installDirectory, canonicalRetroRoot, state,
+        Publish(staging, installDirectory, install.CanonicalRetroRoot, state,
             entries, cancellationToken, progressPercent: 8, completionPercent: 10,
-            createShortcuts: createShortcuts);
+            createShortcuts: install.FirstInstall);
+
+        var verified = EnsurePublishedToolkitIntact(install, cancellationToken);
 
         _reporter.Progress(InstallStages.BuildBase,
             "Producing the installed products with the published toolkit...", 11);
 
-        var reconciliation = await ReconcileSameToolkitAsync(existing, retroCompileInputs,
-            canonicalRetroRoot, options.RetroWfcPayloadMode, repairScratch: null,
-            release.DolSha256, release.RelSha256, cancellationToken);
-        EnsureReconciliationCurrent(existing, manifest.ToolkitFingerprint, retroCompileInputs,
+        var reconciliation = await ReconcileSameToolkitAsync(existing, install.RetroCompileInputs,
+            install.CanonicalRetroRoot, install.Options.RetroWfcPayloadMode, repairScratch: null,
+            release.DolSha256, release.RelSha256, cancellationToken, verified);
+        EnsureReconciliationCurrent(existing, manifest.ToolkitFingerprint, install.RetroCompileInputs,
             release.DolSha256, release.RelSha256, reconciliation.CachedRetroWfcPayloadMatches);
+    }
+
+    /// <summary>
+    /// Moves the installed workspace's build caches into a staged workspace, so a toolkit update
+    /// keeps the base translation, native build directory, verified inputs and payload cache. Each
+    /// is re-validated by the build, so stale caches degrade to a clean rebuild, never reuse.
+    /// </summary>
+    private static void GraftWorkspaceCaches(string installedWorkspace, string stagedWorkspace,
+        CancellationToken cancellationToken)
+    {
+        foreach (var cacheDirectory in WorkspaceCacheDirectories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var source = Path.Combine(installedWorkspace, cacheDirectory);
+            if (!Directory.Exists(source)) continue;
+            var destination = Path.Combine(stagedWorkspace, cacheDirectory);
+            if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
+            Directory.Move(source, destination);
+        }
+    }
+
+    /// <summary>
+    /// After publication, every shipped Toolkit/BuildWorkspace file must exist with its exact size
+    /// (and, for the toolkit, its payload timestamp) and nothing foreign may sit beside them. A root
+    /// that fails is extracted and published once more; a second failure is reported instead of
+    /// leaving the user in a loop. Returns the identities the compile may use without re-hashing,
+    /// derived from the verified inventory, or null to make the compile hash the toolkit itself.
+    /// </summary>
+    internal ToolkitFingerprintComponents? EnsurePublishedToolkitIntact(InstallContext install,
+        CancellationToken cancellationToken)
+    {
+        var inventory = install.Inventory;
+        if (inventory is null) return null;
+        var root = install.Existing.Root;
+        (List<string> Toolkit, List<string> Workspace) Check() => (
+            inventory.StatCheck(root, InstalledLayout.ToolkitEntryPrefix, requireNormalizedTimestamp: true,
+                cancellationToken: cancellationToken),
+            inventory.StatCheck(root, InstalledLayout.WorkspaceEntryPrefix, requireNormalizedTimestamp: false,
+                cancellationToken: cancellationToken));
+
+        var problems = Check();
+        if (problems.Toolkit.Count > 0 || problems.Workspace.Count > 0)
+        {
+            _reporter.Diagnostic("The published toolkit does not match the release; publishing it once more: " +
+                                 string.Join("; ", problems.Toolkit.Concat(problems.Workspace)));
+            RepublishDamagedRoots(install, problems.Toolkit.Count > 0, problems.Workspace.Count > 0,
+                cancellationToken);
+            problems = Check();
+            if (problems.Toolkit.Count > 0 || problems.Workspace.Count > 0)
+                throw new InvalidOperationException(
+                    "Setup published the release's recompilation toolkit twice, but its files still do not " +
+                    "match the release (" + string.Join("; ", problems.Toolkit.Concat(problems.Workspace)) +
+                    "). Security software may be removing or changing them; allow the installation folder " +
+                    "and run setup again.");
+        }
+        return VerifiedComponents(install, cancellationToken);
+    }
+
+    private void RepublishDamagedRoots(InstallContext install, bool toolkit, bool workspace,
+        CancellationToken cancellationToken)
+    {
+        var installDirectory = install.Existing.Root;
+        var retry = Path.Combine(install.Staging, "republish");
+        if (Directory.Exists(retry)) Directory.Delete(retry, recursive: true);
+        var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        var entries = new List<InstallTransactionEntry>();
+        if (toolkit)
+        {
+            ExtractToolkit(install.Payload, ToolkitRefresh.Full, InstalledLayout.Toolkit(retry), extracted);
+            VerifyExtraction(install.Inventory, ToolkitRefresh.Full, WorkspaceExtraction.None, extracted);
+            AddComponent(entries, retry, installDirectory, InstalledLayout.ToolkitDirectoryName);
+        }
+        if (workspace)
+        {
+            var stagedWorkspace = InstalledLayout.Workspace(retry);
+            ExtractWorkspace(install.Payload, WorkspaceExtraction.Full, install.Existing, stagedWorkspace,
+                extracted, cancellationToken);
+            VerifyExtraction(install.Inventory, ToolkitRefresh.None, WorkspaceExtraction.Full, extracted);
+            GraftWorkspaceCaches(install.Existing.WorkspaceDirectory, stagedWorkspace, cancellationToken);
+            AddComponent(entries, retry, installDirectory, InstalledLayout.WorkspaceDirectoryName);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+        RunningProductGuard.EnsureProductsNotRunning(installDirectory);
+        using var transaction = InstallTransaction.Begin(installDirectory, _reporter, entries.ToArray());
+        transaction.Publish();
+        transaction.Commit();
+    }
+
+    /// <summary>
+    /// The toolkit identities of the just-verified installation, computed from the release
+    /// inventory exactly the way <see cref="ToolkitFingerprint.ComputeComponents"/> computes them
+    /// from disk. Any disagreement with the manifest discards them, so the compile hashes instead.
+    /// </summary>
+    private ToolkitFingerprintComponents? VerifiedComponents(InstallContext install,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var components = ComputeInventoryComponents(install.Inventory!, install.Existing.Root,
+            install.Manifest, _reporter.Diagnostic);
+        return components;
+    }
+
+    /// <summary>
+    /// Derives the toolkit identities from a release inventory whose files were verified to be the
+    /// ones at <paramref name="root"/>. The native index is the one document whose content (not only
+    /// its hash) the identities read; it is read back from disk and must hash to its inventory entry.
+    /// Returns null when the inventory does not reproduce the manifest's identities.
+    /// </summary>
+    internal static ToolkitFingerprintComponents? ComputeInventoryComponents(PayloadInventory inventory,
+        string root, PayloadManifest manifest, Action<string> diagnostic)
+    {
+        string? ReadVerifiedText(string relative)
+        {
+            if (!inventory.ByPath.TryGetValue(relative, out var shipped)) return null;
+            try
+            {
+                var bytes = File.ReadAllBytes(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
+                var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant();
+                return sha.Equals(shipped.Sha256, StringComparison.OrdinalIgnoreCase)
+                    ? System.Text.Encoding.UTF8.GetString(bytes)
+                    : null;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
+        }
+
+        ToolkitFingerprintComponents components;
+        try
+        {
+            components = ToolkitFingerprint.ComputeComponentsFromHashes(inventory.Hashes(), ReadVerifiedText,
+                inventory.TranslationInputLists());
+        }
+        catch (InvalidDataException ex)
+        {
+            diagnostic("The toolkit identities could not be derived from the release inventory: " + ex.Message);
+            return null;
+        }
+        if (!components.Compile.Equals(manifest.ToolkitFingerprint, StringComparison.Ordinal) ||
+            (manifest.TranslationFingerprint.Length > 0 &&
+             !components.Translation.Equals(manifest.TranslationFingerprint, StringComparison.Ordinal)) ||
+            (manifest.NativeToolchainFingerprint.Length > 0 &&
+             !components.NativeToolchain.Equals(manifest.NativeToolchainFingerprint, StringComparison.Ordinal)))
+        {
+            diagnostic("The release inventory does not reproduce the release's toolkit identities; " +
+                       "the toolkit is hashed instead.");
+            return null;
+        }
+        var shippedByRelease = manifest.TranslationFingerprintsByRelease ?? new Dictionary<string, string>();
+        var sameByRelease = shippedByRelease.Count == components.TranslationByRelease.Count &&
+                            shippedByRelease.All(pair =>
+                                components.TranslationByRelease.TryGetValue(pair.Key, out var value) &&
+                                value == pair.Value);
+        return sameByRelease
+            ? components
+            : components with { TranslationByRelease = new SortedDictionary<string, string>(StringComparer.Ordinal) };
     }
 
     private Task<ProductRepairService.ReconciliationResult> ReconcileSameToolkitAsync(Installation existing,
         RetroRewindCompileInputs? retroCompileInputs, string? canonicalRetroRoot,
         RetroWfcPayloadMode payloadMode, string? repairScratch, string expectedDolSha256,
-        string expectedRelSha256, CancellationToken cancellationToken)
+        string expectedRelSha256, CancellationToken cancellationToken,
+        ToolkitFingerprintComponents? preverifiedToolkitComponents = null)
     {
         var repair = new ProductRepairService(existing, _reporter);
         var options = new ProductRepairService.ReconcileOptions
@@ -243,7 +550,8 @@ internal sealed class InstallerEngine
             ScratchRoot = repairScratch,
             ExpectedDolSha256 = expectedDolSha256,
             ExpectedRelSha256 = expectedRelSha256,
-            CanonicalRetroRewindRoot = canonicalRetroRoot
+            CanonicalRetroRewindRoot = canonicalRetroRoot,
+            PreverifiedToolkitComponents = preverifiedToolkitComponents
         };
 
         return retroCompileInputs is null
@@ -348,7 +656,12 @@ internal sealed class InstallerEngine
             RuntimeAssetsFingerprint = manifest.RuntimeAssetsFingerprint,
             TranslationFingerprint = manifest.TranslationFingerprint,
             NativeToolchainFingerprint = manifest.NativeToolchainFingerprint,
-            ToolkitReleaseTag = manifest.ToolkitReleaseTag
+            ToolkitReleaseTag = manifest.ToolkitReleaseTag,
+            ToolchainPackageFingerprint = manifest.ToolchainPackageFingerprint ?? "",
+            TranslatorPackageFingerprint = manifest.TranslatorPackageFingerprint ?? "",
+            TranslationFingerprintsByRelease = new Dictionary<string, string>(
+                manifest.TranslationFingerprintsByRelease ?? new Dictionary<string, string>(), StringComparer.Ordinal),
+            NativePrebuiltGateProvenanceSha256 = manifest.NativePrebuiltGateProvenanceSha256 ?? ""
         });
         JsonState.Write(Path.Combine(staging, InstalledLayout.InstallStateFileName), state);
     }

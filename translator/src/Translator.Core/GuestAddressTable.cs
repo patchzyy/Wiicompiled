@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Text.RegularExpressions;
 
 namespace Translator.Core;
@@ -53,10 +54,10 @@ public sealed partial class GuestAddressTable
 
     public static GuestAddressTable Load(string path)
     {
-        if (!File.Exists(path))
+        if (!TrackedFs.FileExists(path))
             throw new FileNotFoundException("The runtime's guest address map was not found.", path);
         var ranges = new Dictionary<GuestRegion, List<Range>>();
-        foreach (var line in File.ReadLines(path))
+        foreach (var line in TrackedFs.ReadLines(path))
         {
             if (!line.TrimStart().StartsWith("MKW_REGION_RANGE", StringComparison.Ordinal)) continue;
             var match = RangePattern().Match(line);

@@ -39,6 +39,36 @@ CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
 var command = args.Length > 0 ? args[0] : "info";
 var (optionValues, enabledFlags, firstCommandArgument, helpRequested, unrecognizedOption) =
     ParseCommandLineOptions(command, args);
+// Static: it must work where the disc pins do not exist, so it runs before the project
+// (and its pinned DOL/REL) is loaded and validated.
+if (command == "list-translation-inputs")
+    return RunListTranslationInputs(optionValues.GetValueOrDefault("--project"), helpRequested, unrecognizedOption);
+// Opt-in skip gate. Started before the project is loaded, so the project file, function map
+// and pinned inputs are read under the recorder like everything else the step touches.
+StepProvenanceSession? provenanceSession = null;
+if (!helpRequested && unrecognizedOption is null)
+{
+    var provenanceFile = optionValues.GetValueOrDefault("--provenance-file");
+    var accessLog = StepProvenance.AccessLogPathFromEnvironment();
+    if (provenanceFile is not null && string.IsNullOrWhiteSpace(provenanceFile))
+    {
+        Console.Error.WriteLine("--provenance-file requires a path.");
+        return 2;
+    }
+    if (provenanceFile is not null || accessLog is not null)
+    {
+        provenanceSession = StepProvenanceSession.Start(
+            provenanceFile,
+            accessLog,
+            StepInvocation.ForCurrentProcess(command, args, EffectiveThreadCount(optionValues.GetValueOrDefault("--threads"))),
+            Console.Error);
+        if (provenanceSession is { IsCurrent: true })
+        {
+            Console.WriteLine($"MKWCBUILD: {command} is current; skipping");
+            return 0;
+        }
+    }
+}
 var projectOption = optionValues.GetValueOrDefault("--project");
 var profileOption = optionValues.GetValueOrDefault("--profile");
 var project = !string.IsNullOrWhiteSpace(projectOption)
@@ -60,7 +90,7 @@ if (functionMap is not null)
 {
     GuestSaveRestoreThunks.Current = GuestSaveRestoreThunks.FromFunctionMap(functionMap);
 }
-var root = project?.WorkspaceRoot ?? Directory.GetCurrentDirectory();
+var root = project?.WorkspaceRoot ?? TrackedFs.GetCurrentDirectory();
 if (helpRequested)
     return ShowCommandHelp(command);
 if (unrecognizedOption is not null)
@@ -166,20 +196,79 @@ var _executableRangesGate = new object();
 // Argument registers checked for callback function pointers at every call site
 var argumentRegisters = new[] { "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10" };
 
-return command switch
+// Anything but a normal zero return (a failure code or an exception) leaves no provenance record.
+var commandExitCode = 1;
+try
 {
-    "help" or "--help" or "-h" or "-?" => ShowGlobalHelp(),
-    "info" or "--info" or "--version" => RunInfo(),
-    "generate-data-init" => RunGenerateDataInit(),
-    "translate-recursive" => RunTranslateRecursive(firstCommandArgument),
-    "translate-mod" => RunTranslateMod(),
-    "emit-build-shards" => RunEmitBuildShards(),
-    "emit-native-index" => RunEmitNativeIndex(),
-    "emit-base-manifest" => RunEmitBaseManifest(),
-    "check-base-mod-awareness" => RunCheckBaseModAwareness(),
-    "validate-retro-wfc-payload" => RunValidateRetroWfcPayload(),
-    _ => ShowHelp(command)
-};
+    commandExitCode = command switch
+    {
+        "help" or "--help" or "-h" or "-?" => ShowGlobalHelp(),
+        "info" or "--info" or "--version" => RunInfo(),
+        "generate-data-init" => RunGenerateDataInit(),
+        "translate-recursive" => RunTranslateRecursive(firstCommandArgument),
+        "translate-mod" => RunTranslateMod(),
+        "emit-build-shards" => RunEmitBuildShards(),
+        "emit-native-index" => RunEmitNativeIndex(),
+        "emit-base-manifest" => RunEmitBaseManifest(),
+        "check-base-mod-awareness" => RunCheckBaseModAwareness(),
+        "validate-retro-wfc-payload" => RunValidateRetroWfcPayload(),
+        _ => ShowHelp(command)
+    };
+    return commandExitCode;
+}
+finally
+{
+    provenanceSession?.Finish(commandExitCode);
+}
+
+/// <summary>
+/// Every existing file a translation of the project at <paramref name="projectPath"/> reads,
+/// except the pinned disc inputs: one absolute path per line on stdout, ordinal order.
+/// Static - nothing is translated and the DOL/REL are neither opened nor required.
+/// </summary>
+static int RunListTranslationInputs(string? projectPath, bool helpRequested, string? unrecognizedOption)
+{
+    if (helpRequested) return ShowCommandHelp("list-translation-inputs");
+    if (unrecognizedOption is not null)
+    {
+        Console.Error.WriteLine($"Unrecognized option '{unrecognizedOption}' for command 'list-translation-inputs'.");
+        WriteUsage(Console.Error, new[] { "list-translation-inputs" });
+        return 2;
+    }
+    if (string.IsNullOrWhiteSpace(projectPath))
+    {
+        Console.Error.WriteLine("list-translation-inputs requires --project <recomp.yml>.");
+        return 2;
+    }
+    IReadOnlyList<string> inputs;
+    try
+    {
+        inputs = TranslationProjectConfig.ListTranslationInputs(projectPath);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"list-translation-inputs failed: {ex.Message}");
+        return 1;
+    }
+    var output = new StringBuilder();
+    foreach (var input in inputs) output.Append(input).Append('\n');
+    Console.Out.Write(output.ToString());
+    Console.Out.Flush();
+    return 0;
+}
+
+static int? EffectiveThreadCount(string? threadsText)
+{
+    if (threadsText is null) return Math.Max(1, Environment.ProcessorCount);
+    try
+    {
+        return Math.Max(1, ParseInt(threadsText));
+    }
+    catch (Exception ex) when (ex is FormatException or OverflowException or ArgumentException)
+    {
+        return null;
+    }
+}
 
 /// <summary>
 /// May the workspace's completed base translation be reused for the Code.pul about to build?
@@ -201,7 +290,7 @@ int RunCheckBaseModAwareness()
         Console.Error.WriteLine("[translator] check-base-mod-awareness needs --profile.");
         return 1;
     }
-    if (!File.Exists(codePul))
+    if (!TrackedFs.FileExists(codePul))
     {
         Console.Error.WriteLine($"[translator] Code.pul not found: {codePul}");
         return 1;
@@ -234,7 +323,7 @@ RuntimeNativeIndex ResolveRegionalNativeIndex(string nativeSourceDirectory, stri
     var region = GuestRegions.FromGameId(RequireProject().Identity.GameId);
     var tablePath = GuestAddressTable.DefaultPath(nativeSourceDirectory);
     // A runtime without a table can only be built for PAL.
-    if (region == GuestRegion.Pal && !File.Exists(tablePath))
+    if (region == GuestRegion.Pal && !TrackedFs.FileExists(tablePath))
         return index;
     return index.ForRegion(GuestAddressTable.Load(tablePath), region);
 }
@@ -263,7 +352,7 @@ int RunEmitBuildShards()
                 Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(nativeSourcePath))!,
                 RuntimeNativeIndexFile.DefaultFileName)
             : Path.GetFullPath(nativeIndexOption);
-        if (!Directory.Exists(nativeSourcePath) && !File.Exists(nativeIndexPath))
+        if (!TrackedFs.DirectoryExists(nativeSourcePath) && !TrackedFs.FileExists(nativeIndexPath))
             throw new DirectoryNotFoundException(nativeSourcePath);
         var nativeIndex = ResolveRegionalNativeIndex(nativeSourcePath, nativeIndexPath);
         var result = TranslatedBuildShardEmitter.Emit(new TranslatedBuildShardOptions(
@@ -317,7 +406,7 @@ int RunEmitNativeIndex()
     }
     var nativeSourcePath = Path.GetFullPath(
         optionValues.GetValueOrDefault("--native-source-dir") ?? RequireProject().Runtime.NativeRegistrationRoot);
-    if (!Directory.Exists(nativeSourcePath))
+    if (!TrackedFs.DirectoryExists(nativeSourcePath))
     {
         Console.Error.WriteLine($"[translator] native source directory not found: {nativeSourcePath}");
         return 1;
@@ -339,29 +428,31 @@ byte[] LoadBinaryInput(string spec, string outDir, string downloadFileName)
     if (Uri.TryCreate(spec, UriKind.Absolute, out var uri) &&
         (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
     {
-        Directory.CreateDirectory(outDir);
+        TrackedFs.CreateDirectory(outDir);
         var downloadPath = Path.Combine(outDir, downloadFileName);
         var cachedPath = ResolveCachedTranslateModInput(downloadPath, downloadFileName, spec);
         if (preferCachedInputs && cachedPath is not null)
         {
             Console.Error.WriteLine($"[translator] using cached input {cachedPath}");
-            var cachedBytes = File.ReadAllBytes(cachedPath);
+            var cachedBytes = TrackedFs.ReadAllBytes(cachedPath);
             if (!string.Equals(cachedPath, downloadPath, StringComparison.OrdinalIgnoreCase))
             {
-                File.WriteAllBytes(downloadPath, cachedBytes);
-                File.WriteAllText(downloadPath + ".source", spec);
+                TrackedFs.WriteAllBytes(downloadPath, cachedBytes);
+                TrackedFs.WriteAllText(downloadPath + ".source", spec);
             }
             return cachedBytes;
         }
         Console.Error.WriteLine($"[translator] fetching {uri}");
+        // A download can change under the same URL; no file record can prove it current.
+        TrackedFs.NoteUntrackedInput($"a download of {uri}");
         using var client = new System.Net.Http.HttpClient();
         var bytes = client.GetByteArrayAsync(uri).GetAwaiter().GetResult();
-        File.WriteAllBytes(downloadPath, bytes);
-        File.WriteAllText(downloadPath + ".source", spec);
+        TrackedFs.WriteAllBytes(downloadPath, bytes);
+        TrackedFs.WriteAllText(downloadPath + ".source", spec);
         return bytes;
     }
 
-    return File.ReadAllBytes(Path.GetFullPath(Path.Combine(root, spec)));
+    return TrackedFs.ReadAllBytes(Path.GetFullPath(Path.Combine(root, spec)));
 }
 
 string? ResolveCachedTranslateModInput(string outputPath, string fileName, string spec)
@@ -389,9 +480,9 @@ bool CachedTranslateModInputMatchesSpec(string path, string spec)
     // sidecar records that spec so a changed profile URL forces a re-fetch
     // instead of silently reusing bytes from the previous endpoint.
     var sourcePath = path + ".source";
-    return File.Exists(path) &&
-        File.Exists(sourcePath) &&
-        string.Equals(File.ReadAllText(sourcePath).Trim(), spec.Trim(), StringComparison.Ordinal);
+    return TrackedFs.FileExists(path) &&
+        TrackedFs.FileExists(sourcePath) &&
+        string.Equals(TrackedFs.ReadAllText(sourcePath).Trim(), spec.Trim(), StringComparison.Ordinal);
 }
 
 static uint AlignUp(uint value, uint alignment)
@@ -469,7 +560,7 @@ int RunTranslateRecursive(string? firstCommandArgument)
     var pruneStale = enabledFlags.Contains("--prune-stale");
     if (pruneStale &&
         outputMetadataPath is not null &&
-        File.Exists(outputMetadataPath))
+        TrackedFs.FileExists(outputMetadataPath))
     {
         try
         {
@@ -491,7 +582,7 @@ int RunTranslateRecursive(string? firstCommandArgument)
 
     try
     {
-        Directory.CreateDirectory(outDir);
+        TrackedFs.CreateDirectory(outDir);
 
         var visited = new HashSet<uint>();
         var translated = new HashSet<uint>();
@@ -1678,21 +1769,21 @@ int RunTranslateMod()
 void PreserveTranslateModFailureDiagnostics(string stagingDirectory, string publishedOutput, int exitCode)
 {
     var diagnosticsDirectory = publishedOutput + ".failed";
-    if (Directory.Exists(diagnosticsDirectory))
+    if (TrackedFs.DirectoryExists(diagnosticsDirectory))
     {
-        Directory.Delete(diagnosticsDirectory, recursive: true);
+        TrackedFs.DeleteDirectory(diagnosticsDirectory, recursive: true);
     }
-    Directory.CreateDirectory(diagnosticsDirectory);
+    TrackedFs.CreateDirectory(diagnosticsDirectory);
 
     var copied = 0;
-    foreach (var source in Directory.EnumerateFiles(stagingDirectory, "*", SearchOption.TopDirectoryOnly)
+    foreach (var source in TrackedFs.EnumerateFiles(stagingDirectory, "*", SearchOption.TopDirectoryOnly)
                  .Where(path => path.EndsWith(".txt", StringComparison.OrdinalIgnoreCase) ||
                                 path.EndsWith(".json", StringComparison.OrdinalIgnoreCase)))
     {
-        File.Copy(source, Path.Combine(diagnosticsDirectory, Path.GetFileName(source)), overwrite: true);
+        TrackedFs.Copy(source, Path.Combine(diagnosticsDirectory, Path.GetFileName(source)), overwrite: true);
         copied++;
     }
-    File.WriteAllText(
+    TrackedFs.WriteAllText(
         Path.Combine(diagnosticsDirectory, "failure.txt"),
         $"translate-mod exited with code {exitCode}. Preserved {copied} top-level diagnostic file(s).{Environment.NewLine}");
     Console.Error.WriteLine($"[translator] Preserved failure diagnostics: {diagnosticsDirectory}");
@@ -1728,7 +1819,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
     // around the patch set it knew about; a base tree that never saw this Code.pul can splice
     // mod-patched callee bodies inline, silently running vanilla code where the mod's hooks must
     // win (this shipped once as a character-select LinkList.h:573 panic).
-    if (File.Exists(baseTranslationOutputMetadataPath) && File.Exists(codePul))
+    if (TrackedFs.FileExists(baseTranslationOutputMetadataPath) && TrackedFs.FileExists(codePul))
     {
         var guardedBaseMetadata = ReadBaseMetadataCached(baseTranslationOutputMetadataPath);
         var codePulSha256 = ChecksumUtilities.Sha256HexOfFile(codePul);
@@ -1771,7 +1862,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
             return 1;
         }
     }
-    else if (!File.Exists(baseTranslationOutputMetadataPath))
+    else if (!TrackedFs.FileExists(baseTranslationOutputMetadataPath))
     {
         Console.Error.WriteLine(
             $"[translator] Warning: no base translation output metadata at {baseTranslationOutputMetadataPath}; " +
@@ -1805,7 +1896,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
     var moduleLinkBase = moduleLinkBaseText is not null
         ? ParseAddress(moduleLinkBaseText)
         : profile?.ModuleLinkBase ?? 0x803992E0u;
-    Directory.CreateDirectory(outDir);
+    TrackedFs.CreateDirectory(outDir);
 
     var pul = KamekPulFile.Load(codePul);
     var selected = pul.SelectRegion(region);
@@ -1830,7 +1921,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
             $"[translator] Suppressed legacy Retro WFC payload bootstrap hook at 0x{legacyBootstrapHook:X8}; " +
             "the shared payload is initialized statically.");
     }
-    var baseManifest = JsonSerializer.Deserialize<BaseManifest>(File.ReadAllText(baseManifestPath))
+    var baseManifest = JsonSerializer.Deserialize<BaseManifest>(TrackedFs.ReadAllText(baseManifestPath))
         ?? throw new InvalidDataException($"Failed to parse base manifest: {baseManifestPath}");
     RetroWfcContractLoweringPlan? retroWfcLoweringPlan = null;
     RetroWfcPayloadLoadResult? retroWfcPayload = null;
@@ -1841,7 +1932,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
         try
         {
             payloadImage = LoadBinaryInput(retroWfcPayloadSpec, outDir, "retro_wfc_payload.bin");
-            File.WriteAllBytes(Path.Combine(outDir, "retro_wfc_payload.bin"), payloadImage);
+            TrackedFs.WriteAllBytes(Path.Combine(outDir, "retro_wfc_payload.bin"), payloadImage);
         }
         catch (Exception ex) when (ex is IOException or System.Net.Http.HttpRequestException or UnauthorizedAccessException)
         {
@@ -1931,7 +2022,7 @@ int RunTranslateModCore(string? outputDirectoryOverride)
     }
 
     var relocatedModuleImagePath = Path.Combine(outDir, "overlay_images", overlayBuild.ModuleImageFile);
-    var relocatedModuleImage = File.ReadAllBytes(relocatedModuleImagePath);
+    var relocatedModuleImage = TrackedFs.ReadAllBytes(relocatedModuleImagePath);
 
     continuationPlan = ContinuationPlanner.AddModuleTailJumpContinuations(
         continuationPlan,
@@ -2087,25 +2178,25 @@ void WriteResolvedDispatchProfile(
 
     IEnumerable<string> BaseFiles()
     {
-        if (File.Exists(baseFunctionsManifest))
+        if (TrackedFs.FileExists(baseFunctionsManifest))
         {
-            return File.ReadLines(baseFunctionsManifest)
+            return TrackedFs.ReadLines(baseFunctionsManifest)
                 .Where(line => !string.IsNullOrWhiteSpace(line))
                 .Select(line => Path.IsPathRooted(line) ? line : Path.Combine(baseFunctionsDir, Path.GetFileName(line)));
         }
-        return Directory.EnumerateFiles(baseFunctionsDir, "*.cpp", SearchOption.AllDirectories);
+        return TrackedFs.EnumerateFiles(baseFunctionsDir, "*.cpp", SearchOption.AllDirectories);
     }
 
     static IEnumerable<(string File, string Text)> ReadFiles(IEnumerable<string> files)
     {
         foreach (var file in files)
-            if (File.Exists(file)) yield return (file, File.ReadAllText(file));
+            if (TrackedFs.FileExists(file)) yield return (file, TrackedFs.ReadAllText(file));
     }
 
     IEnumerable<(string File, string Text)> BaseSources()
     {
         var metadataPath = baseTranslationOutputMetadataPath;
-        if (File.Exists(metadataPath))
+        if (TrackedFs.FileExists(metadataPath))
         {
             var metadata = ReadBaseMetadataCached(metadataPath);
             if (!string.IsNullOrWhiteSpace(metadata.SourceBundlePath))
@@ -2124,13 +2215,13 @@ void WriteResolvedDispatchProfile(
     IEnumerable<(string File, string Text)> ModSources()
     {
         var bundlePath = Path.Combine(Path.GetDirectoryName(modCppDir)!, "translated_sources.bin");
-        if (File.Exists(bundlePath))
+        if (TrackedFs.FileExists(bundlePath))
         {
             foreach (var entry in TranslationSourceBundle.Read(bundlePath).Entries)
                 yield return (Path.Combine(modCppDir, entry.VirtualPath), entry.Source);
             yield break;
         }
-        foreach (var source in ReadFiles(Directory.EnumerateFiles(modCppDir, "*.cpp", SearchOption.AllDirectories)))
+        foreach (var source in ReadFiles(TrackedFs.EnumerateFiles(modCppDir, "*.cpp", SearchOption.AllDirectories)))
             yield return source;
     }
 
@@ -2180,7 +2271,7 @@ void WriteResolvedDispatchProfile(
     void ReadBaseTranslated()
     {
         BaseTranslationOutputMetadata? metadata = null;
-        if (File.Exists(baseTranslationOutputMetadataPath))
+        if (TrackedFs.FileExists(baseTranslationOutputMetadataPath))
         {
             metadata = ReadBaseMetadataCached(baseTranslationOutputMetadataPath);
         }
@@ -2241,9 +2332,9 @@ void WriteResolvedDispatchProfile(
     // the same resolved profile as runtime-native registrations so direct-call
     // traits and immutable indirect dispatch tables cannot bypass them.
     var modDataPatchesPath = Path.Combine(modCppDir, "mod_data_patches.cpp");
-    if (File.Exists(modDataPatchesPath))
+    if (TrackedFs.FileExists(modDataPatchesPath))
     {
-        var text = Regex.Replace(File.ReadAllText(modDataPatchesPath), @"//[^\r\n]*", string.Empty);
+        var text = Regex.Replace(TrackedFs.ReadAllText(modDataPatchesPath), @"//[^\r\n]*", string.Empty);
         foreach (Match match in nativeRegistration.Matches(text))
         {
             AddNative(
@@ -2364,11 +2455,11 @@ int EmitModCpp(
     Console.WriteLine($"  translating mod C++ with up to {maxThreads} worker thread(s)");
 
     var cppRoot = Path.Combine(outDir, "cpp");
-    if (Directory.Exists(cppRoot))
+    if (TrackedFs.DirectoryExists(cppRoot))
     {
-        Directory.Delete(cppRoot, recursive: true);
+        TrackedFs.DeleteDirectory(cppRoot, recursive: true);
     }
-    Directory.CreateDirectory(cppRoot);
+    TrackedFs.CreateDirectory(cppRoot);
     var bundledModSources = new Dictionary<string, TranslationSourceBundleEntry>(StringComparer.OrdinalIgnoreCase);
 
     var unresolved = new List<string>();
@@ -2635,7 +2726,7 @@ int EmitModCpp(
     DrainDiscoveredContinuations();
 
     var moduleImagePath = Path.Combine(outDir, "overlay_images", overlayBuild.ModuleImageFile);
-    var moduleEnd = checked(overlayBuild.ModuleGuestBase + (uint)new FileInfo(moduleImagePath).Length);
+    var moduleEnd = checked(overlayBuild.ModuleGuestBase + (uint)TrackedFs.FileLength(moduleImagePath));
     var moduleQueue = new Queue<ModFunctionStart>(kamekFunctionStarts.OrderBy(s => s.Address));
     var queuedModuleStarts = new HashSet<uint>(kamekFunctionStarts.Select(s => s.Address));
     var emittedModuleStarts = new HashSet<uint>();
@@ -2785,7 +2876,7 @@ ProgramImage BuildSyntheticModProgramImage(string outDir, OverlayBuildResult ove
 
 void CopyFileToGuest(byte[] memory, uint memoryBase, uint guestAddress, string path)
 {
-    var bytes = File.ReadAllBytes(path);
+    var bytes = TrackedFs.ReadAllBytes(path);
     if (guestAddress < memoryBase)
     {
         throw new InvalidDataException($"Mod image '{path}' at 0x{guestAddress:X8} precedes configured memory base 0x{memoryBase:X8}.");
@@ -2940,7 +3031,7 @@ int RunGenerateDataInit()
 
     // Load the REL file for runtime embedding (apply relocations since runtime does not OSLink)
     RelImage? relImage = null;
-    if (!string.IsNullOrWhiteSpace(relPath) && loadedProject.Inputs.Rel is { } configuredRel && File.Exists(relPath))
+    if (!string.IsNullOrWhiteSpace(relPath) && loadedProject.Inputs.Rel is { } configuredRel && TrackedFs.FileExists(relPath))
     {
         relImage = RelFile.Load(relPath).BuildImage(
             configuredRel.LoadAddress,
@@ -2951,7 +3042,7 @@ int RunGenerateDataInit()
     var outputDir = Path.GetDirectoryName(output);
     if (!string.IsNullOrEmpty(outputDir))
     {
-        Directory.CreateDirectory(outputDir);
+        TrackedFs.CreateDirectory(outputDir);
     }
     DataSectionGenerator.Generate(
         dol,
@@ -3681,7 +3772,8 @@ static string[] KnownCommands() => new[]
     "emit-build-shards",
     "emit-native-index",
     "check-base-mod-awareness",
-    "validate-retro-wfc-payload"
+    "validate-retro-wfc-payload",
+    "list-translation-inputs"
 };
 
 /// <summary>
@@ -3693,7 +3785,10 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
 {
     "info" or "--info" or "--version" =>
         (null, Array.Empty<CommandOption>()),
-    "generate-data-init" => (null, Array.Empty<CommandOption>()),
+    "generate-data-init" => (null, new CommandOption[]
+    {
+        new("--provenance-file", "path")
+    }),
     "translate-recursive" => ("<start_addr>", new CommandOption[]
     {
         new("--outdir", "path"),
@@ -3718,7 +3813,8 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--threads", "N"),
         new("--retro-wfc-payload", "path-or-url"),
         new("--skip-retro-wfc"),
-        new("--emit-cpp")
+        new("--emit-cpp"),
+        new("--provenance-file", "path")
     }),
     "check-base-mod-awareness" => (null, new CommandOption[]
     {
@@ -3745,7 +3841,12 @@ static (string? Positional, CommandOption[] Options)? CommandSpec(string command
         new("--native-index", "path"),
         new("--resolved-profile", "path"),
         new("--retro-cpp-dir", "path"),
-        new("--out", "generated/build_shards")
+        new("--out", "generated/build_shards"),
+        new("--provenance-file", "path")
+    }),
+    "list-translation-inputs" => (null, new CommandOption[]
+    {
+        new("--project", "path/to/recomp.yml", Required: true)
     }),
     "emit-native-index" => (null, new CommandOption[]
     {
@@ -3917,13 +4018,13 @@ HashSet<uint> BuildKnownBaseFunctionEntryPoints(
 
 static IEnumerable<uint> DiscoverFunctionStartAddressesFromFileNames(string generatedFunctionsDir)
 {
-    if (!Directory.Exists(generatedFunctionsDir))
+    if (!TrackedFs.DirectoryExists(generatedFunctionsDir))
     {
         yield break;
     }
 
     var addressRegex = new Regex("([0-9A-Fa-f]{8})", RegexOptions.CultureInvariant);
-    foreach (var path in Directory.EnumerateFiles(generatedFunctionsDir, "*.cpp", SearchOption.AllDirectories))
+    foreach (var path in TrackedFs.EnumerateFiles(generatedFunctionsDir, "*.cpp", SearchOption.AllDirectories))
     {
         var match = addressRegex.Match(Path.GetFileNameWithoutExtension(path));
         if (match.Success &&
@@ -3969,7 +4070,7 @@ static IReadOnlyList<Translator.Cli.Configuration.ProjectProfile> CollectModPatc
         {
             if (candidate.Enabled &&
                 !string.IsNullOrWhiteSpace(candidate.CodePul) &&
-                File.Exists(candidate.CodePul))
+                TrackedFs.FileExists(candidate.CodePul))
             {
                 profiles[candidate.Name] = candidate;
             }
@@ -3979,7 +4080,7 @@ static IReadOnlyList<Translator.Cli.Configuration.ProjectProfile> CollectModPatc
     // caller selects one that is marked disabled in the project file.
     if (selectedProfile is not null &&
         !string.IsNullOrWhiteSpace(selectedProfile.CodePul) &&
-        File.Exists(selectedProfile.CodePul))
+        TrackedFs.FileExists(selectedProfile.CodePul))
     {
         profiles[selectedProfile.Name] = selectedProfile;
     }

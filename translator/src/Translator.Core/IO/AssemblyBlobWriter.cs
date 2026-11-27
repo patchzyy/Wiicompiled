@@ -18,7 +18,7 @@ internal static class AssemblyBlobWriter
         IReadOnlyList<AssemblyBlob> blobs,
         params string[] headerLines)
     {
-        Directory.CreateDirectory(blobDirectory);
+        TrackedFs.CreateDirectory(blobDirectory);
         var expectedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var assembly = new StringBuilder();
         foreach (var header in headerLines) assembly.AppendLine(header);
@@ -52,9 +52,9 @@ internal static class AssemblyBlobWriter
             assembly.AppendLine();
         }
 
-        foreach (var stalePath in Directory.EnumerateFiles(blobDirectory, "*.bin"))
+        foreach (var stalePath in TrackedFs.EnumerateOutputFiles(blobDirectory, "*.bin"))
         {
-            if (!expectedFiles.Contains(Path.GetFullPath(stalePath))) File.Delete(stalePath);
+            if (!expectedFiles.Contains(Path.GetFullPath(stalePath))) TrackedFs.Delete(stalePath);
         }
         if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
         {

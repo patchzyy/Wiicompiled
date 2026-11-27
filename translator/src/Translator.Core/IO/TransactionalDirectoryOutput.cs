@@ -34,16 +34,16 @@ public static class TransactionalDirectoryOutput
         ArgumentNullException.ThrowIfNull(producer);
 
         var destination = Path.GetFullPath(destinationDirectory);
-        var parent = Directory.GetParent(destination)?.FullName
+        var parent = Path.GetDirectoryName(destination)
             ?? throw new InvalidOperationException($"Output directory has no parent: {destination}");
-        Directory.CreateDirectory(parent);
+        TrackedFs.CreateDirectory(parent);
 
         var leaf = Path.GetFileName(destination.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         var staging = Path.Combine(parent, $".{leaf}.translate-mod-staging-{Guid.NewGuid():N}");
         // The same list instance is handed to the result record, so warnings the
         // staging cleanup below adds still reach the caller.
         var warnings = new List<string>();
-        Directory.CreateDirectory(staging);
+        TrackedFs.CreateDirectory(staging);
 
         try
         {
@@ -58,7 +58,7 @@ public static class TransactionalDirectoryOutput
         }
         finally
         {
-            if (Directory.Exists(staging))
+            if (TrackedFs.DirectoryExists(staging))
             {
                 TryDeleteDirectory(staging, "staging output", warnings);
             }
@@ -68,7 +68,7 @@ public static class TransactionalDirectoryOutput
     private static PublishResult Publish(string staging, string destination, List<string> warnings)
     {
         var stagedFiles = EnumerateRelativeFiles(staging);
-        var liveFiles = Directory.Exists(destination)
+        var liveFiles = TrackedFs.OutputDirectoryExists(destination)
             ? EnumerateRelativeFiles(destination)
             : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
@@ -92,18 +92,18 @@ public static class TransactionalDirectoryOutput
             // Ninja/MSBuild use last-write time to determine whether generated C++ must
             // be rebuilt. The clean stage is authoritative for membership, while the live
             // tree is authoritative for the timestamp of identical content.
-            File.SetLastWriteTimeUtc(stagedPath, File.GetLastWriteTimeUtc(livePath));
+            TrackedFs.SetLastWriteTimeUtc(stagedPath, TrackedFs.GetOutputLastWriteTimeUtc(livePath));
             unchanged++;
         }
 
         var removed = liveFiles.Keys.Count(path => !stagedFiles.ContainsKey(path));
-        if (!Directory.Exists(destination))
+        if (!TrackedFs.OutputDirectoryExists(destination))
         {
             MoveDirectoryWithRetry(staging, destination);
             return new PublishResult(added, updated, removed, unchanged);
         }
 
-        var parent = Directory.GetParent(destination)!.FullName;
+        var parent = Path.GetDirectoryName(destination)!;
         var leaf = Path.GetFileName(destination.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
         var backup = Path.Combine(parent, $".{leaf}.translate-mod-backup-{Guid.NewGuid():N}");
 
@@ -114,7 +114,7 @@ public static class TransactionalDirectoryOutput
         }
         catch (Exception publishError)
         {
-            if (!Directory.Exists(destination) && Directory.Exists(backup))
+            if (!TrackedFs.OutputDirectoryExists(destination) && TrackedFs.OutputDirectoryExists(backup))
             {
                 try
                 {
@@ -141,7 +141,7 @@ public static class TransactionalDirectoryOutput
     private static void MoveDirectoryWithRetry(string source, string destination)
     {
         RetryTransientFileSystemAction(
-            () => Directory.Move(source, destination),
+            () => TrackedFs.MoveDirectory(source, destination),
             $"move directory '{source}' to '{destination}'");
     }
 
@@ -150,7 +150,7 @@ public static class TransactionalDirectoryOutput
         try
         {
             RetryTransientFileSystemAction(
-                () => Directory.Delete(path, recursive: true),
+                () => TrackedFs.DeleteDirectory(path, recursive: true),
                 $"delete {description} '{path}'");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -186,7 +186,7 @@ public static class TransactionalDirectoryOutput
     }
 
     private static Dictionary<string, string> EnumerateRelativeFiles(string root) =>
-        Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        TrackedFs.EnumerateOutputFiles(root, "*", SearchOption.AllDirectories)
             .ToDictionary(
                 path => Path.GetRelativePath(root, path),
                 path => path,

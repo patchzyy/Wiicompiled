@@ -32,7 +32,7 @@ public static partial class BaseManifestBuilder
         string relSourceName = "module.rel",
         BaseTranslationOutputMetadata? translationOutput = null)
     {
-        Directory.CreateDirectory(outputDir);
+        TrackedFs.CreateDirectory(outputDir);
 
         var sections = new List<BaseSectionMetadata>();
         var dolTextPath = Path.Combine(outputDir, $"{fileStem}_main_text.bin");
@@ -106,7 +106,7 @@ public static partial class BaseManifestBuilder
     private static Dictionary<string, uint> WriteDolExecutableImage(DolFile dol, string path)
     {
         var offsets = new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase);
-        using var output = File.Create(path);
+        using var output = TrackedFs.Create(path);
         foreach (var section in dol.Sections.Where(s => s.IsExecutable && s.Size > 0).OrderBy(s => s.VirtualAddress))
         {
             offsets[section.Name] = checked((uint)output.Position);
@@ -118,7 +118,7 @@ public static partial class BaseManifestBuilder
     private static Dictionary<int, uint> WriteRelExecutableImage(RelFile rel, RelImage relImage, string path)
     {
         var offsets = new Dictionary<int, uint>();
-        using var output = File.Create(path);
+        using var output = TrackedFs.Create(path);
         foreach (var section in rel.Sections.Where(s => s.Executable && s.Size > 0).OrderBy(s => s.FileOffset))
         {
             if (section.FileOffset + section.Size > relImage.Data.Length)
@@ -177,12 +177,12 @@ public static partial class BaseManifestBuilder
     internal static IReadOnlyList<uint> DiscoverCanonicalGeneratedFunctionStarts(string generatedFunctionsDir)
     {
         var files = new List<(uint Start, string Path)>();
-        if (!Directory.Exists(generatedFunctionsDir))
+        if (!TrackedFs.DirectoryExists(generatedFunctionsDir))
         {
             return Array.Empty<uint>();
         }
 
-        foreach (var path in Directory.EnumerateFiles(generatedFunctionsDir, "*.cpp", SearchOption.AllDirectories))
+        foreach (var path in TrackedFs.EnumerateFiles(generatedFunctionsDir, "*.cpp", SearchOption.AllDirectories))
         {
             var fileName = Path.GetFileNameWithoutExtension(path);
             var match = AddressRegex().Match(fileName);
@@ -200,7 +200,7 @@ public static partial class BaseManifestBuilder
         var embeddedAliases = new HashSet<uint>();
         foreach (var (ownerStart, path) in files)
         {
-            var source = File.ReadAllText(path);
+            var source = TrackedFs.ReadAllText(path);
             foreach (Match match in LocalLabelRegex().Matches(source))
             {
                 if (GuestTargetParser.TryParseHexAddress(match.Groups[1].Value, out var label) &&

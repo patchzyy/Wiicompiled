@@ -137,7 +137,7 @@ public static partial class TranslatedBuildShardEmitter
     {
         ValidateOptions(options);
         var outputRoot = Path.GetFullPath(options.OutputDirectory);
-        Directory.CreateDirectory(outputRoot);
+        TrackedFs.CreateDirectory(outputRoot);
 
         var metadata = BaseTranslationOutputMetadataFile.Read(options.BaseMetadataPath);
         metadata.RequireReleaseEligible(options.BaseMetadataPath);
@@ -209,7 +209,7 @@ public static partial class TranslatedBuildShardEmitter
         var retroSourceBundlePath = options.RetroCppDirectory is { } retroCppDir && !string.IsNullOrWhiteSpace(retroCppDir)
             ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(retroCppDir))!, "translated_sources.bin")
             : null;
-        if (retroSourceBundlePath is not null && !File.Exists(retroSourceBundlePath)) retroSourceBundlePath = null;
+        if (retroSourceBundlePath is not null && !TrackedFs.FileExists(retroSourceBundlePath)) retroSourceBundlePath = null;
         var modRecords = ReadModFunctions(options.RetroCppDirectory, retroSourceBundlePath);
 
         var shards = new List<ShardInfo>();
@@ -286,13 +286,13 @@ public static partial class TranslatedBuildShardEmitter
 
     private static void ValidateOptions(TranslatedBuildShardOptions options)
     {
-        if (!File.Exists(options.BaseMetadataPath))
+        if (!TrackedFs.FileExists(options.BaseMetadataPath))
         {
             throw new FileNotFoundException("Required shard input is missing.", options.BaseMetadataPath);
         }
-        if (!Directory.Exists(options.BaseFunctionsDirectory))
+        if (!TrackedFs.DirectoryExists(options.BaseFunctionsDirectory))
             throw new DirectoryNotFoundException(options.BaseFunctionsDirectory);
-        if (options.NativeIndex is null && !Directory.Exists(options.NativeSourceDirectory))
+        if (options.NativeIndex is null && !TrackedFs.DirectoryExists(options.NativeSourceDirectory))
             throw new DirectoryNotFoundException(options.NativeSourceDirectory);
         if (options.BaseShardCount < 1 || options.ModShardCount < 1 || options.RegistrationShardCount < 1)
         {
@@ -334,7 +334,7 @@ public static partial class TranslatedBuildShardEmitter
             }
             else if (item.Build is null)
             {
-                source = File.ReadAllText(path);
+                source = TrackedFs.ReadAllText(path);
             }
             (uint Address, string Symbol, bool Preserves, uint FprMask) registration = item.Build is null
                 ? ParseBaseRegistration(source!, path)
@@ -364,17 +364,17 @@ public static partial class TranslatedBuildShardEmitter
     private static IReadOnlyList<FunctionRecord> ReadModFunctions(string? cppDirectory, string? sourceBundlePath)
     {
         if (string.IsNullOrWhiteSpace(cppDirectory) ||
-            (!Directory.Exists(cppDirectory) && (string.IsNullOrWhiteSpace(sourceBundlePath) || !File.Exists(sourceBundlePath))))
+            (!TrackedFs.DirectoryExists(cppDirectory) && (string.IsNullOrWhiteSpace(sourceBundlePath) || !TrackedFs.FileExists(sourceBundlePath))))
         {
             return Array.Empty<FunctionRecord>();
         }
         var records = new List<FunctionRecord>();
-        var sources = !string.IsNullOrWhiteSpace(sourceBundlePath) && File.Exists(sourceBundlePath)
+        var sources = !string.IsNullOrWhiteSpace(sourceBundlePath) && TrackedFs.FileExists(sourceBundlePath)
             ? TranslationSourceBundle.Read(sourceBundlePath).Entries
                 .Select(entry => (Path: Path.GetFullPath(Path.Combine(cppDirectory, entry.VirtualPath)), entry.Source))
-            : Directory.EnumerateFiles(cppDirectory, "*.cpp", SearchOption.AllDirectories)
+            : TrackedFs.EnumerateFiles(cppDirectory, "*.cpp", SearchOption.AllDirectories)
                 .Order(StringComparer.OrdinalIgnoreCase)
-                .Select(path => (Path: path, Source: File.ReadAllText(path)));
+                .Select(path => (Path: path, Source: TrackedFs.ReadAllText(path)));
         foreach (var (path, source) in sources)
         {
             var match = ModRegistrationRegex().Match(source);
@@ -481,8 +481,8 @@ public static partial class TranslatedBuildShardEmitter
 
     private static IReadOnlyDictionary<uint, ProfileEntry> ReadResolvedProfile(string? path)
     {
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return new Dictionary<uint, ProfileEntry>();
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        if (string.IsNullOrWhiteSpace(path) || !TrackedFs.FileExists(path)) return new Dictionary<uint, ProfileEntry>();
+        using var document = JsonDocument.Parse(TrackedFs.ReadAllText(path));
         return document.RootElement.GetProperty("Entries").EnumerateArray()
             .Select(element => new ProfileEntry(
                 element.GetProperty("Address").GetUInt32(),
@@ -606,7 +606,7 @@ public static partial class TranslatedBuildShardEmitter
             .ToList();
 
         var directory = Path.Combine(outputRoot, partition);
-        Directory.CreateDirectory(directory);
+        TrackedFs.CreateDirectory(directory);
         // Groups own disjoint records and distinct files, so they build concurrently; results are
         // collected positionally to keep the emitted list byte-for-byte deterministic. Never widen
         // this parallelism across WriteFunctionShards calls, base and Retro Rewind share records.
@@ -640,7 +640,7 @@ public static partial class TranslatedBuildShardEmitter
                          .OrderBy(static function => function.Address)
                          .ThenBy(static function => function.Symbol, StringComparer.Ordinal))
             {
-                var functionSource = function.SourceText ?? File.ReadAllText(function.SourcePath);
+                var functionSource = function.SourceText ?? TrackedFs.ReadAllText(function.SourcePath);
                 functionSource = RegistrationMarkerRegex().Replace(functionSource, string.Empty);
                 functionSource = LowerStableDirectCalls(functionSource, traits);
                 // Diagnostics only; the named file no longer exists on disk (sources live in the
@@ -817,10 +817,10 @@ public static partial class TranslatedBuildShardEmitter
 
     private static ShardBoundaryTable? ReadShardBoundaryTable(string path, int expectedShardCount)
     {
-        if (!File.Exists(path)) return null;
+        if (!TrackedFs.FileExists(path)) return null;
         try
         {
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
+            using var document = JsonDocument.Parse(TrackedFs.ReadAllText(path));
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("format", out var format) ||
@@ -900,7 +900,7 @@ public static partial class TranslatedBuildShardEmitter
         var count = Math.Min(requestedCount, records.Count);
         var groups = PartitionStableHash(records, count);
         var directory = Path.Combine(outputRoot, $"{profile}_registration");
-        Directory.CreateDirectory(directory);
+        TrackedFs.CreateDirectory(directory);
         var paths = new List<string>();
         for (var index = 0; index < count; index++)
         {
@@ -1028,9 +1028,9 @@ public static partial class TranslatedBuildShardEmitter
 
     private static IReadOnlyList<string> ReadRetroExtraSources(string? cppDirectory, IReadOnlyList<FunctionRecord> modRecords)
     {
-        if (string.IsNullOrWhiteSpace(cppDirectory) || !Directory.Exists(cppDirectory)) return Array.Empty<string>();
+        if (string.IsNullOrWhiteSpace(cppDirectory) || !TrackedFs.DirectoryExists(cppDirectory)) return Array.Empty<string>();
         var functionPaths = modRecords.Select(static record => record.SourcePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        return Directory.EnumerateFiles(cppDirectory, "*.*", SearchOption.AllDirectories)
+        return TrackedFs.EnumerateFiles(cppDirectory, "*.*", SearchOption.AllDirectories)
             .Where(path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) || path.EndsWith(".S", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFullPath)
             .Where(path => !functionPaths.Contains(path))
@@ -1107,13 +1107,13 @@ public static partial class TranslatedBuildShardEmitter
             .Concat(rrRegistration)
             .Select(Path.GetFullPath)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        foreach (var directory in Directory.EnumerateDirectories(outputRoot))
+        foreach (var directory in TrackedFs.EnumerateOutputDirectories(outputRoot))
         {
-            foreach (var file in Directory.EnumerateFiles(directory, "*.*", SearchOption.AllDirectories)
+            foreach (var file in TrackedFs.EnumerateOutputFiles(directory, "*.*", SearchOption.AllDirectories)
                          .Where(static file => file.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
                                                file.EndsWith(".h", StringComparison.OrdinalIgnoreCase)))
             {
-                if (!keep.Contains(Path.GetFullPath(file))) File.Delete(file);
+                if (!keep.Contains(Path.GetFullPath(file))) TrackedFs.Delete(file);
             }
         }
     }

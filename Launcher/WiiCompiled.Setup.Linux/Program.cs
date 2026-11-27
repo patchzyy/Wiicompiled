@@ -50,6 +50,9 @@ internal static class Program
                 case "check-products":
                     CheckProducts();
                     break;
+                case "self-test":
+                    // Not listed in the usage text: a maintainer check of the product-currency logic.
+                    return ProductCurrencySelfTest.Run(flags.GetValueOrDefault("sync-state-workspace"));
                 default:
                     Console.Error.WriteLine($"Unknown command: {command}");
                     PrintUsage();
@@ -177,12 +180,14 @@ internal static class Program
             throw new ArgumentException("--sysroot requires a non-empty directory path.");
         }
 
-        await BuildRunner.RunAsync(
-            workspace, profile, installDir, baseInstallDir,
-            retroDir,
-            retroWfcOfflineDir,
-            skipPayload,
-            flags.ContainsKey("force-clean-build"),
+        var forceCleanBuild = flags.ContainsKey("force-clean-build");
+        var products = profiles
+            .Select(p => (Directory: p == "base" ? (baseInstallDir ?? installDir) : installDir,
+                          Executable: p == "base" ? "WiiCompiled" : "RetroRewind"))
+            .ToList();
+        var currency = new ProductCurrencyOptions(
+            workspace, assetsDir, profile, products, installDir, baseInstallDir,
+            retroDir, retroWfcOfflineDir, skipPayload,
             flags.GetValueOrDefault("translator-bin"),
             flags.GetValueOrDefault("cc"),
             flags.GetValueOrDefault("cxx"),
@@ -190,8 +195,46 @@ internal static class Program
             flags.GetValueOrDefault("cmake"),
             flags.GetValueOrDefault("ninja"),
             flags.GetValueOrDefault("native-prebuilt-dir"),
-            sysroot,
-            reporter, token);
+            sysroot);
+
+        // Linux AppImage fast path: skip the build only when the recorded inputs and outputs of the
+        // last fully successful install match exactly. Anything missing or different builds as usual.
+        // A forced clean build never skips, but still records what it built.
+        Dictionary<string, string>? currentInputs = null;
+        var productsCurrent = false;
+        if (OperatingSystem.IsLinux())
+        {
+            currentInputs = ProductCurrencyProbe.TryCollectInputs(currency, out var notTrackedReason);
+            if (currentInputs is null)
+                reporter.Diagnostic($"Building: the installed products cannot be checked ({notTrackedReason}).");
+            else if (!forceCleanBuild)
+                productsCurrent = ProductCurrency.IsCurrent(JsonState.TryRead<ProductProvenanceRecord>(ProvenancePath),
+                    currentInputs, ProductCurrencyProbe.RequiredOutputs(currency), ProductCurrencyProbe.Observe);
+        }
+
+        if (productsCurrent)
+        {
+            reporter.Progress(InstallStages.Build, "The installed game is already up to date; skipping the build", 96);
+        }
+        else
+        {
+            ProductCurrencyProbe.DeleteRecord(ProvenancePath, reporter);
+            await BuildRunner.RunAsync(
+                workspace, profile, installDir, baseInstallDir,
+                retroDir,
+                retroWfcOfflineDir,
+                skipPayload,
+                forceCleanBuild,
+                flags.GetValueOrDefault("translator-bin"),
+                flags.GetValueOrDefault("cc"),
+                flags.GetValueOrDefault("cxx"),
+                flags.GetValueOrDefault("fuse-ld"),
+                flags.GetValueOrDefault("cmake"),
+                flags.GetValueOrDefault("ninja"),
+                flags.GetValueOrDefault("native-prebuilt-dir"),
+                sysroot,
+                reporter, token);
+        }
 
         reporter.Progress(InstallStages.Shortcuts, "Creating shortcuts", 98);
         var dolSha = Sha256Of(Path.Combine(assetsDir, "main.dol"));
@@ -204,6 +247,10 @@ internal static class Program
             // macOS builds a .app bundle (publish-app.command); launch/check-products want the binary inside it.
             var exeName = OperatingSystem.IsMacOS() ? $"{product}.app/Contents/MacOS/{product}" : product;
             var displayName = p == "base" ? "WiiCompiled (base game)" : "WiiCompiled (Retro Rewind)";
+            var previous = state.Products.FirstOrDefault(r => r.Profile == p);
+            // A skipped build keeps the time the unchanged product was actually built.
+            var keepBuiltUtc = productsCurrent && previous is not null && previous.InstallDirectory == dir &&
+                               previous.ExecutableName == exeName && !string.IsNullOrEmpty(previous.BuiltUtc);
             state.Products.RemoveAll(r => r.Profile == p);
             state.Products.Add(new ProductInstallRecord
             {
@@ -212,7 +259,7 @@ internal static class Program
                 ExecutableName = exeName,
                 DolSha256 = dolSha,
                 RelSha256 = relSha,
-                BuiltUtc = DateTime.UtcNow.ToString("O"),
+                BuiltUtc = keepBuiltUtc ? previous!.BuiltUtc : DateTime.UtcNow.ToString("O"),
             });
             DesktopEntry.Create(p, displayName, Path.Combine(dir, exeName));
         }
@@ -234,6 +281,10 @@ internal static class Program
             RuntimeConfiguration.SetRetroRewindRoot(configPath, retroDir!);
         }
 
+        // Only now, with the build published and every install step done, may a record vouch for it.
+        if (!productsCurrent && currentInputs is not null)
+            ProductCurrencyProbe.TryRecord(ProvenancePath, currency, currentInputs, reporter);
+
         reporter.Progress(InstallStages.Shortcuts, "Install complete", 99);
     }
 
@@ -253,6 +304,7 @@ internal static class Program
             Console.WriteLine($"Removed {record.Profile} from {record.InstallDirectory}");
         }
         JsonState.Write(StatePath, state);
+        ProductCurrencyProbe.DeleteRecord(ProvenancePath, reporter: null);
     }
 
     private static int Launch(string profile, Dictionary<string, string?> flags)
@@ -314,6 +366,9 @@ internal static class Program
 
     private static string StatePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "install-state.json");
+
+    private static string ProvenancePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "product-provenance.json");
 
     private static string DefaultInstallDir(string profile) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "Install",

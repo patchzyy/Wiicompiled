@@ -100,6 +100,9 @@ for tool in "$cmake_bin" "$ninja_bin" "$cc_bin" "$cxx_bin" shasum; do command -v
 assets="$workspace/Assets"; generated="$workspace/generated"
 functions="$generated/functions"; metadata="$generated/base_translation_output.json"; manifest_dir="$workspace/build/base"
 manifest="$manifest_dir/mkwii_base_manifest.json"; shards="$generated/build_shards"
+# Per-step skip records (translator --provenance-file); same layout as LocalBuild.ps1. They live
+# under generated/, so --force-clean-build discards them with everything else.
+step_provenance="$generated/step-provenance"
 native_build="$workspace/native-build-macos-$macos_arch"
 x86_cpu_profile=v3
 if [[ "$macos_arch" == x86_64 ]]; then
@@ -179,13 +182,14 @@ else
     translator emit-base-manifest --project "$project" --out "$manifest_dir" --functions-dir "$functions" --translation-output-metadata "$metadata" --region "$region"
     mkw_write_identity "$translation_provenance" TranslationFingerprint "$translation_fingerprint"
 fi
+mkdir -p "$step_provenance"
 if (( builds_retro )); then
-    mod_out="$workspace/build/mods/retro_rewind_full_cpp"; args=(translate-mod --project "$project" --profile retro-rewind --base-manifest "$manifest" --base-translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul" --mod-root "$retro_root" --mod-name 'Retro Rewind' --region "$region" --out "$mod_out" --prefer-cached-inputs --emit-cpp --threads "$translator_threads")
+    mod_out="$workspace/build/mods/retro_rewind_full_cpp"; args=(translate-mod --project "$project" --profile retro-rewind --base-manifest "$manifest" --base-translation-output-metadata "$metadata" --code-pul "$retro_root/Binaries/Code.pul" --mod-root "$retro_root" --mod-name 'Retro Rewind' --region "$region" --out "$mod_out" --prefer-cached-inputs --emit-cpp --threads "$translator_threads" --provenance-file "$step_provenance/translate-mod.json")
     if (( skip_retro_wfc )); then args+=(--skip-retro-wfc); else payload_file=$(mkw_retro_wfc_payload_file "$project") || fail "$project pins no Retro-WFC payload"; offline_payload="$retro_wfc/$payload_file"; assert_file "$offline_payload" 'Offline Retro-WFC payload'; args+=(--retro-wfc-payload "$offline_payload"); fi
     step translate-mod 'Translating Retro Rewind'; translator "${args[@]}"
 fi
-step generate-data-init 'Generating local game data initialization'; translator generate-data-init --project "$project"
-args=(emit-build-shards --project "$project" --base-metadata "$metadata" --base-functions-dir "$functions" --native-source-dir "$workspace/runtime/src" --out "$shards")
+step generate-data-init 'Generating local game data initialization'; translator generate-data-init --project "$project" --provenance-file "$step_provenance/generate-data-init.json"
+args=(emit-build-shards --project "$project" --base-metadata "$metadata" --base-functions-dir "$functions" --native-source-dir "$workspace/runtime/src" --out "$shards" --provenance-file "$step_provenance/emit-build-shards.json")
 if (( builds_retro )); then args+=(--resolved-profile "$mod_out/resolved_dispatch_profile.json" --retro-cpp-dir "$mod_out/cpp"); fi
 step emit-build-shards 'Preparing native build shards'; translator "${args[@]}"
 

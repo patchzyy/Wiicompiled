@@ -208,7 +208,7 @@ public static class ModDataPatchWriter
         sb.AppendLine();
         sb.AppendLine("} // namespace");
 
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        TrackedFs.CreateDirectory(Path.GetDirectoryName(path)!);
         FileOutput.WriteTextIfChanged(path, sb.ToString());
     }
 

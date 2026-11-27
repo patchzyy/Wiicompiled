@@ -1,3 +1,5 @@
+using Translator.Core;
+using Translator.Core.IO;
 using System.Globalization;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
@@ -41,8 +43,50 @@ internal sealed class TranslationProjectConfig
 
     public static TranslationProjectConfig Load(string path)
     {
+        var config = Parse(path);
+        config.ValidateInputs();
+        return config;
+    }
+
+    /// <summary>
+    /// Every existing file a translation of the project at <paramref name="path"/> reads, apart
+    /// from the pinned disc inputs (inputs.dol / inputs.rel), which are never opened here: the
+    /// manifest, its function map, each profile's Code.pul (the base translation blocks leaf
+    /// inlining at every address a profile patches), the runtime native index, every native
+    /// source the runtime scan reads, and the guest address map. The sibling regional metadata
+    /// (region_port.json, data_addresses.txt) is not read by translation; it is listed anyway
+    /// because it documents where the regional function map came from. Absolute,
+    /// de-duplicated, ordinal order.
+    /// </summary>
+    public static IReadOnlyList<string> ListTranslationInputs(string path)
+    {
+        var config = Parse(path);
+        var files = new SortedSet<string>(StringComparer.Ordinal);
+        void Add(string? candidate)
+        {
+            if (string.IsNullOrWhiteSpace(candidate)) return;
+            var full = Path.GetFullPath(candidate);
+            if (TrackedFs.FileExists(full)) files.Add(full);
+        }
+
+        var manifestDirectory = Path.GetDirectoryName(config.SourcePath)!;
+        Add(config.SourcePath);
+        Add(config.Translation.FunctionMapPath);
+        Add(Path.Combine(manifestDirectory, "region_port.json"));
+        Add(Path.Combine(manifestDirectory, "data_addresses.txt"));
+        foreach (var profile in config.Profiles.Values)
+            Add(profile.CodePul);
+        Add(config.Runtime.NativeIndex);
+        foreach (var source in RuntimeNativeIndexBuilder.EnumerateSourceFiles(config.Runtime.NativeRegistrationRoot))
+            Add(source);
+        Add(GuestAddressTable.DefaultPath(config.Runtime.NativeRegistrationRoot));
+        return files.ToArray();
+    }
+
+    private static TranslationProjectConfig Parse(string path)
+    {
         var sourcePath = Path.GetFullPath(path);
-        if (!File.Exists(sourcePath))
+        if (!TrackedFs.FileExists(sourcePath))
         {
             throw new FileNotFoundException("Translation project manifest not found.", sourcePath);
         }
@@ -50,7 +94,7 @@ internal sealed class TranslationProjectConfig
         var deserializer = new DeserializerBuilder()
             .WithNamingConvention(UnderscoredNamingConvention.Instance)
             .Build();
-        var dto = deserializer.Deserialize<ProjectDto>(File.ReadAllText(sourcePath))
+        var dto = deserializer.Deserialize<ProjectDto>(TrackedFs.ReadAllText(sourcePath))
             ?? throw new InvalidDataException($"Translation project manifest is empty: {sourcePath}");
         if (dto.SchemaVersion != 1)
         {
@@ -146,7 +190,6 @@ internal sealed class TranslationProjectConfig
             runtime,
             output,
             profiles);
-        config.ValidateInputs();
         return config;
     }
 
@@ -210,7 +253,7 @@ internal sealed class TranslationProjectConfig
         {
             ValidateInput(Inputs.Rel, "REL");
         }
-        if (Translation.FunctionMapPath is { } functionMapPath && !File.Exists(functionMapPath))
+        if (Translation.FunctionMapPath is { } functionMapPath && !TrackedFs.FileExists(functionMapPath))
         {
             throw new FileNotFoundException("Configured function map was not found.", functionMapPath);
         }
@@ -228,7 +271,7 @@ internal sealed class TranslationProjectConfig
 
     private static void ValidateInput(ProjectBinaryInput input, string label)
     {
-        if (!File.Exists(input.Path))
+        if (!TrackedFs.FileExists(input.Path))
         {
             throw new FileNotFoundException($"Configured {label} input was not found.", input.Path);
         }
@@ -256,7 +299,7 @@ internal sealed class TranslationProjectConfig
 
     private static string ResolvePath(string root, string value)
     {
-        var expanded = Environment.ExpandEnvironmentVariables(value);
+        var expanded = TrackedFs.ExpandEnvironmentVariables(value);
         return Path.GetFullPath(Path.IsPathRooted(expanded) ? expanded : Path.Combine(root, expanded));
     }
 

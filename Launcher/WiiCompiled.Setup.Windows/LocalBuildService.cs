@@ -25,7 +25,8 @@ internal sealed class LocalBuildService
         RetroWfcPayloadMode retroWfcPayloadMode, string? retroWfcOfflinePayloadDirectory,
         string? retroWfcGameId, CancellationToken cancellationToken,
         ToolkitFingerprintComponents? toolkitComponents = null,
-        bool forceCleanBuild = false, BuildProgressWindow? progress = null,
+        bool forceCleanBuild = false, string? nativePrebuiltGateProvenanceSha256 = null,
+        BuildProgressWindow? progress = null,
         string? retroRewindPackageDirectory = null, string? baseOutputDirectory = null)
     {
         var workspace = InstalledLayout.Workspace(installStaging);
@@ -77,6 +78,24 @@ internal sealed class LocalBuildService
             arguments.Add(toolkitComponents.Translation);
             arguments.Add("-NativeToolchainFingerprint");
             arguments.Add(toolkitComponents.NativeToolchain);
+            // The script picks the identity of the release it resolves from the extracted disc;
+            // one it cannot find falls back to -TranslationFingerprint.
+            var byRelease = FormatTranslationFingerprintsByRelease(toolkitComponents.TranslationByRelease);
+            if (byRelease.Length > 0)
+            {
+                arguments.Add("-TranslationFingerprintsByRelease");
+                arguments.Add(byRelease);
+            }
+            // The compile identity was proved for exactly this toolkit (hashed in full, or verified
+            // while this operation installed it), which is what lets the script reuse a recorded,
+            // or release-proved, precompiled-package gate result instead of re-proving it.
+            arguments.Add("-VerifiedCompileIdentity");
+            arguments.Add(toolkitComponents.Compile);
+            if (!string.IsNullOrWhiteSpace(nativePrebuiltGateProvenanceSha256))
+            {
+                arguments.Add("-AcceptedNativePrebuiltProvenanceSha256");
+                arguments.Add(nativePrebuiltGateProvenanceSha256);
+            }
         }
         if (forceCleanBuild)
             arguments.Add("-ForceCleanBuild");
@@ -138,6 +157,17 @@ internal sealed class LocalBuildService
                 throw new InvalidDataException("The local build did not produce provenance information.");
         }
     }
+
+    /// <summary>
+    /// <c>project=identity;project=identity</c>, sorted; entries whose project name could not be
+    /// passed through unambiguously are left out (the script then uses the whole-project identity).
+    /// </summary>
+    internal static string FormatTranslationFingerprintsByRelease(IReadOnlyDictionary<string, string> byRelease) =>
+        string.Join(";", byRelease
+            .Where(pair => pair.Key.Length > 0 && pair.Key.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.') &&
+                           pair.Value.Length == 64 && pair.Value.All(char.IsAsciiHexDigit))
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .Select(pair => pair.Key + "=" + pair.Value));
 
     /// <summary>
     /// Records what this product was built from: <paramref name="toolkitFingerprint"/> ties it to the

@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Buffers.Binary;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -48,7 +49,7 @@ public static class OverlayFunctionBuilder
         IReadOnlyCollection<RetroWfcExecutableHookPlan>? retroWfcExecutableHooks = null)
     {
         var overlayDir = Path.Combine(outputDirectory, "overlay_images");
-        Directory.CreateDirectory(overlayDir);
+        TrackedFs.CreateDirectory(overlayDir);
 
         var diagnostics = new List<PatchApplicationRecord>();
         var moduleImage = BuildModuleImage(chunk.CodeBlob, additionalModuleImage, additionalModuleImageOffset);
@@ -70,7 +71,7 @@ public static class OverlayFunctionBuilder
         }
 
         var moduleImageFile = $"kamek_module_{patchPlan.ModuleGuestBase:X8}.bin";
-        File.WriteAllBytes(Path.Combine(overlayDir, moduleImageFile), moduleImage);
+        TrackedFs.WriteAllBytes(Path.Combine(overlayDir, moduleImageFile), moduleImage);
 
         var sectionsByName = baseManifest.Sections.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
         var imageCache = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
@@ -201,7 +202,7 @@ public static class OverlayFunctionBuilder
             }
 
             var imageFile = $"overlay_{function.Start:X8}.bin";
-            File.WriteAllBytes(Path.Combine(overlayDir, imageFile), bytes);
+            TrackedFs.WriteAllBytes(Path.Combine(overlayDir, imageFile), bytes);
 
             overlays.Add(new OverlayFunctionImage(
                 function.Start,
@@ -274,7 +275,7 @@ public static class OverlayFunctionBuilder
         }
 
         var path = Path.Combine(baseManifestDirectory, imageFile);
-        bytes = File.ReadAllBytes(path);
+        bytes = TrackedFs.ReadAllBytes(path);
         cache[imageFile] = bytes;
         return bytes;
     }

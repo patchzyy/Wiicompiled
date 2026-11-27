@@ -38,7 +38,7 @@ public static class RuntimeNativeIndexFile
                      .Select(path => (Relative: NativeSourceParsing.RelativePath(root, path), Path: path))
                      .OrderBy(static item => item.Relative, StringComparer.Ordinal))
         {
-            using var stream = File.OpenRead(path);
+            using var stream = TrackedFs.OpenRead(path);
             manifest.Append(Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant())
                 .Append("  ").Append(relative).Append('\n');
         }
@@ -112,7 +112,7 @@ public static class RuntimeNativeIndexFile
         IndexDocument? document;
         try
         {
-            using var parsed = JsonDocument.Parse(File.ReadAllBytes(path));
+            using var parsed = JsonDocument.Parse(TrackedFs.ReadAllBytes(path));
             var root = parsed.RootElement;
             if (root.ValueKind != JsonValueKind.Object ||
                 !root.TryGetProperty("format", out var format) || format.ValueKind != JsonValueKind.String ||

@@ -185,7 +185,7 @@ public static class BaseTranslationModAwarenessFile
 
     public static BaseTranslationModAwareness Read(string path)
     {
-        var awareness = JsonSerializer.Deserialize<BaseTranslationModAwareness>(File.ReadAllText(path), JsonOptions)
+        var awareness = JsonSerializer.Deserialize<BaseTranslationModAwareness>(TrackedFs.ReadAllText(path), JsonOptions)
             ?? throw new InvalidDataException($"Base translation mod-awareness record is empty: {path}");
         Validate(awareness, path);
         return awareness;
@@ -193,7 +193,7 @@ public static class BaseTranslationModAwarenessFile
 
     public static BaseTranslationModAwareness? TryRead(string path)
     {
-        if (!File.Exists(path)) return null;
+        if (!TrackedFs.FileExists(path)) return null;
         try { return Read(path); }
         catch (Exception ex) when (ex is IOException or JsonException or InvalidDataException) { return null; }
     }

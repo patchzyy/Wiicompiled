@@ -234,6 +234,9 @@ base_manifest=$base_manifest_dir/mkwii_base_manifest.json
 shards=$generated/build_shards
 build=$workspace/native-build
 translation_provenance=$generated/translation-provenance.json
+# Per-step skip records (translator --provenance-file); same layout as LocalBuild.ps1. They live
+# under generated/, so --force-clean-build discards them with everything else.
+step_provenance_dir=$generated/step-provenance
 toolchain_provenance=$build/toolchain-provenance.json
 retro_root=${retro_rewind_package_dir:-$workspace/PulsarPacks/completed/RetroRewind/RetroRewind6}
 
@@ -386,6 +389,8 @@ else
     mkw_write_identity "$translation_provenance" TranslationFingerprint "$translation_fingerprint"
 fi
 
+mkdir -p "$step_provenance_dir"
+
 if (( builds_retro )); then
     code_pul=$retro_root/Binaries/Code.pul
     assert_file "$code_pul" "Retro Rewind Code.pul"
@@ -394,7 +399,8 @@ if (( builds_retro )); then
         --base-manifest "$base_manifest" --base-translation-output-metadata "$base_metadata"
         --code-pul "$code_pul" --mod-root "$retro_root" --mod-name "Retro Rewind"
         --region "$region" --out "$retro_out" --prefer-cached-inputs --emit-cpp
-        --threads "$translator_threads")
+        --threads "$translator_threads"
+        --provenance-file "$step_provenance_dir/translate-mod.json")
     if (( skip_retro_wfc_payload )); then
         translate_mod_args+=(--skip-retro-wfc)
     else
@@ -408,10 +414,11 @@ if (( builds_retro )); then
 fi
 
 log_step generate-data-init "Generating local game data initialization"
-translator generate-data-init --project "$project"
+translator generate-data-init --project "$project" --provenance-file "$step_provenance_dir/generate-data-init.json"
 
 shard_args=(emit-build-shards --project "$project" --base-metadata "$base_metadata"
-    --base-functions-dir "$functions" --native-source-dir "$workspace/runtime/src" --out "$shards")
+    --base-functions-dir "$functions" --native-source-dir "$workspace/runtime/src" --out "$shards"
+    --provenance-file "$step_provenance_dir/emit-build-shards.json")
 if (( builds_retro )); then
     retro_out=$workspace/build/mods/retro_rewind_full_cpp
     shard_args+=(--resolved-profile "$retro_out/resolved_dispatch_profile.json"

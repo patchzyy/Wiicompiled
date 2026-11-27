@@ -40,4 +40,42 @@ foreach ($file in Get-ChildItem -LiteralPath $PayloadRoot -Recurse -File) {
 if ($violations.Count -gt 0) {
     throw "Release payload contains forbidden game-derived or precompiled artifacts:`n$($violations -join "`n")"
 }
-Write-Host "Payload boundary audit passed: no translated game executable, game input, generated shard, or generated data was packaged."
+
+# Build-Installer.ps1 prunes unused tool payload; the license texts and the x86_64 target runtime
+# files must survive it.
+$toolkitRoot = Join-Path $PayloadRoot 'Toolkit'
+$missingRequired = [Collections.Generic.List[string]]::new()
+function Test-RequiredPattern([string]$Directory, [string]$Filter, [string]$Description, [switch]$Directories) {
+    $found = @()
+    if (Test-Path -LiteralPath $Directory -PathType Container) {
+        $found = @(Get-ChildItem -LiteralPath $Directory -Filter $Filter -Force |
+            Where-Object { $_.PSIsContainer -eq [bool]$Directories })
+        if ($Directories) {
+            $found = @($found | Where-Object { @(Get-ChildItem -LiteralPath $_.FullName -Recurse -File -Force).Count -gt 0 })
+        } else {
+            $found = @($found | Where-Object { $_.Length -gt 0 })
+        }
+    }
+    if ($found.Count -eq 0) { $missingRequired.Add("$Description ($Directory\$Filter)") }
+}
+$cmakeDocs = @(Get-ChildItem -LiteralPath (Join-Path $toolkitRoot 'CMake\doc') -Directory -Filter 'cmake*' -ErrorAction SilentlyContinue)
+if ($cmakeDocs.Count -eq 0) { $missingRequired.Add('CMake license documentation (Toolkit\CMake\doc\cmake*)') }
+foreach ($docs in $cmakeDocs) {
+    Test-RequiredPattern $docs.FullName 'LICENSE.rst' 'CMake license'
+    Test-RequiredPattern $docs.FullName 'cm*' 'CMake bundled-library licenses' -Directories
+}
+$cmakeShares = @(Get-ChildItem -LiteralPath (Join-Path $toolkitRoot 'CMake\share') -Directory -Filter 'cmake-*' -ErrorAction SilentlyContinue)
+if ($cmakeShares.Count -eq 0) { $missingRequired.Add('CMake modules (Toolkit\CMake\share\cmake-*)') }
+foreach ($share in $cmakeShares) {
+    Test-RequiredPattern $share.FullName 'Licenses' 'CMake module licenses' -Directories
+    Test-RequiredPattern $share.FullName 'Modules' 'CMake modules' -Directories
+}
+$sysroot = Join-Path $toolkitRoot 'llvm-mingw\x86_64-w64-mingw32'
+Test-RequiredPattern (Join-Path $toolkitRoot 'llvm-mingw') 'LICENSE.TXT' 'LLVM-MinGW license'
+Test-RequiredPattern (Join-Path $sysroot 'share\mingw32') 'COPYING*' 'mingw-w64 licenses'
+Test-RequiredPattern (Join-Path $sysroot 'bin') 'libc++.dll' 'x86_64 libc++ runtime'
+Test-RequiredPattern (Join-Path $sysroot 'bin') 'libunwind.dll' 'x86_64 libunwind runtime'
+if ($missingRequired.Count -gt 0) {
+    throw "Release payload is missing required license or runtime files:`n$($missingRequired -join "`n")"
+}
+Write-Host "Payload boundary audit passed: no translated game executable, game input, generated shard, or generated data was packaged; required licenses and target runtimes are present."

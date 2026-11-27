@@ -44,6 +44,21 @@ done
 
 assets_dir=$(mkdir -p "$assets_dir" && cd "$assets_dir" && pwd)
 
+# An interrupted earlier run can leave its stage or backup behind. Remove only those whose owning
+# process is gone; backups named by older versions (no process id) are left alone.
+stale_stage_pattern='^[.]extract-stage-([0-9]+)$'
+stale_backup_pattern='^[.]previous-extraction-([0-9]+)-[0-9]{8}-[0-9]{6}$'
+for stale in "$assets_dir"/.extract-stage-* "$assets_dir"/.previous-extraction-*; do
+    [[ -e "$stale" || -L "$stale" ]] || continue
+    stale_name=${stale##*/}
+    if [[ "$stale_name" =~ $stale_stage_pattern || "$stale_name" =~ $stale_backup_pattern ]]; then
+        stale_pid=${BASH_REMATCH[1]}
+        if ! kill -0 "$stale_pid" 2>/dev/null; then
+            rm -rf "$stale"
+        fi
+    fi
+done
+
 # The disc's game ID selects the release, so an existing extraction is only reused for the same one.
 printf 'MKWCBUILD:STEP:validate-disc Checking the selected disc image\n'
 disc_info=$("$nodtool" info "$game") || fail 'nodtool could not read the disc image'
@@ -63,35 +78,33 @@ if [[ -d "$assets_dir/DATA/files" && -f "$assets_dir/.data-manifest" && -f "$ass
     printf 'MKWCBUILD:STEP:disc-ready Reusing the verified extracted game assets\n'
     exit 0
 fi
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/wiicompiled-disc.XXXXXX")
-cleanup() { rm -rf "$scratch"; }
+# Extracted straight into a stage beside the destination, so the final replacement stays on one
+# volume and the data partition is never copied a second time.
+stage="$assets_dir/.extract-stage-$$"
+cleanup() { rm -rf "$stage"; }
 trap cleanup EXIT
+rm -rf "$stage"
+mkdir -p "$stage"
 
 printf 'MKWCBUILD:STEP:extract-disc Extracting the user-owned disc image\n'
-"$nodtool" extract "$game" "$scratch/extracted"
+"$nodtool" extract "$game" "$stage/DATA"
 
-dol=$(find "$scratch/extracted" -type f -path '*/sys/main.dol' -print -quit)
-rel=$(find "$scratch/extracted" -type f -path '*/files/rel/StaticR.rel' -print -quit)
-[[ -n "$dol" ]] || fail 'nodtool extraction did not contain sys/main.dol'
-[[ -n "$rel" ]] || fail 'nodtool extraction did not contain files/rel/StaticR.rel'
+dol="$stage/DATA/sys/main.dol"
+rel="$stage/DATA/files/rel/StaticR.rel"
+[[ -f "$dol" ]] || fail 'nodtool extraction did not contain sys/main.dol'
+[[ -f "$rel" ]] || fail 'nodtool extraction did not contain files/rel/StaticR.rel'
 dol_sha=$(sha256 "$dol")
 rel_sha=$(sha256 "$rel")
 [[ $dol_sha == "$expected_dol_sha256" ]] || fail "main.dol does not match the clean $game_id image (expected $expected_dol_sha256, got $dol_sha)"
 [[ $rel_sha == "$expected_rel_sha256" ]] || fail "StaticR.rel does not match the clean $game_id image (expected $expected_rel_sha256, got $rel_sha)"
 
-data_root=$(dirname "$(dirname "$dol")")
-[[ -d "$data_root/files" ]] || fail 'nodtool extraction did not contain the Wii files directory'
+[[ -d "$stage/DATA/files" ]] || fail 'nodtool extraction did not contain the Wii files directory'
 
-# Stage beside the destination so the final replacement stays on one volume.
-stage="$assets_dir/.extract-stage-$$"
-rm -rf "$stage"
-mkdir -p "$stage"
-ditto "$data_root" "$stage/DATA"
 ditto "$dol" "$stage/main.dol"
 ditto "$rel" "$stage/StaticR.rel"
 data_manifest "$stage/DATA" > "$stage/.data-manifest"
 
-backup="$assets_dir/.previous-extraction-$(date +%Y%m%d-%H%M%S)"
+backup="$assets_dir/.previous-extraction-$$-$(date +%Y%m%d-%H%M%S)"
 if [[ -e "$assets_dir/DATA" || -e "$assets_dir/.data-manifest" || -e "$assets_dir/main.dol" || -e "$assets_dir/StaticR.rel" ]]; then
     mkdir -p "$backup"
     for item in DATA .data-manifest main.dol StaticR.rel; do

@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Security.Cryptography;
 using System.Text;
 using Translator.Core.Loading;
@@ -55,9 +56,9 @@ public sealed class TranslationSourceBundle
         if (ordered.Select(static entry => (entry.EntryPoint, entry.VirtualPath)).Distinct().Count() != ordered.Length)
             throw new InvalidDataException("Translation source bundle contains duplicate address/path identities.");
         var fullPath = Path.GetFullPath(path);
-        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        TrackedFs.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         var temporary = $"{fullPath}.tmp.{Guid.NewGuid():N}";
-        using (var stream = File.Create(temporary))
+        using (var stream = TrackedFs.Create(temporary))
         using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
         {
             writer.Write(Magic);
@@ -75,14 +76,14 @@ public sealed class TranslationSourceBundle
                 writer.Write(sourceBytes);
             }
         }
-        File.Move(temporary, fullPath, overwrite: true);
+        TrackedFs.Move(temporary, fullPath, overwrite: true);
     }
 
     public static TranslationSourceBundleWriter CreateWriter(string path, int entryCount) => new(path, entryCount, Magic, FormatVersion);
 
     public static TranslationSourceBundle Read(string path)
     {
-        using var stream = File.OpenRead(path);
+        using var stream = TrackedFs.OpenRead(path);
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
         if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic) || reader.ReadInt32() != FormatVersion)
             throw new InvalidDataException($"Unsupported translation source bundle '{path}'.");
@@ -137,11 +138,11 @@ public sealed class TranslationSourceBundleWriter : IDisposable
     {
         if (entryCount < 0) throw new ArgumentOutOfRangeException(nameof(entryCount));
         _path = Path.GetFullPath(path);
-        Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+        TrackedFs.CreateDirectory(Path.GetDirectoryName(_path)!);
         SweepAbandonedTemporaries(_path);
         _temporary = $"{_path}.tmp.{Guid.NewGuid():N}";
         _expectedCount = entryCount;
-        _writer = new BinaryWriter(File.Create(_temporary), Encoding.UTF8, leaveOpen: false);
+        _writer = new BinaryWriter(TrackedFs.Create(_temporary), Encoding.UTF8, leaveOpen: false);
         _writer.Write(magic);
         _writer.Write(version);
         _writer.Write(entryCount);
@@ -158,12 +159,12 @@ public sealed class TranslationSourceBundleWriter : IDisposable
         var prefix = Path.GetFileName(targetPath) + ".tmp.";
         // The pattern is a Win32 wildcard, so re-check the prefix explicitly and
         // snapshot the listing before deleting from it.
-        foreach (var candidate in Directory.GetFiles(directory, prefix + "*"))
+        foreach (var candidate in TrackedFs.EnumerateOutputFiles(directory, prefix + "*").ToArray())
         {
             if (!Path.GetFileName(candidate).StartsWith(prefix, StringComparison.Ordinal)) continue;
             try
             {
-                File.Delete(candidate);
+                TrackedFs.Delete(candidate);
             }
             catch (IOException)
             {
@@ -199,13 +200,13 @@ public sealed class TranslationSourceBundleWriter : IDisposable
         if (_written != _expectedCount)
             throw new InvalidOperationException($"Translation source bundle expected {_expectedCount} entries but received {_written}.");
         _writer.Dispose();
-        File.Move(_temporary, _path, overwrite: true);
+        TrackedFs.Move(_temporary, _path, overwrite: true);
         _completed = true;
     }
 
     public void Dispose()
     {
         _writer.Dispose();
-        if (!_completed && File.Exists(_temporary)) File.Delete(_temporary);
+        if (!_completed && TrackedFs.FileExists(_temporary)) TrackedFs.Delete(_temporary);
     }
 }

@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Buffers.Binary;
 
 namespace Translator.Core.Parsing.Kamek;
@@ -17,7 +18,7 @@ public sealed class KamekPulFile
     public IReadOnlyList<uint> CombinedChunkSizes { get; }
     public IReadOnlyList<KamekChunk> Chunks { get; }
 
-    public static KamekPulFile Load(string path) => Parse(File.ReadAllBytes(path));
+    public static KamekPulFile Load(string path) => Parse(TrackedFs.ReadAllBytes(path));
 
     public static KamekPulFile Parse(byte[] data)
     {

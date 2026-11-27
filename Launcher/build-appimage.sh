@@ -234,6 +234,14 @@ else
     date -u +%s > "$appdir/workspace/.bundle-version"
 fi
 
+# Content hashes and sizes of the bundled workspace (never mtimes), so AppRun's mkw_sync_tree only
+# compares cache files that may have changed. Written last, once the snapshot is final.
+# shellcheck source=build-cache.sh
+source "$script_dir/build-cache.sh"
+echo "Writing the workspace sync manifest..."
+mkw_write_sync_manifest "$appdir/workspace" ||
+    { echo "build-appimage.sh: the workspace sync manifest could not be written" >&2; exit 1; }
+
 echo "Writing AppRun..."
 cat > "$appdir/AppRun" <<'APPRUN'
 #!/bin/bash
@@ -329,6 +337,15 @@ if [[ -z "$appimagetool" ]]; then
             -o "$appimagetool"
         chmod +x "$appimagetool"
     fi
+fi
+
+# The setup's product-currency check identifies this exact toolkit (installer, translator,
+# toolchain, native prebuilt package and workspace snapshot) by this manifest. It must cover the
+# final AppDir, so it is written after everything else is staged. Without it the setup simply
+# always rebuilds, so a third-party file name it cannot represent only costs that fast path.
+echo "Writing the toolkit manifest..."
+if ! mkw_write_sync_manifest "$appdir" .mkw-toolkit-manifest; then
+    echo "build-appimage.sh: warning: the toolkit manifest could not be written; installs will always rebuild" >&2
 fi
 
 mkdir -p "$output_dir"
