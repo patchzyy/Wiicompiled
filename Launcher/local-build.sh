@@ -486,7 +486,8 @@ configure_args=(-S "$workspace/runtime" -B "$build" -G Ninja
     -DCMAKE_MAKE_PROGRAM="$ninja_bin"
     -DMKW_TRANSLATED_COMPILE_JOBS="$translated_jobs"
     -DMKW_SETUP_VERSION="$setup_version"
-    -DMKW_X86_CPU_PROFILE="$x86_cpu_profile")
+    -DMKW_X86_CPU_PROFILE="$x86_cpu_profile"
+    -DMKW_BUILD_PLATFORM_TESTS=OFF)
 # CMAKE_C_COMPILER/CXX_COMPILER stay stable across AppImage runs on their own (they're exactly
 # what's passed via -D above, and AppRun points --cc/--cxx at a symlink it re-targets at the
 # current mount every launch - see build-appimage.sh). CMAKE_AR/RANLIB/LINKER/ASM_COMPILER do NOT

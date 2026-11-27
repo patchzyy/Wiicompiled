@@ -8,7 +8,10 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING
         "Minimum macOS version supported by WiiCompiled" FORCE)
 endif()
-project(mkw_recompiled)
+# C is enabled below only where something is actually compiled as C: a Windows build against the
+# precompiled package has no C sources, and detecting the compiler a second time is ~1 s of
+# every fresh install's configure.
+project(mkw_recompiled LANGUAGES CXX)
 
 if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WiiCompiled requires a 64-bit Clang toolchain")
@@ -40,6 +43,11 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(
 else()
     message(FATAL_ERROR
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, or Apple Clang on macOS x86_64/arm64")
+endif()
+
+if(NOT (MKW_PLATFORM_WINDOWS AND MKW_NATIVE_PREBUILT_DIR))
+    # libco (Linux, Intel macOS), and aurora, its dependencies and mbedtls when built from source.
+    enable_language(C)
 endif()
 
 if(MKW_PLATFORM_WINDOWS)
@@ -368,7 +376,12 @@ set(MKW_CPU_BASELINE_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/host_cpu_baseline.cpp
 list(REMOVE_ITEM SOURCES ${MKW_BASE_PRODUCT_SOURCE} ${MKW_RETRO_REWIND_PRODUCT_SOURCE}
      ${MKW_CPU_BASELINE_SOURCE} ${MKW_PLATFORM_SOURCE})
 
-include("${CMAKE_CURRENT_LIST_DIR}/cmake/PlatformTests.cmake")
+# The installers only build the products: registering ~25 test executables and running the host
+# x86-64-v3 probe would add configure time to every fresh install for targets nobody builds there.
+option(MKW_BUILD_PLATFORM_TESTS "Register the host-platform tests beside the products" ON)
+if(MKW_BUILD_PLATFORM_TESTS)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/PlatformTests.cmake")
+endif()
 
 set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeLibrary.cmake")

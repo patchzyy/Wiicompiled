@@ -82,9 +82,17 @@ endforeach()
 # add_subdirectory(aurora-main) pulling in Dawn's own CMakeLists.txt; this mode never runs that
 # subdirectory at all, so nothing else would ever define it (verified directly: configuring without
 # this fails with "The link interface of target dawn::webgpu_dawn contains: Threads::Threads but
-# the target was not found"). find_package(Threads) is one of CMake's most basic finder modules and
-# is a no-op on Windows (its threading support is already part of the CRT), so this is safe on
-# every platform this package format targets, not just the one that first hit the failure.
+# the target was not found"). find_package(Threads) is one of CMake's most basic finder modules, so
+# this is safe on every platform this package format targets, not just the one that first hit
+# the failure.
+if(MKW_PLATFORM_WINDOWS AND NOT DEFINED CMAKE_HAVE_LIBC_PTHREAD)
+    # mingw-w64 keeps pthreads in winpthreads' libpthread, never in the C runtime. Seeding the
+    # finder's cached results with exactly what its three try_compile probes conclude there
+    # saves about a second of every fresh configure.
+    set(CMAKE_HAVE_LIBC_PTHREAD "" CACHE INTERNAL "Test CMAKE_HAVE_LIBC_PTHREAD")
+    set(CMAKE_HAVE_PTHREADS_CREATE "" CACHE INTERNAL "Have library pthreads")
+    set(CMAKE_HAVE_PTHREAD_CREATE 1 CACHE INTERNAL "Have library pthread")
+endif()
 find_package(Threads REQUIRED)
 
 # Dawn is a prebuilt package on both sides; resolve the same install tree the

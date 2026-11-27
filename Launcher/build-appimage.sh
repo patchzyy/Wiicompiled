@@ -118,8 +118,9 @@ chmod +x "$appdir/usr/bin/wiicompiled-setup"
 echo "Publishing the translator (self-contained $dotnet_rid)..."
 translator_publish_tmp="$workspace/Launcher/artifacts/appimage-build/publish-translator"
 rm -rf "$translator_publish_tmp"
+# ReadyToRun skips most of each build step's JIT warm-up; the AppImage itself is compressed.
 dotnet publish "$workspace/translator/src/Translator.Cli" -c Release -r "$dotnet_rid" \
-    --self-contained -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
+    --self-contained -p:PublishSingleFile=true -p:PublishReadyToRun=true \
     -o "$translator_publish_tmp"
 cp "$translator_publish_tmp/Translator.Cli" "$appdir/usr/bin/translator-cli"
 chmod +x "$appdir/usr/bin/translator-cli"

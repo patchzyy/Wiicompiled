@@ -96,93 +96,123 @@ internal sealed class InstallerEngine
             : runtimeAssetsCurrent ? WorkspaceExtraction.None
             : WorkspaceExtraction.RuntimeAssetsOnly;
 
-        var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
-        ExtractToolkit(payload, toolkitRefresh, toolkit, extracted);
-        ExtractWorkspace(payload, workspaceExtraction, existing, workspace, extracted, cancellationToken);
-        VerifyExtraction(inventory, toolkitRefresh, workspaceExtraction, extracted);
-        payload.ExtractEntry("host/WiiCompiled-Setup.exe",
-            Path.Combine(staging, ProductInfo.SetupCopyName));
-        payload.ExtractDirectory("licenses", Path.Combine(staging, "licenses"));
-        payload.ExtractEntry(InstalledLayout.PayloadManifestFileName,
-            Path.Combine(staging, InstalledLayout.PayloadManifestFileName));
-
-        var install = new InstallContext(existing, staging, payload, manifest, inventory, release,
-            previousState, options, canonicalRetroRoot, retroCompileInputs, firstInstall);
-
-        if (sameToolkit)
-        {
-            var desiredInputDrift = ProductRepairService.FindDesiredInputDrift(existing,
-                candidateToolkitFingerprint, release.DolSha256, release.RelSha256);
-            if (desiredInputDrift.Retro && retroCompileInputs is null)
-                throw new InvalidOperationException(
-                    "This release changes the clean game inputs used by the installed Retro Rewind product. " +
-                    "Supply Wheel Wizard's current Retro Rewind folder explicitly so it can be rebuilt safely.");
-
-            ProductRepairService.ReconciliationResult reconciliation;
-            try
-            {
-                reconciliation = await ReconcileSameToolkitAsync(existing, retroCompileInputs,
-                    canonicalRetroRoot, options.RetroWfcPayloadMode, Path.Combine(staging, "repair"),
-                    release.DolSha256, release.RelSha256, cancellationToken);
-            }
-            catch (InvalidDataException ex) when (ToolkitIntegrity.IsFailure(ex))
-            {
-                // Without this, re-running setup would find the same "current" toolkit and fail the
-                // same way forever. Nothing was published yet; publish the release's files and retry once.
-                _reporter.Diagnostic(ex.Message + " Publishing the release's toolkit again and retrying once.");
-                await RecoverToolkitAndReconcileAsync(install,
-                    toolkitStaged: toolkitRefresh == ToolkitRefresh.Full, cancellationToken);
-                return;
-            }
-            var remainingCancellation = reconciliation.PublicationCommitted
-                ? CancellationToken.None
-                : cancellationToken;
-
-
-            if (!runtimeAssetsCurrent)
-                runtimeAssetsCurrent = RuntimeAssetsAreCurrent(existing,
-                    candidateRuntimeAssetsFingerprint, remainingCancellation);
-
-            remainingCancellation.ThrowIfCancellationRequested();
-            EnsureReconciliationCurrent(existing, candidateToolkitFingerprint, retroCompileInputs,
-                release.DolSha256, release.RelSha256, reconciliation.CachedRetroWfcPayloadMatches);
-
-            var updatedState = BuildInstallState(existing.ReadInstallState(), installDirectory, manifest,
-                release, retroCompileInputs, canonicalRetroRoot, options.RetroWfcPayloadMode);
-            PrepareMetadata(staging, manifest, updatedState);
-            remainingCancellation.ThrowIfCancellationRequested();
-
-            var releaseEntries = new List<InstallTransactionEntry>();
-            // Keyed on what was extracted, so a toolkit refreshed only to restore a missing
-            // nodtool.exe is actually published.
-            AddToolkitEntries(releaseEntries, toolkitRefresh, staging, installDirectory);
-            if (!runtimeAssetsCurrent)
-                AddRuntimeAssetPublicationEntries(releaseEntries, staging, installDirectory,
-                    updatedState.RetroRewindInstalled, candidateRuntimeAssetsFingerprint,
-                    remainingCancellation);
-            Publish(staging, installDirectory, canonicalRetroRoot, updatedState,
-                releaseEntries, remainingCancellation, createShortcuts: firstInstall);
-            return;
-        }
-
-        if (hadRetro && retroCompileInputs is null)
+        // A full install extracts the disc whatever else happens below, and nodtool shares nothing
+        // with the payload, so it runs while the payload is extracted instead of after it.
+        var needsDisc = !sameToolkit && reusableGameAssets is null;
+        if (!sameToolkit && hadRetro && retroCompileInputs is null)
         {
             throw new InvalidOperationException(
                 "The installed Retro Rewind product must be produced again. Supply Wheel Wizard's " +
                 "current Retro Rewind folder explicitly so it can be rebuilt safely.");
         }
-
-        EnsureSufficientRemainingDiskSpace(installDirectory,
-            needsExtractedDisc: reusableGameAssets is null, needsLocalBuild: true);
-
-        if (reusableGameAssets is null)
+        if (needsDisc)
         {
-            await ExtractGameAssetsAsync(nodTool, options.GamePath,
-                Path.Combine(staging, "GameAssets"), release, cancellationToken);
+            EnsureSufficientRemainingDiskSpace(installDirectory, needsExtractedDisc: true,
+                needsLocalBuild: true, stillStaging: payloadStagingAllowance);
         }
+        using var discCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var discExtraction = needsDisc
+            ? ExtractGameAssetsAsync(nodTool, options.GamePath, Path.Combine(staging, "GameAssets"), release,
+                discCancellation.Token)
+            : null;
+        var discObserved = discExtraction is null;
+        try
+        {
+            var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+            ExtractToolkit(payload, toolkitRefresh, toolkit, extracted);
+            ExtractWorkspace(payload, workspaceExtraction, existing, workspace, extracted, cancellationToken);
+            VerifyExtraction(inventory, toolkitRefresh, workspaceExtraction, extracted);
+            payload.ExtractEntry("host/WiiCompiled-Setup.exe",
+                Path.Combine(staging, ProductInfo.SetupCopyName));
+            payload.ExtractDirectory("licenses", Path.Combine(staging, "licenses"));
+            payload.ExtractEntry(InstalledLayout.PayloadManifestFileName,
+                Path.Combine(staging, InstalledLayout.PayloadManifestFileName));
 
-        await PublishToolkitAndReconcileProductsAsync(install, toolkitRefresh,
-            publishGameAssets: reusableGameAssets is null, cancellationToken);
+            var install = new InstallContext(existing, staging, payload, manifest, inventory, release,
+                previousState, options, canonicalRetroRoot, retroCompileInputs, firstInstall);
+
+            if (sameToolkit)
+            {
+                var desiredInputDrift = ProductRepairService.FindDesiredInputDrift(existing,
+                    candidateToolkitFingerprint, release.DolSha256, release.RelSha256);
+                if (desiredInputDrift.Retro && retroCompileInputs is null)
+                    throw new InvalidOperationException(
+                        "This release changes the clean game inputs used by the installed Retro Rewind product. " +
+                        "Supply Wheel Wizard's current Retro Rewind folder explicitly so it can be rebuilt safely.");
+
+                ProductRepairService.ReconciliationResult reconciliation;
+                try
+                {
+                    reconciliation = await ReconcileSameToolkitAsync(existing, retroCompileInputs,
+                        canonicalRetroRoot, options.RetroWfcPayloadMode, Path.Combine(staging, "repair"),
+                        release.DolSha256, release.RelSha256, cancellationToken);
+                }
+                catch (InvalidDataException ex) when (ToolkitIntegrity.IsFailure(ex))
+                {
+                    // Without this, re-running setup would find the same "current" toolkit and fail the
+                    // same way forever. Nothing was published yet; publish the release's files and retry once.
+                    _reporter.Diagnostic(ex.Message + " Publishing the release's toolkit again and retrying once.");
+                    await RecoverToolkitAndReconcileAsync(install,
+                        toolkitStaged: toolkitRefresh == ToolkitRefresh.Full, cancellationToken);
+                    return;
+                }
+                var remainingCancellation = reconciliation.PublicationCommitted
+                    ? CancellationToken.None
+                    : cancellationToken;
+
+
+                if (!runtimeAssetsCurrent)
+                    runtimeAssetsCurrent = RuntimeAssetsAreCurrent(existing,
+                        candidateRuntimeAssetsFingerprint, remainingCancellation);
+
+                remainingCancellation.ThrowIfCancellationRequested();
+                EnsureReconciliationCurrent(existing, candidateToolkitFingerprint, retroCompileInputs,
+                    release.DolSha256, release.RelSha256, reconciliation.CachedRetroWfcPayloadMatches);
+
+                var updatedState = BuildInstallState(existing.ReadInstallState(), installDirectory, manifest,
+                    release, retroCompileInputs, canonicalRetroRoot, options.RetroWfcPayloadMode);
+                PrepareMetadata(staging, manifest, updatedState);
+                remainingCancellation.ThrowIfCancellationRequested();
+
+                var releaseEntries = new List<InstallTransactionEntry>();
+                // Keyed on what was extracted, so a toolkit refreshed only to restore a missing
+                // nodtool.exe is actually published.
+                AddToolkitEntries(releaseEntries, toolkitRefresh, staging, installDirectory);
+                if (!runtimeAssetsCurrent)
+                    AddRuntimeAssetPublicationEntries(releaseEntries, staging, installDirectory,
+                        updatedState.RetroRewindInstalled, candidateRuntimeAssetsFingerprint,
+                        remainingCancellation);
+                Publish(staging, installDirectory, canonicalRetroRoot, updatedState,
+                    releaseEntries, remainingCancellation, createShortcuts: firstInstall);
+                return;
+            }
+
+            if (discExtraction is null)
+            {
+                EnsureSufficientRemainingDiskSpace(installDirectory, needsExtractedDisc: false, needsLocalBuild: true);
+            }
+            else
+            {
+                _reporter.Progress(InstallStages.ExtractDisc,
+                    "Extracting the game disc. This is the longest preparation step...", 6);
+                discObserved = true;
+                await discExtraction;
+            }
+
+            await PublishToolkitAndReconcileProductsAsync(install, toolkitRefresh,
+                publishGameAssets: reusableGameAssets is null, cancellationToken);
+        }
+        finally
+        {
+            // Whatever ended this attempt early, nodtool must not still be writing into the staging
+            // area when the scratch space is deleted.
+            if (!discObserved)
+            {
+                discCancellation.Cancel();
+                try { await discExtraction!; }
+                catch (Exception) { /* the failure that got here is the one reported */ }
+            }
+        }
     }
 
     /// <summary>Everything one install operation shares between its publication paths.</summary>
@@ -838,8 +868,6 @@ internal sealed class InstallerEngine
     private async Task ExtractGameAssetsAsync(string nodTool, string gamePath, string destination,
         GameRelease release, CancellationToken cancellationToken)
     {
-        _reporter.Progress(InstallStages.ExtractDisc,
-            "Extracting the game disc. This is the longest preparation step...", 6);
         // Extracted straight into a "DATA" subfolder so the on-disk layout matches what
         // Installation.GameDataDirectory and every other reader of it already expect - nodtool
         // itself has no such wrapper (it extracts sys/+files/ directly to whatever <outdir> is
@@ -894,15 +922,15 @@ internal sealed class InstallerEngine
         FileSystemUtilities.EnsureUsableLocation(path, "The installation folder");
 
     private static void EnsureSufficientRemainingDiskSpace(string installDirectory,
-        bool needsExtractedDisc, bool needsLocalBuild)
+        bool needsExtractedDisc, bool needsLocalBuild, long stillStaging = 0)
     {
         const long extractedDiscAllowance = 5L * 1024 * 1024 * 1024;
         const long localBuildAllowance = 14L * 1024 * 1024 * 1024;
         const long safetyAllowance = 2L * 1024 * 1024 * 1024;
-        // This preflight runs after the release payload and the compile-input snapshot have already
-        // been staged. Count only work that can still allocate space from this point.
+        // Count only work that can still allocate space from this point: when the disc extraction
+        // starts alongside the payload extraction, the payload's own staging (stillStaging) too.
         var required = checked((needsExtractedDisc ? extractedDiscAllowance : 0) +
-                               (needsLocalBuild ? localBuildAllowance : 0) + safetyAllowance);
+                               (needsLocalBuild ? localBuildAllowance : 0) + safetyAllowance + stillStaging);
 
         FileSystemUtilities.EnsureFreeSpace(installDirectory, required, "Setup");
     }
