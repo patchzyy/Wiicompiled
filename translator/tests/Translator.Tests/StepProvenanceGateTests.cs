@@ -208,6 +208,40 @@ public sealed class StepProvenanceInvalidationTests
             Assert.False(File.Exists(added), "the rerun prunes the stale blob it was invalidated by");
     }
 
+    // generate-data-init probes no optional file, so it has no such case.
+    [Theory]
+    [InlineData(StepProvenanceWorkspace.TranslateMod)]
+    [InlineData(StepProvenanceWorkspace.EmitBuildShards)]
+    public void CreatingAFileTheStepFoundMissingReruns(string step)
+    {
+        using var workspace = StepProvenanceWorkspace.Create();
+        var record = StepProvenanceScenarios.RunAndRecord(workspace, step);
+        var missing = record.Probes.FirstOrDefault(probe => !probe.IsDirectory && !probe.Exists &&
+            probe.Path.StartsWith(workspace.Root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        Assert.True(missing is not null, $"{step} recorded no missing file inside the workspace");
+        Directory.CreateDirectory(Path.GetDirectoryName(missing!.Path)!);
+        File.WriteAllText(missing.Path, "created after the record\n");
+        StepProvenanceScenarios.AssertReruns(workspace, step, $"{missing.Path} was created");
+    }
+
+    [Theory]
+    [InlineData(StepProvenanceWorkspace.TranslateMod)]
+    [InlineData(StepProvenanceWorkspace.EmitBuildShards)]
+    public void StrayFileInAnOutputTreeReruns(string step)
+    {
+        using var workspace = StepProvenanceWorkspace.Create();
+        var record = StepProvenanceScenarios.RunAndRecord(workspace, step);
+        // Where a real run prunes: the published mod tree, and the shard folders (not their root).
+        var known = Path.GetDirectoryName(StepProvenanceScenarios.KnownOutput(workspace, step))!;
+        var directory = step == StepProvenanceWorkspace.TranslateMod
+            ? known
+            : record.Outputs.Select(static output => Path.GetDirectoryName(output.Path)!)
+                .First(parent => Path.GetDirectoryName(parent) == known);
+        var stray = Path.Combine(directory, "stray.cpp");
+        File.WriteAllText(stray, "// not written by the step\n");
+        StepProvenanceScenarios.AssertReruns(workspace, step, $"{stray} was added to its output");
+    }
+
     [Theory]
     [MemberData(nameof(Steps))]
     public void DeletedOutputReruns(string step)

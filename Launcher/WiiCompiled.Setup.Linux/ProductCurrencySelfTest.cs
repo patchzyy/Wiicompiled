@@ -302,6 +302,23 @@ internal static class ProductCurrencySelfTest
             File.AppendAllText(Path.Combine(root, "runtime", "sub", "b.h"), "x");
             Check("fs: directory digest follows content",
                 before is not null && before != ProductCurrencyProbe.DirectoryDigest(Path.Combine(root, "runtime")));
+
+            // Both products installed into one directory share its companion files.
+            var shared = Path.Combine(root, "install");
+            Directory.CreateDirectory(Path.Combine(shared, "wii_bootstrap"));
+            foreach (var file in new[] { "base-exe", "retro-exe", "cacert.pem", "local-build.json",
+                         Path.Combine("wii_bootstrap", "setting.txt") })
+                File.WriteAllText(Path.Combine(shared, file), file);
+            var options = new ProductCurrencyOptions(root, Path.Combine(root, "Assets"), "both",
+                [(shared, "base-exe"), (shared, "retro-exe")], shared, shared, null, null, true,
+                null, null, null, null, null, null, null, null);
+            var outputs = ProductCurrencyProbe.TryCollectOutputs(options);
+            Check("fs: shared install directory records each file once",
+                outputs is { Count: 5 } && outputs.Select(output => output.Path).Distinct().Count() == 5);
+            if (!OperatingSystem.IsWindows())
+                Check("fs: shared install directory record is current",
+                    ProductCurrency.IsCurrent(ProductCurrency.CreateRecord(Inputs(("a", "1")), outputs!),
+                        Inputs(("a", "1")), ProductCurrencyProbe.RequiredOutputs(options), ProductCurrencyProbe.Observe));
         }
         finally
         {

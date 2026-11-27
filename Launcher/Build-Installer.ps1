@@ -471,6 +471,12 @@ try {
     } finally { $writer.Dispose() }
 } finally { $outputStream.Dispose() }
 
+# Every install rejects a payload that disagrees with payload-inventory.json, so prove the archive
+# tar actually wrote (symlinks, name encoding, files changed after hashing) matches it.
+Write-Host 'Verifying the embedded payload against its inventory...'
+& $outputSetup --verify-payload
+if ($LASTEXITCODE -ne 0) { throw "The embedded payload does not match its inventory (exit code $LASTEXITCODE)." }
+
 $setupItem = Get-Item -LiteralPath $outputSetup
 Write-Host ("{0}: {1} MiB; SHA-256 {2}" -f $setupItem.Name,
     [math]::Round($setupItem.Length / 1MB, 1), (Get-MkwFileSha256 $outputSetup))

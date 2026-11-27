@@ -13,6 +13,7 @@ internal static partial class SelfTests
     private static void RegisterPayloadTests(List<string> failures)
     {
         Test("Stream and disk toolkit identity parity", TestStreamDiskIdentityParity, failures);
+        Test("Release payload verification", TestReleasePayloadVerification, failures);
         Test("Payload inventory stat check", TestPayloadInventoryStatCheck, failures);
         Test("Asset-only and translator-only extraction", TestPartialPayloadExtraction, failures);
         Test("Published toolkit retry recovery", TestPublishedToolkitRecovery, failures);
@@ -215,6 +216,53 @@ internal static partial class SelfTests
         File.AppendAllText(Path.Combine(install, "BuildWorkspace", "runtime", "native-index.json"), " ");
         if (InstallerEngine.ComputeInventoryComponents(inventory, install, release.Manifest, _ => { }) is not null)
             throw new Exception("A modified native index was trusted for the inventory identities.");
+    });
+
+    /// <summary>
+    /// The release-build check accepts a payload whose archive matches its inventory, and rejects
+    /// one that gained, lost or changed a file after the inventory was written.
+    /// </summary>
+    private static void TestReleasePayloadVerification() => WithTempDirectory("verify", directory =>
+    {
+        var release = BuildFakeRelease(directory);
+        using (var payload = PayloadArchive.OpenZip(release.Zip))
+        {
+            var count = ConsoleCommands.VerifyPayloadInventory(payload, release.Manifest);
+            if (count != Directory.EnumerateFiles(release.Root, "*", SearchOption.AllDirectories)
+                    .Count(file => !Path.GetFileName(file).Equals(PayloadInventory.FileName, StringComparison.Ordinal)))
+                throw new Exception("The release check did not hash every Toolkit and BuildWorkspace file.");
+        }
+
+        void Reject(string description, Action<ZipArchive> corrupt)
+        {
+            var zip = Path.Combine(directory, $"corrupt-{Guid.NewGuid():N}.zip");
+            File.Copy(release.Zip, zip);
+            using (var archive = ZipFile.Open(zip, ZipArchiveMode.Update)) corrupt(archive);
+            using var payload = PayloadArchive.OpenZip(zip);
+            try
+            {
+                ConsoleCommands.VerifyPayloadInventory(payload, release.Manifest);
+                throw new Exception($"The release check accepted a payload with {description}.");
+            }
+            catch (InvalidDataException) { }
+        }
+
+        Reject("a changed file", archive =>
+        {
+            var entry = archive.Entries.First(e => e.FullName.Replace('\\', '/') == "Toolkit/Ninja/ninja.exe");
+            entry.Delete();
+            using var writer = new StreamWriter(archive.CreateEntry("Toolkit/Ninja/ninja.exe").Open());
+            writer.Write("different bytes");
+        });
+        Reject("a missing file", archive =>
+            archive.Entries.First(e => e.FullName.Replace('\\', '/') == "BuildWorkspace/projects/mkwii/MAP.txt").Delete());
+        Reject("an unlisted file", archive =>
+        {
+            using var writer = new StreamWriter(archive.CreateEntry("BuildWorkspace/extra.txt").Open());
+            writer.Write("extra");
+        });
+        Reject("no inventory", archive =>
+            archive.Entries.First(e => e.FullName.Replace('\\', '/') == PayloadInventory.FileName).Delete());
     });
 
     private static void TestPayloadInventoryStatCheck() => WithTempDirectory("statcheck", directory =>

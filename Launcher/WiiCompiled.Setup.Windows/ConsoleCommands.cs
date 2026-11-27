@@ -77,6 +77,32 @@ internal static class ConsoleCommands
     }
 
     /// <summary>
+    /// Release-build check of this setup executable: every install trusts the shipped inventory
+    /// and rejects the payload when it disagrees, so the archive must be proven to match it here.
+    /// </summary>
+    public static int VerifyPayload()
+    {
+        using var payload = PayloadArchive.OpenCurrent();
+        var count = VerifyPayloadInventory(payload, payload.ReadManifest());
+        Console.Out.WriteLine($"The payload matches its inventory ({count} files).");
+        return 0;
+    }
+
+    internal static int VerifyPayloadInventory(PayloadArchive payload, PayloadManifest manifest)
+    {
+        var problems = new List<string>();
+        var inventory = payload.TryReadInventory(manifest, problems.Add)
+                        ?? throw new InvalidDataException("The payload has no usable file inventory: " +
+                                                          string.Join(" ", problems));
+        var hashed = payload.HashDirectory(InstalledLayout.ToolkitDirectoryName);
+        foreach (var (path, identity) in payload.HashDirectory(InstalledLayout.WorkspaceDirectoryName))
+            hashed[path] = identity;
+        inventory.VerifyExtracted(InstalledLayout.ToolkitEntryPrefix, hashed);
+        inventory.VerifyExtracted(InstalledLayout.WorkspaceEntryPrefix, hashed);
+        return hashed.Count;
+    }
+
+    /// <summary>
     /// Hashes every shipped Toolkit/BuildWorkspace file and records the files each translation
     /// project reads, as the staged translator itself reports them.
     /// </summary>

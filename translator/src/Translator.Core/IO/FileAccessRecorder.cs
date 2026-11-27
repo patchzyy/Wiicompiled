@@ -164,10 +164,13 @@ public sealed class FileAccessRecorder
             var sourceWasProduced = IsProducedLocked(fullSource);
             if (!sourceWasProduced) _deletedDirectories.Add(fullSource);
             _outputTrees.RemoveWhere(tree => IsSameOrUnder(tree, fullSource));
-            _producedDirectories.Add(fullDestination);
-            // A tree the command generated and then published is its output; a pre-existing
-            // tree it only moved aside (a backup) is not.
-            if (sourceWasProduced) _outputTrees.Add(fullDestination);
+            // A tree the command generated and then published is its output. A pre-existing tree
+            // it only moved (a backup) is neither: reads from its new location are still inputs.
+            if (sourceWasProduced)
+            {
+                _producedDirectories.Add(fullDestination);
+                _outputTrees.Add(fullDestination);
+            }
         }
     }
 

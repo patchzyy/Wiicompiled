@@ -57,15 +57,14 @@ for stale in "$assets_dir"/.extract-stage-* "$assets_dir"/.previous-extraction-*
         stale_pid=${BASH_REMATCH[1]}
         if ! kill -0 "$stale_pid" 2>/dev/null; then
             if [[ "$stale_name" =~ $stale_backup_pattern && -d "$stale" && ! -L "$stale" ]]; then
-                published=0
+                # The run died while moving items into the backup or publishing the stage, so put
+                # back every item Assets lacks. A mix of old and new items is safe: reuse below
+                # re-checks both hashes and the data manifest, and re-extracts on any mismatch.
                 for item in $extraction_items; do
-                    [[ -e "$assets_dir/$item" || -L "$assets_dir/$item" ]] && published=1
+                    if [[ ! -e "$assets_dir/$item" && ! -L "$assets_dir/$item" && -e "$stale/$item" ]]; then
+                        mv "$stale/$item" "$assets_dir/$item"
+                    fi
                 done
-                if (( published == 0 )); then
-                    for item in $extraction_items; do
-                        [[ -e "$stale/$item" ]] && mv "$stale/$item" "$assets_dir/$item"
-                    done
-                fi
             fi
             rm -rf "$stale"
         fi

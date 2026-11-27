@@ -190,31 +190,53 @@ internal sealed class PayloadArchive : IDisposable
         }
     }
 
+    /// <summary>
+    /// The identity of every file entry under <paramref name="prefix"/>, hashed exactly as
+    /// <see cref="ExtractDirectory"/> hashes it but without writing anything, keyed the same way.
+    /// </summary>
+    public Dictionary<string, PayloadFileIdentity> HashDirectory(string prefix)
+    {
+        prefix = NormalizeEntryName(prefix).TrimEnd('/') + "/";
+        var identities = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        foreach (var entry in _zip.Entries)
+        {
+            var normalizedEntry = NormalizeEntryName(entry.FullName);
+            if (!normalizedEntry.StartsWith(prefix, StringComparison.Ordinal) || normalizedEntry.EndsWith('/'))
+                continue;
+            identities[normalizedEntry] = CopyHashed(entry, output: null);
+        }
+        return identities;
+    }
+
     private static PayloadFileIdentity ExtractHashed(ZipArchiveEntry entry, string outputPath)
+    {
+        PayloadFileIdentity identity;
+        using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
+            identity = CopyHashed(entry, output);
+        NormalizeExtractedTimestamp(outputPath);
+        return identity;
+    }
+
+    private static PayloadFileIdentity CopyHashed(ZipArchiveEntry entry, Stream? output)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         long size = 0;
         var buffer = ArrayPool<byte>.Shared.Rent(1 << 16);
         try
         {
-            using (var input = entry.Open())
-            using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None,
-                       1 << 16))
+            using var input = entry.Open();
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
             {
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    hash.AppendData(buffer, 0, read);
-                    output.Write(buffer, 0, read);
-                    size += read;
-                }
+                hash.AppendData(buffer, 0, read);
+                output?.Write(buffer, 0, read);
+                size += read;
             }
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
-        NormalizeExtractedTimestamp(outputPath);
         return new PayloadFileIdentity(size, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
     }
 

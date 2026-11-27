@@ -129,12 +129,17 @@ internal static class Program
         var profile = installsRetro ? "both" : "base";
         var profiles = installsRetro ? new[] { "base", "retro-rewind" } : new[] { "base" };
         var baseInstallDir = installsRetro ? DefaultInstallDir("base") : null;
-        var installDir = flags.GetValueOrDefault("install-dir") ?? DefaultInstallDir(installsRetro ? "retro-rewind" : "base");
+        // Resolved once against the caller's directory: the build runs from the workspace, while the
+        // currency check, install state and launch would otherwise each resolve a relative path apart.
+        var installDir = Path.GetFullPath(flags.GetValueOrDefault("install-dir") ??
+                                          DefaultInstallDir(installsRetro ? "retro-rewind" : "base"));
 
         string? retroWfcOfflineDir = null;
         if (downloadPayload)
         {
-            var cacheDir = Path.Combine(workspace, "generated", "retro-wfc-payload");
+            // Outside the workspace's generated/ folder, which --force-clean-build deletes before
+            // the build reads the payload.
+            var cacheDir = RetroWfcPayloadCacheDir;
             reporter.Progress(InstallStages.Validate,
                 "Downloading the current Retro-WFC payload", 1);
             try
@@ -370,6 +375,9 @@ internal static class Program
 
     private static string ProvenancePath => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "product-provenance.json");
+
+    private static string RetroWfcPayloadCacheDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "retro-wfc-payload");
 
     private static string DefaultInstallDir(string profile) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "Install",

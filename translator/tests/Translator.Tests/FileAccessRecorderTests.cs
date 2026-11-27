@@ -100,6 +100,24 @@ public sealed class FileAccessRecorderTests : IDisposable
     }
 
     [Fact]
+    public void ReadsFromAMovedPreexistingTreeAreInputs()
+    {
+        var original = Path.Combine(_root, "existing");
+        var input = Write(Path.Combine("existing", "input.txt"), "kept");
+        var moved = Path.Combine(_root, "moved");
+        var recorder = new FileAccessRecorder();
+        Directory.Move(original, moved);
+        recorder.OnMoveDirectory(original, moved);
+        var movedInput = Path.Combine(moved, Path.GetFileName(input));
+        recorder.OnRead(movedInput, File.ReadAllBytes(movedInput));
+
+        var snapshot = recorder.Snapshot();
+        var only = Assert.Single(snapshot.Inputs);
+        Assert.Equal(movedInput, only.Path);
+        Assert.Empty(snapshot.Outputs);
+    }
+
+    [Fact]
     public void OutputListingsAreTakenWhenTheRunEnds()
     {
         var blobs = Path.Combine(_root, "blobs");

@@ -654,6 +654,8 @@ internal static class ProductCurrencyProbe
     private static bool AddOutput(List<ProductOutputRecord> outputs, string path)
     {
         var full = Path.GetFullPath(path);
+        // Products sharing one install directory share their companion files; record each once.
+        if (outputs.Any(output => string.Equals(output.Path, full, StringComparison.Ordinal))) return true;
         var observed = Observe(full);
         if (observed is null) return false;
         outputs.Add(new ProductOutputRecord { Path = full, Size = observed.Value.Size, Sha256 = observed.Value.Sha256 });
