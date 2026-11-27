@@ -77,9 +77,13 @@ internal sealed class PayloadInventory
             throw new InvalidDataException($"Unsupported payload inventory schema {SchemaVersion}.");
         if (Files is not { Count: > 0 })
             throw new InvalidDataException("The payload inventory lists no files.");
+        if (ToolkitFingerprint is null || ToolkitPackageFingerprint is null)
+            throw new InvalidDataException("The payload inventory has no toolkit identity.");
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Files)
         {
+            if (file is null || file.Sha256 is null)
+                throw new InvalidDataException("The payload inventory has an incomplete entry.");
             if (string.IsNullOrEmpty(file.Path) || file.Path.Contains('\\') || file.Path.StartsWith('/') ||
                 file.Path.Split('/').Any(part => part is "" or "." or "..") ||
                 !(file.Path.StartsWith(InstalledLayout.ToolkitEntryPrefix, StringComparison.Ordinal) ||
@@ -90,6 +94,8 @@ internal sealed class PayloadInventory
                 throw new InvalidDataException($"The payload inventory lists '{file.Path}' twice.");
         }
         TranslationInputs ??= new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        if (TranslationInputs.Any(pair => pair.Value is null || pair.Value.Any(path => path is null)))
+            throw new InvalidDataException("The payload inventory has an incomplete translation input list.");
     }
 
     /// <summary>Compact on purpose: it lists every shipped file and is read once per install.</summary>
@@ -128,6 +134,11 @@ internal sealed class PayloadInventory
             if (!Directory.Exists(directory))
             {
                 if (expected.Count > 0) Report($"{prefix} is missing");
+                return problems;
+            }
+            if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+            {
+                Report($"{prefix} is a link, not shipped content");
                 return problems;
             }
             var pending = new Stack<DirectoryInfo>();

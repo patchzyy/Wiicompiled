@@ -351,22 +351,31 @@ internal sealed class InstallerEngine
         var release = install.Release;
         var installDirectory = existing.Root;
 
-        GraftWorkspaceCaches(existing.WorkspaceDirectory, InstalledLayout.Workspace(staging), cancellationToken);
+        var stagedWorkspace = InstalledLayout.Workspace(staging);
+        try
+        {
+            GraftWorkspaceCaches(existing.WorkspaceDirectory, stagedWorkspace, cancellationToken);
 
-        var state = BuildInstallState(install.PreviousState, installDirectory, manifest, release,
-            compileInputs: null, install.CanonicalRetroRoot, install.Options.RetroWfcPayloadMode);
-        PrepareMetadata(staging, manifest, state);
+            var state = BuildInstallState(install.PreviousState, installDirectory, manifest, release,
+                compileInputs: null, install.CanonicalRetroRoot, install.Options.RetroWfcPayloadMode);
+            PrepareMetadata(staging, manifest, state);
 
-        cancellationToken.ThrowIfCancellationRequested();
-        var entries = new List<InstallTransactionEntry>();
+            cancellationToken.ThrowIfCancellationRequested();
+            var entries = new List<InstallTransactionEntry>();
 
-        AddToolkitEntries(entries, toolkitRefresh, staging, installDirectory);
-        AddComponent(entries, staging, installDirectory, InstalledLayout.WorkspaceDirectoryName);
-        if (publishGameAssets) AddComponent(entries, staging, installDirectory, "GameAssets");
+            AddToolkitEntries(entries, toolkitRefresh, staging, installDirectory);
+            AddComponent(entries, staging, installDirectory, InstalledLayout.WorkspaceDirectoryName);
+            if (publishGameAssets) AddComponent(entries, staging, installDirectory, "GameAssets");
 
-        Publish(staging, installDirectory, install.CanonicalRetroRoot, state,
-            entries, cancellationToken, progressPercent: 8, completionPercent: 10,
-            createShortcuts: install.FirstInstall);
+            Publish(staging, installDirectory, install.CanonicalRetroRoot, state,
+                entries, cancellationToken, progressPercent: 8, completionPercent: 10,
+                createShortcuts: install.FirstInstall);
+        }
+        catch
+        {
+            RestoreWorkspaceCaches(existing.WorkspaceDirectory, stagedWorkspace);
+            throw;
+        }
 
         var verified = EnsurePublishedToolkitIntact(install, cancellationToken);
 
@@ -396,6 +405,28 @@ internal sealed class InstallerEngine
             var destination = Path.Combine(stagedWorkspace, cacheDirectory);
             if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
             Directory.Move(source, destination);
+        }
+    }
+
+    /// <summary>
+    /// Moves caches grafted into a staged workspace that was never published back to the installed
+    /// workspace, so a failed or cancelled publication does not throw the build caches away.
+    /// </summary>
+    private static void RestoreWorkspaceCaches(string installedWorkspace, string stagedWorkspace)
+    {
+        if (!Directory.Exists(installedWorkspace)) return;
+        foreach (var cacheDirectory in WorkspaceCacheDirectories)
+        {
+            var source = Path.Combine(stagedWorkspace, cacheDirectory);
+            var destination = Path.Combine(installedWorkspace, cacheDirectory);
+            try
+            {
+                if (Directory.Exists(source) && !Directory.Exists(destination)) Directory.Move(source, destination);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best effort: a lost cache only costs a clean rebuild.
+            }
         }
     }
 
@@ -456,15 +487,25 @@ internal sealed class InstallerEngine
             ExtractWorkspace(install.Payload, WorkspaceExtraction.Full, install.Existing, stagedWorkspace,
                 extracted, cancellationToken);
             VerifyExtraction(install.Inventory, ToolkitRefresh.None, WorkspaceExtraction.Full, extracted);
-            GraftWorkspaceCaches(install.Existing.WorkspaceDirectory, stagedWorkspace, cancellationToken);
             AddComponent(entries, retry, installDirectory, InstalledLayout.WorkspaceDirectoryName);
         }
 
         cancellationToken.ThrowIfCancellationRequested();
         RunningProductGuard.EnsureProductsNotRunning(installDirectory);
-        using var transaction = InstallTransaction.Begin(installDirectory, _reporter, entries.ToArray());
-        transaction.Publish();
-        transaction.Commit();
+        var retryWorkspace = InstalledLayout.Workspace(retry);
+        try
+        {
+            if (workspace)
+                GraftWorkspaceCaches(install.Existing.WorkspaceDirectory, retryWorkspace, cancellationToken);
+            using var transaction = InstallTransaction.Begin(installDirectory, _reporter, entries.ToArray());
+            transaction.Publish();
+            transaction.Commit();
+        }
+        catch
+        {
+            if (workspace) RestoreWorkspaceCaches(install.Existing.WorkspaceDirectory, retryWorkspace);
+            throw;
+        }
     }
 
     /// <summary>

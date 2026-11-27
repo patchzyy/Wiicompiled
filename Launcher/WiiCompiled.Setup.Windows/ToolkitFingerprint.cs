@@ -365,18 +365,27 @@ internal static class ToolkitFingerprint
         start.ArgumentList.Add(projectFile);
         using var process = Process.Start(start)
                             ?? throw new InvalidOperationException("The translator could not be started.");
-        var stderr = process.StandardError.ReadToEndAsync(cancellationToken);
-        var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        if (!process.WaitForExit(TimeSpan.FromMinutes(2)))
+        var stderr = process.StandardError.ReadToEndAsync();
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        using (var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
         {
-            try { process.Kill(entireProcessTree: true); } catch { }
-            throw new TimeoutException("Listing the translation inputs did not finish.");
+            wait.CancelAfter(TimeSpan.FromMinutes(2));
+            try
+            {
+                process.WaitForExitAsync(wait.Token).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                cancellationToken.ThrowIfCancellationRequested();
+                throw new TimeoutException("Listing the translation inputs did not finish.");
+            }
         }
         process.WaitForExit();
         if (process.ExitCode != 0)
             throw new InvalidDataException(
-                $"list-translation-inputs failed with exit code {process.ExitCode}: {stderr.Result.Trim()}");
-        return stdout.Result.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                $"list-translation-inputs failed with exit code {process.ExitCode}: {stderr.GetAwaiter().GetResult().Trim()}");
+        return stdout.GetAwaiter().GetResult().Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
     private static SortedDictionary<string, string> SelectSubset(SortedDictionary<string, string> entries,

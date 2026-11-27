@@ -296,8 +296,30 @@ internal static class ProductCurrencyProbe
     private static readonly string[] CompanionFiles =
         ["dsp_coef.bin", "initial_pipeline_cache.db", "cacert.pem", "local-build.json"];
 
+    // The mbed TLS path cannot reach any server without the CA bundle beside the executable.
+    private const string CaBundle = "cacert.pem";
+
     public static IEnumerable<string> RequiredOutputs(ProductCurrencyOptions options) =>
-        options.Products.Select(product => Path.Combine(product.Directory, product.Executable));
+        options.Products.SelectMany(product => new[]
+        {
+            Path.GetFullPath(Path.Combine(product.Directory, product.Executable)),
+            Path.GetFullPath(Path.Combine(product.Directory, CaBundle)),
+        });
+
+    /// <summary>True when every product executable can still be run by its owner.</summary>
+    public static bool ExecutablesRunnable(ProductCurrencyOptions options)
+    {
+        if (!OperatingSystem.IsLinux()) return false;
+        try
+        {
+            return options.Products.All(product =>
+                (File.GetUnixFileMode(Path.Combine(product.Directory, product.Executable)) & UnixFileMode.UserExecute) != 0);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>The current inputs, or null (with a reason) when they cannot all be pinned down.</summary>
     public static Dictionary<string, string>? TryCollectInputs(ProductCurrencyOptions options, out string reason)
@@ -330,7 +352,8 @@ internal static class ProductCurrencyProbe
         var required = new List<string>();
         string? ToolkitFile(string key, string? path)
         {
-            if (string.IsNullOrEmpty(path)) return null;
+            // The build resolves a relative tool from the workspace, not from setup's directory.
+            if (string.IsNullOrEmpty(path) || !Path.IsPathRooted(path)) return null;
             var resolved = RealPath(path);
             var relative = resolved is null || !File.Exists(resolved) ? null : ProductCurrency.RelativeInside(toolkitRoot, resolved);
             if (relative is null) return null;
@@ -435,6 +458,7 @@ internal static class ProductCurrencyProbe
                 foreach (var companion in CompanionFiles)
                 {
                     var path = Path.Combine(directory, companion);
+                    if (!File.Exists(path) && companion == CaBundle) return null;
                     if (File.Exists(path) && !AddOutput(outputs, path)) return null;
                 }
                 var bootstrap = Path.Combine(directory, "wii_bootstrap");
@@ -467,7 +491,8 @@ internal static class ProductCurrencyProbe
             var sha = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
             return (stream.Length, sha);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                                       or NotSupportedException)
         {
             return null;
         }

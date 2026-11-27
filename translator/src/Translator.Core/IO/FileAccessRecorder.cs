@@ -49,8 +49,10 @@ public sealed record FileAccessSnapshot(
 /// </summary>
 public sealed class FileAccessRecorder
 {
+    // Case-sensitive everywhere but Windows: macOS volumes may be either, and keeping two spellings
+    // of one file apart only costs a second hash, while merging two files could hide a change.
     public static readonly StringComparer PathComparer =
-        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
 
     private readonly object _gate = new();
     private readonly Dictionary<string, string> _inputs = new(PathComparer);
@@ -114,14 +116,11 @@ public sealed class FileAccessRecorder
         }
     }
 
+    // Kept even for directories this run created: a file added there later must still be pruned.
     public void OnOutputScan(FileScanQuery query)
     {
         var normalized = query.Normalized();
-        lock (_gate)
-        {
-            if (IsProducedLocked(normalized.Directory)) return;
-            _outputScans.Add(normalized);
-        }
+        lock (_gate) _outputScans.Add(normalized);
     }
 
     public void OnWrite(string path)
@@ -255,7 +254,7 @@ public sealed class FileAccessRecorder
     {
         if (PathComparer.Equals(path, root)) return true;
         var prefix = Path.TrimEndingDirectorySeparator(root) + Path.DirectorySeparatorChar;
-        return path.StartsWith(prefix, OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+        return path.StartsWith(prefix, OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal);
     }

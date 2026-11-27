@@ -45,15 +45,28 @@ done
 assets_dir=$(mkdir -p "$assets_dir" && cd "$assets_dir" && pwd)
 
 # An interrupted earlier run can leave its stage or backup behind. Remove only those whose owning
-# process is gone; backups named by older versions (no process id) are left alone.
+# process is gone; backups named by older versions (no process id) are left alone. A backup whose
+# run stopped before publishing anything is moved back first, so it is never lost.
 stale_stage_pattern='^[.]extract-stage-([0-9]+)$'
 stale_backup_pattern='^[.]previous-extraction-([0-9]+)-[0-9]{8}-[0-9]{6}$'
+extraction_items="DATA .data-manifest main.dol StaticR.rel"
 for stale in "$assets_dir"/.extract-stage-* "$assets_dir"/.previous-extraction-*; do
     [[ -e "$stale" || -L "$stale" ]] || continue
     stale_name=${stale##*/}
     if [[ "$stale_name" =~ $stale_stage_pattern || "$stale_name" =~ $stale_backup_pattern ]]; then
         stale_pid=${BASH_REMATCH[1]}
         if ! kill -0 "$stale_pid" 2>/dev/null; then
+            if [[ "$stale_name" =~ $stale_backup_pattern && -d "$stale" && ! -L "$stale" ]]; then
+                published=0
+                for item in $extraction_items; do
+                    [[ -e "$assets_dir/$item" || -L "$assets_dir/$item" ]] && published=1
+                done
+                if (( published == 0 )); then
+                    for item in $extraction_items; do
+                        [[ -e "$stale/$item" ]] && mv "$stale/$item" "$assets_dir/$item"
+                    done
+                fi
+            fi
             rm -rf "$stale"
         fi
     fi

@@ -209,7 +209,8 @@ internal static class Program
                 reporter.Diagnostic($"Building: the installed products cannot be checked ({notTrackedReason}).");
             else if (!forceCleanBuild)
                 productsCurrent = ProductCurrency.IsCurrent(JsonState.TryRead<ProductProvenanceRecord>(ProvenancePath),
-                    currentInputs, ProductCurrencyProbe.RequiredOutputs(currency), ProductCurrencyProbe.Observe);
+                                      currentInputs, ProductCurrencyProbe.RequiredOutputs(currency), ProductCurrencyProbe.Observe) &&
+                                  ProductCurrencyProbe.ExecutablesRunnable(currency);
         }
 
         if (productsCurrent)

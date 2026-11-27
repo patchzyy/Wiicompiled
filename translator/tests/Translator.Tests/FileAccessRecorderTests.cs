@@ -115,6 +115,20 @@ public sealed class FileAccessRecorderTests : IDisposable
     }
 
     [Fact]
+    public void OutputListingsOfCreatedDirectoriesAreKept()
+    {
+        var blobs = Path.Combine(_root, "created");
+        var recorder = new FileAccessRecorder();
+        recorder.OnCreateDirectory(blobs);
+        Directory.CreateDirectory(blobs);
+        recorder.OnOutputScan(new FileScanQuery(blobs, "*.bin", SearchOption.TopDirectoryOnly, FileScanKind.Files));
+        Write(Path.Combine("created", "kept.bin"), "y");
+
+        var scan = Assert.Single(recorder.Snapshot().Scans);
+        Assert.Equal(new[] { "kept.bin" }, scan.Entries);
+    }
+
+    [Fact]
     public void UntrackedInputsAndEnvironmentExpansionsAreReported()
     {
         var recorder = new FileAccessRecorder();
