@@ -554,11 +554,15 @@ publish_built_product() {
     local exe=$build/$target
     assert_file "$exe" "Locally compiled game executable"
     cp -f "$exe" "$destination/$target"
+    # cp -f keeps an existing destination's mode.
+    chmod 755 "$destination/$target"
     # cacert.pem is the TLS root bundle the mbed TLS path looks up beside the executable
     # (runtime/src/hle/net/network_ssl.cpp); without it HTTPS fails at runtime.
     for name in dsp_coef.bin initial_pipeline_cache.db cacert.pem; do
         [[ -f "$build/$name" ]] && cp -f "$build/$name" "$destination/"
     done
+    # The build only copies the bundle when the executable relinks.
+    [[ -f "$destination/cacert.pem" ]] || cp -f "$workspace/runtime/assets/certs/cacert.pem" "$destination/"
     [[ -d "$build/wii_bootstrap" ]] && cp -rf "$build/wii_bootstrap" "$destination/"
 
     local is_retro=0 code_pul_sha=null
