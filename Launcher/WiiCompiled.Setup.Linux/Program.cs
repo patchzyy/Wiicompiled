@@ -164,9 +164,10 @@ internal static class Program
                 catch (Exception cacheFailure) when (cacheFailure is IOException or
                                                      UnauthorizedAccessException or InvalidDataException)
                 {
-                    throw new InvalidOperationException(
-                        "The current Retro-WFC payload could not be downloaded and no valid cached " +
-                        $"payload is available ({cacheFailure.Message.TrimEnd('.')}).", downloadFailure);
+                    if (!TryAdoptLegacyRetroWfcPayload(workspace, cacheDir, release.GameId))
+                        throw new InvalidOperationException(
+                            "The current Retro-WFC payload could not be downloaded and no valid cached " +
+                            $"payload is available ({cacheFailure.Message.TrimEnd('.')}).", downloadFailure);
                 }
 
                 reporter.Diagnostic(
@@ -378,6 +379,36 @@ internal static class Program
 
     private static string RetroWfcPayloadCacheDir => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "retro-wfc-payload");
+
+    /// <summary>
+    /// Earlier setups cached the payload in the workspace's generated/ folder, so an offline
+    /// upgrade may only have that copy. Copies it into the cache when it still verifies.
+    /// </summary>
+    private static bool TryAdoptLegacyRetroWfcPayload(string workspace, string cacheDir, string gameId)
+    {
+        var legacyDir = Path.Combine(workspace, "generated", "retro-wfc-payload");
+        string? temporary = null;
+        try
+        {
+            var legacy = RetroWfcPayload.ResolveRetroWfcPayloadFile(legacyDir, gameId);
+            var destination = Path.Combine(cacheDir, Path.GetRelativePath(Path.GetFullPath(legacyDir), legacy));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            temporary = destination + $".tmp-{Guid.NewGuid():N}";
+            File.Copy(legacy, temporary);
+            File.Move(temporary, destination, overwrite: true);
+            temporary = null;
+            RetroWfcPayload.ValidateStagedRetroWfcPayloadDirectory(cacheDir, gameId);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return false;
+        }
+        finally
+        {
+            if (temporary is not null) try { File.Delete(temporary); } catch (IOException) { }
+        }
+    }
 
     private static string DefaultInstallDir(string profile) => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WiiCompiled", "Install",
