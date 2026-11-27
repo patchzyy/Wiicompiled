@@ -173,10 +173,13 @@ internal static class ToolkitFingerprint
     /// <paramref name="lister"/> defaults to running the toolkit's own translator; when it fails the
     /// per-release translation identities are omitted (or, with <paramref name="strictTranslationInputs"/>,
     /// the failure is thrown), which only ever costs a retranslation.
+    /// <paramref name="verifyCompile"/> sees the compile identity before the lister runs, so a
+    /// caller can reject a modified toolkit before any of its programs are started.
     /// </summary>
     public static ToolkitFingerprintComponents ComputeComponents(string root,
         CancellationToken cancellationToken = default, TranslationInputLister? lister = null,
-        bool strictTranslationInputs = false, Action<string>? diagnostic = null)
+        bool strictTranslationInputs = false, Action<string>? diagnostic = null,
+        Action<string>? verifyCompile = null)
     {
         root = Path.GetFullPath(root);
         var hashes = new SortedDictionary<string, string>(StringComparer.Ordinal);
@@ -195,6 +198,8 @@ internal static class ToolkitFingerprint
 
         if (hashes.Count == 0)
             throw new InvalidDataException($"No toolkit files were found under {root}; the installation is incomplete.");
+        // Every hash so far is a compile input, and listed files never change the compile identity.
+        verifyCompile?.Invoke(BuildIdentity(Version, hashes));
 
         var translationInputs = ListTranslationInputs(root, lister ?? RunTranslatorLister,
             strictTranslationInputs, diagnostic, cancellationToken);

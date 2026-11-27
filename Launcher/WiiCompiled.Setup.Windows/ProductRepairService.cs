@@ -540,13 +540,20 @@ internal sealed class ProductRepairService
             return preverified;
         }
 
-        var components = ToolkitFingerprint.ComputeComponents(_installation.Root, cancellationToken,
-            diagnostic: _reporter.Diagnostic);
-        if (!components.Compile.Equals(authoritativeFingerprint, StringComparison.Ordinal))
+        // Checked before the installed translator is run to list its inputs, so a modified
+        // translator is rejected without being started.
+        void Verify(string compile)
         {
-            throw ToolkitIntegrity.Failure(
-                "The installed recompilation toolkit was modified or is incomplete. Apply the current setup release before compiling products.");
+            if (!compile.Equals(authoritativeFingerprint, StringComparison.Ordinal))
+            {
+                throw ToolkitIntegrity.Failure(
+                    "The installed recompilation toolkit was modified or is incomplete. Apply the current setup release before compiling products.");
+            }
         }
+
+        var components = ToolkitFingerprint.ComputeComponents(_installation.Root, cancellationToken,
+            diagnostic: _reporter.Diagnostic, verifyCompile: Verify);
+        Verify(components.Compile);
         return components;
     }
 

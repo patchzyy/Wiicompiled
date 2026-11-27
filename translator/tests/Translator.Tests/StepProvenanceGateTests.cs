@@ -145,6 +145,10 @@ public sealed class StepProvenanceGateTests
             Edit(static node => node["TranslatorIdentity"] = new string('0', 64)),
             Edit(static node => node["TranslatorIdentity"] = null),
             Edit(static node => node["WorkingDirectory"] = Path.GetTempPath()),
+            Edit(static node => node["Inputs"] = null),
+            Edit(static node => node["Arguments"] = null),
+            Edit(static node => node["Outputs"] = new JsonArray((JsonNode?)null)),
+            Edit(static node => node["Inputs"]![0]!["Path"] = null),
         };
         foreach (var corruption in corruptions)
         {

@@ -643,6 +643,23 @@ internal static partial class SelfTests
         }
         catch (InvalidDataException) { }
 
+        // A rejected compile identity stops the walk before the toolkit's translator is started.
+        var listerRan = false;
+        try
+        {
+            ToolkitFingerprint.ComputeComponents(root,
+                lister: (_, _, _) => { listerRan = true; return []; },
+                verifyCompile: compile =>
+                {
+                    if (compile != newRegistrations.Compile)
+                        throw new Exception("The early compile identity differs from the final one.");
+                    throw new InvalidDataException("rejected");
+                });
+            throw new Exception("A rejected compile identity was not thrown.");
+        }
+        catch (InvalidDataException) { }
+        if (listerRan) throw new Exception("The translator lister ran after the compile identity was rejected.");
+
         // Package halves.
         var packages = ToolkitFingerprint.ComputePackageComponents(root);
         File.WriteAllText(PathOf("Toolkit/Translator/Translator.Cli.exe"), "translator-v9");

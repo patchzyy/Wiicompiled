@@ -46,7 +46,7 @@ assets_dir=$(mkdir -p "$assets_dir" && cd "$assets_dir" && pwd)
 
 # An interrupted earlier run can leave its stage or backup behind. Remove only those whose owning
 # process is gone; backups named by older versions (no process id) are left alone. A backup whose
-# run stopped before publishing anything is moved back first, so it is never lost.
+# run stopped before publishing everything is moved back first, so it is never lost.
 stale_stage_pattern='^[.]extract-stage-([0-9]+)$'
 stale_backup_pattern='^[.]previous-extraction-([0-9]+)-[0-9]{8}-[0-9]{6}$'
 extraction_items="DATA .data-manifest main.dol StaticR.rel"
@@ -57,14 +57,27 @@ for stale in "$assets_dir"/.extract-stage-* "$assets_dir"/.previous-extraction-*
         stale_pid=${BASH_REMATCH[1]}
         if ! kill -0 "$stale_pid" 2>/dev/null; then
             if [[ "$stale_name" =~ $stale_backup_pattern && -d "$stale" && ! -L "$stale" ]]; then
-                # The run died while moving items into the backup or publishing the stage, so put
-                # back every item Assets lacks. A mix of old and new items is safe: reuse below
-                # re-checks both hashes and the data manifest, and re-extracts on any mismatch.
+                # The run died while moving items into the backup or publishing the stage. Items are
+                # only ever in both places once publishing started, and then everything in Assets is
+                # from the new disc: unless that set is complete, it is dropped so the old one comes
+                # back whole instead of mixing two extractions.
+                present=0 shared=0
                 for item in $extraction_items; do
-                    if [[ ! -e "$assets_dir/$item" && ! -L "$assets_dir/$item" && -e "$stale/$item" ]]; then
-                        mv "$stale/$item" "$assets_dir/$item"
+                    if [[ -e "$assets_dir/$item" || -L "$assets_dir/$item" ]]; then
+                        present=$((present + 1))
+                        [[ -e "$stale/$item" ]] && shared=$((shared + 1))
                     fi
                 done
+                if (( present < 4 )); then
+                    if (( shared > 0 )); then
+                        for item in $extraction_items; do rm -rf "${assets_dir:?}/$item"; done
+                    fi
+                    for item in $extraction_items; do
+                        if [[ ! -e "$assets_dir/$item" && ! -L "$assets_dir/$item" && -e "$stale/$item" ]]; then
+                            mv "$stale/$item" "$assets_dir/$item"
+                        fi
+                    done
+                fi
             fi
             rm -rf "$stale"
         fi
@@ -86,6 +99,8 @@ data_manifest() { (cd "$1" && find . -type f -print0 | LC_ALL=C sort -z | xargs 
 
 if [[ -d "$assets_dir/DATA/files" && -f "$assets_dir/.data-manifest" && -f "$assets_dir/main.dol" && -f "$assets_dir/StaticR.rel" ]] && \
    [[ $(sha256 "$assets_dir/main.dol") == "$expected_dol_sha256" && $(sha256 "$assets_dir/StaticR.rel") == "$expected_rel_sha256" ]] && \
+   cmp -s "$assets_dir/main.dol" "$assets_dir/DATA/sys/main.dol" && \
+   cmp -s "$assets_dir/StaticR.rel" "$assets_dir/DATA/files/rel/StaticR.rel" && \
    [[ "$(data_manifest "$assets_dir/DATA")" == "$(cat "$assets_dir/.data-manifest")" ]]; then
     printf 'MKWCBUILD:STEP:disc-ready Reusing the verified extracted game assets\n'
     exit 0

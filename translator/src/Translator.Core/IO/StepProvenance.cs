@@ -219,6 +219,11 @@ public static class StepProvenance
                 reason = $"provenance schema {record.SchemaVersion} is not {SchemaVersion}";
                 return null;
             }
+            if (!IsComplete(record))
+            {
+                reason = "incomplete provenance record";
+                return null;
+            }
             reason = string.Empty;
             return record;
         }
@@ -228,6 +233,21 @@ public static class StepProvenance
             return null;
         }
     }
+
+    /// <summary>
+    /// JSON nulls deserialize into the record, so a hand-edited or damaged one is rejected here as a
+    /// miss instead of throwing while it is checked, before the step could delete it.
+    /// </summary>
+    private static bool IsComplete(StepProvenanceRecord record) =>
+        record.Arguments is not null && !record.Arguments.Contains(null!) &&
+        record.EnvironmentExpansions is not null &&
+        record.EnvironmentExpansions.All(entry => entry is { Value: not null, Expanded: not null }) &&
+        record.Inputs is not null && record.Inputs.All(entry => entry is { Path: not null, Sha256: not null }) &&
+        record.Probes is not null && record.Probes.All(entry => entry is { Path: not null }) &&
+        record.Scans is not null &&
+        record.Scans.All(entry => entry is { Directory: not null, Pattern: not null, Entries: not null } &&
+                                  !entry.Entries.Contains(null!)) &&
+        record.Outputs is not null && record.Outputs.All(entry => entry is { Path: not null });
 
     /// <summary>Null when <paramref name="record"/> describes exactly this invocation, otherwise why not.</summary>
     public static string? CompareInvocation(StepProvenanceRecord record, StepInvocation invocation)
