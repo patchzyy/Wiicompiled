@@ -97,7 +97,9 @@ internal sealed class InstallerEngine
             : WorkspaceExtraction.RuntimeAssetsOnly;
 
         // A full install extracts the disc whatever else happens below, and nodtool shares nothing
-        // with the payload, so it runs while the payload is extracted instead of after it.
+        // with the payload, so it runs while the payload is extracted instead of after it. That
+        // needs the payload's staging reserved on top; when that does not fit, the payload is
+        // staged first and the space actually left decides, so no install that fits is refused.
         var needsDisc = !sameToolkit && reusableGameAssets is null;
         if (!sameToolkit && hadRetro && retroCompileInputs is null)
         {
@@ -105,13 +107,10 @@ internal sealed class InstallerEngine
                 "The installed Retro Rewind product must be produced again. Supply Wheel Wizard's " +
                 "current Retro Rewind folder explicitly so it can be rebuilt safely.");
         }
-        if (needsDisc)
-        {
-            EnsureSufficientRemainingDiskSpace(installDirectory, needsExtractedDisc: true,
-                needsLocalBuild: true, stillStaging: payloadStagingAllowance);
-        }
+        var concurrentDisc = needsDisc && HasFreeSpace(installDirectory, RequiredRemainingDiskSpace(
+            needsExtractedDisc: true, needsLocalBuild: true, stillStaging: payloadStagingAllowance));
         using var discCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var discExtraction = needsDisc
+        var discExtraction = concurrentDisc
             ? ExtractGameAssetsAsync(nodTool, options.GamePath, Path.Combine(staging, "GameAssets"), release,
                 discCancellation.Token)
             : null;
@@ -189,14 +188,16 @@ internal sealed class InstallerEngine
 
             if (discExtraction is null)
             {
-                EnsureSufficientRemainingDiskSpace(installDirectory, needsExtractedDisc: false, needsLocalBuild: true);
+                EnsureSufficientRemainingDiskSpace(installDirectory, needsExtractedDisc: needsDisc,
+                    needsLocalBuild: true);
             }
-            else
+            if (needsDisc)
             {
                 _reporter.Progress(InstallStages.ExtractDisc,
                     "Extracting the game disc. This is the longest preparation step...", 6);
                 discObserved = true;
-                await discExtraction;
+                await (discExtraction ?? ExtractGameAssetsAsync(nodTool, options.GamePath,
+                    Path.Combine(staging, "GameAssets"), release, cancellationToken));
             }
 
             await PublishToolkitAndReconcileProductsAsync(install, toolkitRefresh,
@@ -922,16 +923,36 @@ internal sealed class InstallerEngine
         FileSystemUtilities.EnsureUsableLocation(path, "The installation folder");
 
     private static void EnsureSufficientRemainingDiskSpace(string installDirectory,
-        bool needsExtractedDisc, bool needsLocalBuild, long stillStaging = 0)
+        bool needsExtractedDisc, bool needsLocalBuild) =>
+        FileSystemUtilities.EnsureFreeSpace(installDirectory,
+            RequiredRemainingDiskSpace(needsExtractedDisc, needsLocalBuild), "Setup");
+
+    /// <summary>
+    /// Space the work still ahead can allocate: when the disc extraction starts alongside the
+    /// payload extraction, that includes the payload's own staging (<paramref name="stillStaging"/>).
+    /// </summary>
+    private static long RequiredRemainingDiskSpace(bool needsExtractedDisc, bool needsLocalBuild,
+        long stillStaging = 0)
     {
         const long extractedDiscAllowance = 5L * 1024 * 1024 * 1024;
         const long localBuildAllowance = 14L * 1024 * 1024 * 1024;
         const long safetyAllowance = 2L * 1024 * 1024 * 1024;
-        // Count only work that can still allocate space from this point: when the disc extraction
-        // starts alongside the payload extraction, the payload's own staging (stillStaging) too.
-        var required = checked((needsExtractedDisc ? extractedDiscAllowance : 0) +
-                               (needsLocalBuild ? localBuildAllowance : 0) + safetyAllowance + stillStaging);
+        return checked((needsExtractedDisc ? extractedDiscAllowance : 0) +
+                       (needsLocalBuild ? localBuildAllowance : 0) + safetyAllowance + stillStaging);
+    }
 
-        FileSystemUtilities.EnsureFreeSpace(installDirectory, required, "Setup");
+    /// <summary>False also when the drive cannot be asked; the checked path then reports why.</summary>
+    private static bool HasFreeSpace(string path, long required)
+    {
+        try
+        {
+            FileSystemUtilities.EnsureFreeSpace(path, required, "Setup");
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException
+                                       or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }
