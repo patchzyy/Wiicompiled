@@ -385,6 +385,11 @@ internal static class ProductCurrencyProbe
             inputs["tool.native-prebuilt"] = ProductCurrency.None;
         else
         {
+            if (!Path.IsPathRooted(options.NativePrebuiltDir))
+            {
+                reason = "the native prebuilt package is given by a relative path";
+                return null;
+            }
             var resolved = RealPath(options.NativePrebuiltDir);
             var relative = resolved is null || !Directory.Exists(resolved) ? null : ProductCurrency.RelativeInside(toolkitRoot, resolved);
             if (relative is null) { reason = "the native prebuilt package is not part of the toolkit"; return null; }

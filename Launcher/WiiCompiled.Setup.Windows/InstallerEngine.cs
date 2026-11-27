@@ -351,10 +351,11 @@ internal sealed class InstallerEngine
         var release = install.Release;
         var installDirectory = existing.Root;
 
-        var stagedWorkspace = InstalledLayout.Workspace(staging);
+        var heldCaches = Path.Combine(staging, HeldCachesDirectoryName);
         try
         {
-            GraftWorkspaceCaches(existing.WorkspaceDirectory, stagedWorkspace, cancellationToken);
+            HoldWorkspaceCaches(existing.WorkspaceDirectory, InstalledLayout.Workspace(staging), heldCaches,
+                cancellationToken);
 
             var state = BuildInstallState(install.PreviousState, installDirectory, manifest, release,
                 compileInputs: null, install.CanonicalRetroRoot, install.Options.RetroWfcPayloadMode);
@@ -371,10 +372,9 @@ internal sealed class InstallerEngine
                 entries, cancellationToken, progressPercent: 8, completionPercent: 10,
                 createShortcuts: install.FirstInstall);
         }
-        catch
+        finally
         {
-            RestoreWorkspaceCaches(existing.WorkspaceDirectory, stagedWorkspace);
-            throw;
+            RestoreWorkspaceCaches(existing.WorkspaceDirectory, heldCaches);
         }
 
         var verified = EnsurePublishedToolkitIntact(install, cancellationToken);
@@ -389,35 +389,41 @@ internal sealed class InstallerEngine
             release.DolSha256, release.RelSha256, reconciliation.CachedRetroWfcPayloadMatches);
     }
 
+    private const string HeldCachesDirectoryName = "workspace-caches";
+
     /// <summary>
-    /// Moves the installed workspace's build caches into a staged workspace, so a toolkit update
-    /// keeps the base translation, native build directory, verified inputs and payload cache. Each
-    /// is re-validated by the build, so stale caches degrade to a clean rebuild, never reuse.
+    /// Moves the installed workspace's build caches aside, outside both the installed and the staged
+    /// workspace, while a workspace publication runs, so a toolkit update keeps the base translation,
+    /// native build directory, verified inputs and payload cache whether it commits or rolls back.
+    /// Each is re-validated by the build, so stale caches degrade to a clean rebuild, never reuse.
     /// </summary>
-    private static void GraftWorkspaceCaches(string installedWorkspace, string stagedWorkspace,
+    internal static void HoldWorkspaceCaches(string installedWorkspace, string stagedWorkspace, string held,
         CancellationToken cancellationToken)
     {
+        Directory.CreateDirectory(held);
         foreach (var cacheDirectory in WorkspaceCacheDirectories)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var staged = Path.Combine(stagedWorkspace, cacheDirectory);
+            if (Directory.Exists(staged)) Directory.Delete(staged, recursive: true);
             var source = Path.Combine(installedWorkspace, cacheDirectory);
             if (!Directory.Exists(source)) continue;
-            var destination = Path.Combine(stagedWorkspace, cacheDirectory);
+            var destination = Path.Combine(held, cacheDirectory);
             if (Directory.Exists(destination)) Directory.Delete(destination, recursive: true);
             Directory.Move(source, destination);
         }
     }
 
     /// <summary>
-    /// Moves caches grafted into a staged workspace that was never published back to the installed
-    /// workspace, so a failed or cancelled publication does not throw the build caches away.
+    /// Moves held caches into whichever workspace is installed once the publication finished: the
+    /// new one after a commit, the restored one after a rollback.
     /// </summary>
-    private static void RestoreWorkspaceCaches(string installedWorkspace, string stagedWorkspace)
+    internal static void RestoreWorkspaceCaches(string installedWorkspace, string held)
     {
-        if (!Directory.Exists(installedWorkspace)) return;
+        if (!Directory.Exists(installedWorkspace) || !Directory.Exists(held)) return;
         foreach (var cacheDirectory in WorkspaceCacheDirectories)
         {
-            var source = Path.Combine(stagedWorkspace, cacheDirectory);
+            var source = Path.Combine(held, cacheDirectory);
             var destination = Path.Combine(installedWorkspace, cacheDirectory);
             try
             {
@@ -492,19 +498,19 @@ internal sealed class InstallerEngine
 
         cancellationToken.ThrowIfCancellationRequested();
         RunningProductGuard.EnsureProductsNotRunning(installDirectory);
-        var retryWorkspace = InstalledLayout.Workspace(retry);
+        var heldCaches = Path.Combine(retry, HeldCachesDirectoryName);
         try
         {
             if (workspace)
-                GraftWorkspaceCaches(install.Existing.WorkspaceDirectory, retryWorkspace, cancellationToken);
+                HoldWorkspaceCaches(install.Existing.WorkspaceDirectory, InstalledLayout.Workspace(retry),
+                    heldCaches, cancellationToken);
             using var transaction = InstallTransaction.Begin(installDirectory, _reporter, entries.ToArray());
             transaction.Publish();
             transaction.Commit();
         }
-        catch
+        finally
         {
-            if (workspace) RestoreWorkspaceCaches(install.Existing.WorkspaceDirectory, retryWorkspace);
-            throw;
+            if (workspace) RestoreWorkspaceCaches(install.Existing.WorkspaceDirectory, heldCaches);
         }
     }
 

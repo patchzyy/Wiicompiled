@@ -16,6 +16,7 @@ internal static partial class SelfTests
         Test("Payload inventory stat check", TestPayloadInventoryStatCheck, failures);
         Test("Asset-only and translator-only extraction", TestPartialPayloadExtraction, failures);
         Test("Published toolkit retry recovery", TestPublishedToolkitRecovery, failures);
+        Test("Workspace caches survive commit and rollback", TestWorkspaceCachesHeldAcrossPublication, failures);
         Test("Preverified toolkit identities", TestPreverifiedToolkitIdentities, failures);
         Test("Narrowed cache identities", TestNarrowedCacheIdentities, failures);
         Test("Progress JSON stays monotonic", TestProgressJsonMonotonic, failures);
@@ -377,6 +378,41 @@ internal static partial class SelfTests
     /// must be repaired by one more publication of just the damaged roots, keeping the build caches,
     /// instead of leaving the user re-running setup into the same failure.
     /// </summary>
+    /// <summary>
+    /// Build caches are held outside both workspaces while one is published, and end up in whichever
+    /// workspace is installed afterwards: the new one after a commit, the old one after a rollback.
+    /// </summary>
+    private static void TestWorkspaceCachesHeldAcrossPublication() => WithTempDirectory("caches", directory =>
+    {
+        foreach (var committed in new[] { true, false })
+        {
+            var installed = Path.Combine(directory, $"installed-{committed}");
+            var staged = Path.Combine(directory, $"staged-{committed}");
+            var held = Path.Combine(directory, $"held-{committed}");
+            var cache = Path.Combine(installed, "native-build", "CMakeCache.txt");
+            Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+            File.WriteAllText(cache, "kept");
+            Directory.CreateDirectory(Path.Combine(staged, "generated"));
+            File.WriteAllText(Path.Combine(installed, "shipped.txt"), "old");
+            File.WriteAllText(Path.Combine(staged, "shipped.txt"), "new");
+
+            InstallerEngine.HoldWorkspaceCaches(installed, staged, held, CancellationToken.None);
+            if (Directory.Exists(Path.Combine(installed, "native-build")) || Directory.Exists(Path.Combine(staged, "generated")))
+                throw new Exception("Caches were left in a workspace being replaced.");
+            if (committed)
+            {
+                Directory.Delete(installed, recursive: true);
+                Directory.Move(staged, installed);
+            }
+            InstallerEngine.RestoreWorkspaceCaches(installed, held);
+
+            if (!File.Exists(cache) || File.ReadAllText(cache) != "kept")
+                throw new Exception($"The build caches were lost after a {(committed ? "commit" : "rollback")}.");
+            if (File.ReadAllText(Path.Combine(installed, "shipped.txt")) != (committed ? "new" : "old"))
+                throw new Exception("The restored caches landed in the wrong workspace.");
+        }
+    });
+
     private static void TestPublishedToolkitRecovery() => WithTempDirectory("recovery", directory =>
     {
         var release = BuildFakeRelease(directory);
