@@ -55,6 +55,7 @@ endif()
 option(MKW_BUILD_PRODUCTS "Build translated WiiCompiled product targets" ON)
 option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
 option(MKW_BUILD_AURORA_TESTS "Build integrated Aurora regression tests" OFF)
+option(MKW_BUILD_WIIMOTE_RUNTIME_PROBE "Build controller discovery checks and an explicit bounded hardware probe" OFF)
 set(MKW_X86_CPU_PROFILE "v3" CACHE STRING
     "Minimum x86-64 CPU profile for translated products (v2 or v3)")
 set_property(CACHE MKW_X86_CPU_PROFILE PROPERTY STRINGS v2 v3)
@@ -66,6 +67,7 @@ endif()
 set(MKW_SETUP_VERSION "" CACHE STRING "WiiCompiled version recorded in the runtime log")
 
 option(MKW_PLATFORM_TESTS_ONLY "Build host-platform tests without graphics dependencies or game assets" OFF)
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/Xwiimote.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/HostLibraries.cmake")
 if(MKW_PLATFORM_TESTS_ONLY)
     if(MKW_BUILD_PRODUCTS)
@@ -358,6 +360,10 @@ if(MKW_PLATFORM_MACOS)
 else()
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
 endif()
+if(NOT MKW_ENABLE_XWIIMOTE)
+    list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/wiimote/wiimote_native_protocol.cpp"
+         "${CMAKE_CURRENT_LIST_DIR}/src/wiimote/wiimote_xwiimote.cpp")
+endif()
 set(MKW_PLATFORM_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/platform/host_platform.cpp")
 set(MKW_BASE_PRODUCT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/product/base_product.cpp")
 set(MKW_RETRO_REWIND_PRODUCT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/product/retro_rewind_product.cpp")
@@ -372,6 +378,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/cmake/PlatformTests.cmake")
 
 set(MKW_RUNTIME_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/RuntimeLibrary.cmake")
+if(MKW_BUILD_WIIMOTE_RUNTIME_PROBE)
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/WiimoteRuntimeProbe.cmake")
+endif()
 
 # The prebuilt export also carries the game-independent runtime as a static
 # archive (x86_64 only; AArch64 compiles it locally with -mcpu=native). It is

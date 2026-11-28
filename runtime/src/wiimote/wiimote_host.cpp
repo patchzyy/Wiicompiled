@@ -5,6 +5,9 @@
 #include "runtime_log.h"
 #include "wiimote_extension.h"
 #include "wiimote_platform.h"
+#if defined(MKW_ENABLE_XWIIMOTE)
+#include "wiimote_xwiimote.h"
+#endif
 
 #include <SDL3/SDL_hidapi.h>
 #include <SDL3/SDL_hints.h>
@@ -46,7 +49,8 @@ constexpr auto kGuestSearchTail = std::chrono::seconds(10);
 constexpr auto kAutoPairPause = std::chrono::seconds(4);
 constexpr int kReadTimeoutMs = 200;
 constexpr size_t kInputQueueLimit = 32;
-constexpr uint16_t kButtonMask = 0x9F1F;
+constexpr uint16_t kButtonMask = 0x9F1F; // existing SDL transport mask
+constexpr uint16_t kNativeButtonMask = 0x1F9F; // kernel events in Wii report byte order
 constexpr uint8_t kReportSpeakerData = 0x18;
 
 enum class Phase : uint8_t {
@@ -73,9 +77,9 @@ size_t ReportSize(uint8_t id, size_t read) {
     return size <= read ? size : 0;
 }
 
-uint16_t Buttons(const Report& report) {
+uint16_t Buttons(const Report& report, uint16_t mask = kButtonMask) {
     if (report.size() < 3 || report[0] < 0x20 || report[0] == 0x3D) return 0;
-    return static_cast<uint16_t>(((report[1] << 8) | report[2]) & kButtonMask);
+    return static_cast<uint16_t>(((report[1] << 8) | report[2]) & mask);
 }
 
 // The game's own battery bars (WPAD's status report thresholds).
@@ -93,6 +97,16 @@ struct Remote {
     std::string name;
     bool plus = false;
     SDL_hid_device* device = nullptr;
+#if defined(MKW_ENABLE_XWIIMOTE)
+    std::unique_ptr<Native::Device> native;
+#endif
+    bool IsNative() const {
+#if defined(MKW_ENABLE_XWIIMOTE)
+        return native != nullptr;
+#else
+        return false;
+#endif
+    }
     std::thread reader;
     std::thread writer;
     std::atomic<bool> alive{true};
@@ -134,10 +148,16 @@ public:
     size_t Waiting();
 
 private:
+#if defined(MKW_WIIMOTE_MANAGER_TEST)
+    friend struct ManagerTestAccess;
+#endif
     std::shared_ptr<Remote> At(size_t slot) const;
     void ScanLoop();
     void DiscoveryLoop();
     void Enumerate();
+#if defined(MKW_ENABLE_XWIIMOTE)
+    void EnumerateNative();
+#endif
     void Reap();
     void AssignWaiting();
     void Open(const SDL_hid_device_info& info);
@@ -210,9 +230,10 @@ bool Manager::PopInputReport(size_t slot, std::vector<uint8_t>& report) {
     remote->extensionState.ObserveInput(report.data(), report.size());
     if (InputBindings::InputBlocked()) {
         // The overlay owns input: the game sees the controller at rest.
-        if (Buttons(report) != 0) {
-            report[1] &= static_cast<uint8_t>(~(kButtonMask >> 8));
-            report[2] &= static_cast<uint8_t>(~kButtonMask);
+        const auto mask = remote->IsNative() ? kNativeButtonMask : kButtonMask;
+        if (Buttons(report, mask) != 0) {
+            report[1] &= static_cast<uint8_t>(~(mask >> 8));
+            report[2] &= static_cast<uint8_t>(~mask);
         }
         remote->extensionState.Neutralize(report);
     }
@@ -257,6 +278,9 @@ void Manager::OnLinkStateChanged(size_t slot, Bluetooth::LinkState state) {
             remote->input.clear();
         }
         SetPhase(remote, Phase::Linked);
+#if defined(MKW_ENABLE_XWIIMOTE)
+        if (remote->native) remote->native->ResetProtocol();
+#endif
         RT_LOG(RT_TAG_HLE) << "Wii Remote " << (slot + 1) << " connected to the game" << std::endl;
     } else if (state == Bluetooth::LinkState::Down && remote->phase == Phase::Linked) {
         // Lost without the game asking (e.g. the controller was reset): offer it again.
@@ -274,7 +298,7 @@ void Manager::OnGuestDisconnect(size_t slot) {
 
 void Manager::PowerOff(const std::shared_ptr<Remote>& remote) {
     remote->wake = false;
-    if (Platform::Query().powerOff && !remote->address.empty()) {
+    if (!remote->IsNative() && Platform::Query().powerOff && !remote->address.empty()) {
         SetPhase(remote, Phase::PoweringOff);
         std::thread([remote] {
             const bool requested = Platform::PowerOff(remote->address);
@@ -323,10 +347,17 @@ const char* Manager::DeviceName(size_t slot) const {
 
 void Manager::Start() {
     if (m_running.exchange(true)) return;
+#if defined(MKW_ENABLE_XWIIMOTE)
+    RT_LOG(RT_TAG_HLE) << "Wii Remote transports: SDL HIDAPI + Linux libxwiimote (Gen 1)" << std::endl;
+#else
+    RT_LOG(RT_TAG_HLE) << "Wii Remote transports: SDL HIDAPI" << std::endl;
+#endif
     if (SDL_hid_init() != 0) {
         RT_LOG(RT_TAG_HLE) << "Wii Remotes: HID access unavailable: " << SDL_GetError() << std::endl;
+#if !defined(MKW_ENABLE_XWIIMOTE)
         m_running = false;
         return;
+#endif
     }
     m_scanner = std::thread([this] { ScanLoop(); });
     if (Platform::Query().pairing) {
@@ -365,6 +396,7 @@ void Manager::Stop() {
     for (const auto& remote : remotes) {
         if (remote->writer.joinable()) remote->writer.join();
         if (remote->reader.joinable()) remote->reader.join();
+        const bool native = remote->IsNative();
         if (remote->device != nullptr) {
             const uint8_t rumbleOff[] = {0x10, 0x00};
             const uint8_t ledsOff[] = {0x11, 0x00};
@@ -373,7 +405,9 @@ void Manager::Stop() {
             SDL_hid_close(remote->device);
             remote->device = nullptr;
         }
-        if (Platform::Query().powerOff && !remote->address.empty()) {
+        // Native transport lifetime follows the shared Remote, including any
+        // emulation-thread reference still completing a link callback.
+        if (!native && Platform::Query().powerOff && !remote->address.empty()) {
             Platform::PowerOff(remote->address);
         }
     }
@@ -382,6 +416,9 @@ void Manager::Stop() {
 void Manager::ScanLoop() {
     while (m_running) {
         Reap();
+#if defined(MKW_ENABLE_XWIIMOTE)
+        EnumerateNative();
+#endif
         Enumerate();
         AssignWaiting();
         std::unique_lock<std::mutex> lock(m_scanMutex);
@@ -420,6 +457,58 @@ void Manager::Reap() {
         if (!remote->address.empty()) m_dormant[remote->path] = remote->address;
     }
 }
+
+#if defined(MKW_ENABLE_XWIIMOTE)
+void Manager::EnumerateNative() {
+    // Each kernel device is a separate physical controller. Capacity and
+    // stable Bluetooth identities are shared with the SDL player slots.
+    std::set<std::string> openPaths, openAddresses;
+    size_t occupied = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const auto remember = [&](const std::shared_ptr<Remote>& remote) {
+            if (!remote) return;
+            ++occupied;
+            openPaths.insert(remote->path);
+            if (!remote->address.empty()) openAddresses.insert(remote->address);
+        };
+        for (const auto& remote : m_slots) remember(remote);
+        for (const auto& remote : m_waiting) remember(remote);
+    }
+    if (occupied >= Bluetooth::kRemoteSlots) return;
+    std::string error;
+    auto paths = Native::Enumerate(error);
+    if (!error.empty() && m_refusedLogged.insert("xwiimote-monitor").second)
+        RT_LOG(RT_TAG_HLE) << "Wii Remote xwiimote: " << error << std::endl;
+    for (const auto& path : paths) {
+        if (openPaths.count(path)) continue;
+        const auto now = Clock::now();
+        const auto cooldown = m_cooldown.find(path);
+        if (cooldown != m_cooldown.end() && now < cooldown->second) continue;
+        auto device = Native::Device::Open(path, error);
+        if (!device) {
+            if (m_refusedLogged.insert(path).second)
+                RT_LOG(RT_TAG_HLE) << "Wii Remote xwiimote " << path << ": " << error << std::endl;
+            m_cooldown[path] = now + std::chrono::seconds(10);
+            continue;
+        }
+        if (!device->Address().empty() && openAddresses.count(device->Address())) continue;
+        auto remote = std::make_shared<Remote>();
+        remote->path = path;
+        remote->name = "Nintendo RVL-CNT-01";
+        remote->address = device->Address();
+        remote->native = std::move(device);
+        remote->reader = std::thread(ReadLoop, remote);
+        remote->writer = std::thread(WriteLoop, remote);
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_waiting.push_back(remote);
+        }
+        RT_LOG(RT_TAG_HLE) << "Wii Remote connected via libxwiimote: " << path << std::endl;
+        return;
+    }
+}
+#endif
 
 void Manager::Enumerate() {
     const Uint32 changes = SDL_hid_device_change_count();
@@ -544,6 +633,13 @@ void Manager::AssignWaiting() {
         const auto last = m_lastSlot.find(key);
         // A slot is free once the game has seen its previous remote go.
         const auto free = [this](size_t i) { return !m_slots[i] && m_links[i] == Bluetooth::LinkState::Down; };
+        // A reconnect must not become a different player while its old guest
+        // link is still being torn down, even if another player slot is free.
+        if (remote->IsNative() && last != m_lastSlot.end() && !m_slots[last->second] &&
+            m_links[last->second] != Bluetooth::LinkState::Down) {
+            ++it;
+            continue;
+        }
         if (last != m_lastSlot.end() && free(last->second)) {
             slot = last->second;
         } else {
@@ -557,6 +653,9 @@ void Manager::AssignWaiting() {
         if (slot == Bluetooth::kRemoteSlots) return;
         m_slots[slot] = remote;
         m_lastSlot[key] = slot;
+        RT_LOG(RT_TAG_HLE) << "Wii Remote assigned player " << slot + 1
+                           << (remote->IsNative() ? " (libxwiimote)" : " (SDL HIDAPI)")
+                           << " address=" << (remote->address.empty() ? remote->path : remote->address) << std::endl;
         it = m_waiting.erase(it);
     }
 }
@@ -564,16 +663,27 @@ void Manager::AssignWaiting() {
 void Manager::ReadLoop(std::shared_ptr<Remote> remote) {
     std::array<uint8_t, 32> buffer{};
     while (remote->alive) {
-        const int read = SDL_hid_read_timeout(remote->device, buffer.data(), buffer.size(), kReadTimeoutMs);
+        Report report;
+        int read;
+#if defined(MKW_ENABLE_XWIIMOTE)
+        if (remote->native) {
+            read = remote->native->Read(report, kReadTimeoutMs);
+        } else
+#endif
+        {
+            read = SDL_hid_read_timeout(remote->device, buffer.data(), buffer.size(), kReadTimeoutMs);
+            if (read > 0) {
+                const size_t size = ReportSize(buffer[0], static_cast<size_t>(read));
+                if (size) report.assign(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(size));
+            }
+        }
         if (read < 0) {
+            RT_LOG(RT_TAG_HLE) << "Wii Remote read failed: " << read << " " << remote->path << std::endl;
             remote->alive = false;
             remote->writeCv.notify_all();
             break;
         }
-        if (read == 0) continue;
-        const size_t size = ReportSize(buffer[0], static_cast<size_t>(read));
-        if (size == 0) continue;
-        Report report(buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(size));
+        if (read == 0 || report.empty()) continue;
 
         if (report[0] == 0x20) {
             remote->battery = BatteryBars(report[6]);
@@ -592,10 +702,19 @@ void Manager::ReadLoop(std::shared_ptr<Remote> remote) {
             if (remote->input.size() >= kInputQueueLimit) {
                 auto stale = std::find_if(remote->input.begin(), remote->input.end(),
                                           [](const Report& r) { return r[0] >= 0x30; });
-                remote->input.erase(stale != remote->input.end() ? stale : remote->input.begin());
+                if (!remote->IsNative()) {
+                    remote->input.erase(stale != remote->input.end() ? stale : remote->input.begin());
+                } else if (stale != remote->input.end()) remote->input.erase(stale);
+                else if (report[0] >= 0x30) continue;
+                else {
+                    RT_LOG(RT_TAG_HLE) << "Wii Remote command reply backlog overflow" << std::endl;
+                    remote->alive = false;
+                    remote->writeCv.notify_all();
+                    break;
+                }
             }
             remote->input.push_back(std::move(report));
-        } else if (Buttons(report) != 0) {
+        } else if (Buttons(report, remote->IsNative() ? kNativeButtonMask : kButtonMask) != 0) {
             if (phase == Phase::Asleep) {
                 remote->phase = Phase::Waiting;
                 remote->writeCv.notify_one();
@@ -614,7 +733,13 @@ void Manager::WriteLoop(std::shared_ptr<Remote> remote) {
     bool appliedRumble = false;
     Phase lastPhase = Phase::Linked; // forces the quiet setup on the first pass
     const auto write = [&](const Report& report) {
-        if (SDL_hid_write(remote->device, report.data(), report.size()) < 0) {
+        int result;
+#if defined(MKW_ENABLE_XWIIMOTE)
+        if (remote->native) result = remote->native->Write(report.data(), report.size());
+        else
+#endif
+            result = SDL_hid_write(remote->device, report.data(), report.size());
+        if (result < 0) {
             remote->alive = false;
             return false;
         }

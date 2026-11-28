@@ -34,7 +34,7 @@ std::string NameFor(const std::string& address, const SDL_hid_device_info& info)
 // False only when the OS knows the remote is not connected right now.
 bool MaybeConnected(const std::string& address);
 
-// False when the OS driver would fight over the device (Linux hid-wiimote).
+// SDL HIDAPI eligibility. Kernel-owned Linux remotes use the separate native backend.
 bool Usable(const SDL_hid_device_info& info);
 
 // Setup problems worth showing in the overlay, else empty.

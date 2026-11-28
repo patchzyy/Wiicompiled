@@ -7,6 +7,7 @@
 #
 # Inputs: src/, include/, cmake/ and CMakeLists.txt (sorted relative paths and
 # content hashes), winrt/base.h, the CPU profile and the macOS deployment target.
+# Native-enabled builds add a switch marker; disabled builds retain the old format.
 # third_party/ has its own package fingerprint; game/ is per-user. Dot-files
 # differ between machines.
 
@@ -40,6 +41,9 @@ function(mkw_runtime_fingerprint out_var runtime_dir cppwinrt_dir cpu_profile)
     endif()
     string(APPEND _manifest "x86_cpu_profile ${cpu_profile}\n")
     string(APPEND _manifest "osx_deployment_target ${CMAKE_OSX_DEPLOYMENT_TARGET}\n")
+    if(MKW_ENABLE_XWIIMOTE)
+        string(APPEND _manifest "xwiimote ON\n")
+    endif()
     string(SHA256 _fingerprint "${_manifest}")
     set(${out_var} "${_fingerprint}" PARENT_SCOPE)
 endfunction()

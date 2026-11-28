@@ -177,6 +177,25 @@ unmodified, with their license texts, in the installer's `licenses/` folder.
 
 ---
 
+## Optional Linux system dependency
+
+### libxwiimote - version 2 API
+
+The default-disabled `MKW_ENABLE_XWIIMOTE` backend dynamically links the system's
+libxwiimote. Validation used upstream API version `2`, packaged as
+`libxwiimote-dev 2-4.1build1` on Ubuntu 24.04. It is not vendored or included in the
+Windows installer. Source: <https://github.com/xwiimote/xwiimote>.
+
+The tested Debian/Ubuntu package's copyright file attributes the library to
+David Herrmann (2011, 2012) under BSD-2-Clause; its public `xwiimote.h` is marked
+public domain (David Herrmann, 2010-2013). Current upstream distributions describe
+a MIT-like license with file-specific exceptions. Distributors bundling a library
+must retain the copyright and license notices for the exact version they ship;
+see that package's `copyright`, upstream `COPYING` and `LICENSE`. No kernel driver
+source is copied or redistributed by this backend.
+
+---
+
 ## Development-only dependencies
 
 Not redistributed in any release artifact.
