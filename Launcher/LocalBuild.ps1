@@ -391,16 +391,19 @@ try {
             -SourceDirectory (Join-Path $Workspace 'runtime') -BuildDirectory $build `
             -Ninja $ninja -CCompiler $cc -CxxCompiler $cxx -ResourceCompiler $windres `
             -DependenciesDirectory $dependencies -NativePrebuiltDirectory $nativePrebuilt `
-            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
+            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile",
+                '-DMKW_BUILD_PLATFORM_TESTS=OFF')
 
         # The native-toolchain identity covers the compiler, CMake and its modules, Ninja, and the
         # shipped fixed configure flags. What it cannot see is recorded here beside the cache: the
         # names of every -D option this run passes (values are paths or per-machine settings that
         # CMake already tracks; a vanished or new option would leave a stale cache entry) and the
-        # CPU profile. MKW_TRANSLATED_COMPILE_JOBS is a per-machine job count and is left out.
+        # CPU profile. MKW_TRANSLATED_COMPILE_JOBS is a per-machine job count and is left out, and
+        # so is MKW_BUILD_PLATFORM_TESTS: it only registers test targets this script never builds.
         $optionNames = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
         foreach ($argument in $configure) {
-            if ("$argument" -cmatch '^-D([^:=]+)' -and $Matches[1] -cne 'MKW_TRANSLATED_COMPILE_JOBS') {
+            if ("$argument" -cmatch '^-D([^:=]+)' -and $Matches[1] -cne 'MKW_TRANSLATED_COMPILE_JOBS' -and
+                $Matches[1] -cne 'MKW_BUILD_PLATFORM_TESTS') {
                 [void]$optionNames.Add($Matches[1])
             }
         }

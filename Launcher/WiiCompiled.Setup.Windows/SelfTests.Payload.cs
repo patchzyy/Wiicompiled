@@ -14,6 +14,7 @@ internal static partial class SelfTests
     {
         Test("Stream and disk toolkit identity parity", TestStreamDiskIdentityParity, failures);
         Test("Release payload verification", TestReleasePayloadVerification, failures);
+        Test("Parallel extraction of an appended payload", TestParallelAppendedExtraction, failures);
         Test("Payload inventory stat check", TestPayloadInventoryStatCheck, failures);
         Test("Asset-only and translator-only extraction", TestPartialPayloadExtraction, failures);
         Test("Published toolkit retry recovery", TestPublishedToolkitRecovery, failures);
@@ -216,6 +217,76 @@ internal static partial class SelfTests
         File.AppendAllText(Path.Combine(install, "BuildWorkspace", "runtime", "native-index.json"), " ");
         if (InstallerEngine.ComputeInventoryComponents(inventory, install, release.Manifest, _ => { }) is not null)
             throw new Exception("A modified native index was trusted for the inventory identities.");
+    });
+
+    /// <summary>
+    /// A directory large enough for the worker path, read from a payload appended behind other bytes
+    /// the way the setup executable carries it: every file, its streamed identity and its normalized
+    /// timestamp must come out exactly as a sequential extraction leaves them.
+    /// </summary>
+    private static void TestParallelAppendedExtraction() => WithTempDirectory("parallel", directory =>
+    {
+        var root = Path.Combine(directory, "payload");
+        var expected = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        for (var i = 0; i < 1500; i++)
+        {
+            var relative = $"Toolkit/d{i % 37}/sub{i % 5}/f{i}.bin";
+            var content = new byte[i % 7 == 0 ? 0 : 1 + (i * 7919) % 20000];
+            new Random(i).NextBytes(content);
+            var path = Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, content);
+            expected[relative] = content;
+        }
+        var zip = Path.Combine(directory, "payload.zip");
+        ZipFile.CreateFromDirectory(root, zip);
+
+        var host = Path.Combine(directory, "setup.exe");
+        using (var output = File.Create(host))
+        {
+            output.Write(new byte[4097]);
+            var offset = output.Position;
+            using (var input = File.OpenRead(zip)) input.CopyTo(output);
+            var length = output.Position - offset;
+            using var writer = new BinaryWriter(output);
+            writer.Write("MKWCPAY1"u8);
+            writer.Write(offset);
+            writer.Write(length);
+        }
+
+        using var payload = PayloadArchive.OpenAppended(host);
+        var extracted = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        var destination = Path.Combine(directory, "out");
+        payload.ExtractDirectory("Toolkit", destination, extracted);
+        if (extracted.Count != expected.Count)
+            throw new Exception($"Extracted {extracted.Count} identities instead of {expected.Count}.");
+        foreach (var (relative, content) in expected)
+        {
+            var path = Path.Combine(destination, relative["Toolkit/".Length..].Replace('/', Path.DirectorySeparatorChar));
+            if (!File.ReadAllBytes(path).AsSpan().SequenceEqual(content))
+                throw new Exception($"{relative} was extracted with the wrong bytes.");
+            var identity = extracted[relative];
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content)).ToLowerInvariant();
+            if (identity.Size != content.Length || identity.Sha256 != hash)
+                throw new Exception($"{relative} was recorded with the wrong identity.");
+            if (File.GetLastWriteTimeUtc(path) != new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc))
+                throw new Exception($"{relative} kept the extraction time instead of the payload timestamp.");
+        }
+
+        // A worker's failure reaches the caller as itself, not wrapped by the parallel loop.
+        var blocked = Path.Combine(directory, "blocked");
+        Directory.CreateDirectory(Path.Combine(blocked, "d1", "sub0", "f1000.bin"));
+        try
+        {
+            payload.ExtractDirectory("Toolkit", blocked);
+            throw new Exception("Extraction over a directory that blocks one file succeeded.");
+        }
+        catch (AggregateException)
+        {
+            throw new Exception("A parallel extraction failure was reported wrapped in an AggregateException.");
+        }
+        catch (UnauthorizedAccessException) { }
+        catch (IOException) { }
     });
 
     /// <summary>

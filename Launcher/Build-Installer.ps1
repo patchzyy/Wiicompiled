@@ -204,8 +204,10 @@ Write-Host '[1/6] Publishing self-contained CLI host and translator...'
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
     -p:DebugType=None -o (Join-Path $publish 'setup')
 if ($LASTEXITCODE -ne 0) { throw "Setup publish failed with exit code $LASTEXITCODE." }
+# The translator only ships inside the deflated payload and runs once per build step: ReadyToRun
+# skips most of each step's JIT warm-up, and an uncompressed bundle is not unpacked on every launch.
 & dotnet publish $translatorProject -c Release -r win-x64 --self-contained true `
-    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true `
+    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishReadyToRun=true `
     -p:DebugType=None -o (Join-Path $publish 'translator')
 if ($LASTEXITCODE -ne 0) { throw "Translator publish failed with exit code $LASTEXITCODE." }
 $setupHost = Join-Path $publish 'setup\WiiCompiled.Setup.exe'

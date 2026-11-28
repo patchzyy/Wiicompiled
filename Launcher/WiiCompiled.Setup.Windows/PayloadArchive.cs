@@ -1,5 +1,7 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO.Compression;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -12,20 +14,33 @@ internal sealed class PayloadArchive : IDisposable
     private static readonly DateTime NormalizedPayloadTimestampUtc =
         new(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc);
     private const int FooterSize = 24;
+    // Below this many files a directory is extracted on the calling thread; the per-worker
+    // archive handles cost more than they save.
+    private const int ParallelExtractionThreshold = 256;
     private readonly FileStream _executable;
     private readonly SliceStream _payloadStream;
     private readonly ZipArchive _zip;
+    private readonly string _path;
+    private readonly long _offset;
+    private readonly long _length;
 
-    private PayloadArchive(FileStream executable, SliceStream payloadStream, ZipArchive zip)
+    private PayloadArchive(FileStream executable, SliceStream payloadStream, ZipArchive zip, string path,
+        long offset, long length)
     {
         _executable = executable;
         _payloadStream = payloadStream;
         _zip = zip;
+        _path = path;
+        _offset = offset;
+        _length = length;
     }
 
-    public static PayloadArchive OpenCurrent()
+    public static PayloadArchive OpenCurrent() =>
+        OpenAppended(Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the setup executable."));
+
+    /// <summary>Opens the payload appended to <paramref name="path"/> (the setup executable) behind its footer.</summary>
+    internal static PayloadArchive OpenAppended(string path)
     {
-        var path = Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the setup executable.");
         var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         try
         {
@@ -42,7 +57,7 @@ internal sealed class PayloadArchive : IDisposable
 
             var slice = new SliceStream(stream, offset, length);
             var zip = new ZipArchive(slice, ZipArchiveMode.Read, leaveOpen: true);
-            return new PayloadArchive(stream, slice, zip);
+            return new PayloadArchive(stream, slice, zip, path, offset, length);
         }
         catch
         {
@@ -59,7 +74,7 @@ internal sealed class PayloadArchive : IDisposable
         {
             var slice = new SliceStream(stream, 0, stream.Length);
             var zip = new ZipArchive(slice, ZipArchiveMode.Read, leaveOpen: true);
-            return new PayloadArchive(stream, slice, zip);
+            return new PayloadArchive(stream, slice, zip, path, 0, stream.Length);
         }
         catch
         {
@@ -168,25 +183,99 @@ internal sealed class PayloadArchive : IDisposable
     /// Extracts every entry under <paramref name="prefix"/>. Each file's SHA-256 and size are computed
     /// from the bytes as they stream out of the archive (never trusting the ZIP CRC) and, when
     /// <paramref name="identities"/> is given, recorded under the entry's payload path so the caller
-    /// can verify them against the shipped inventory.
+    /// can verify them against the shipped inventory. Large directories are extracted by several
+    /// workers, each reading through its own handle on the payload: the cost is per file (create,
+    /// write, close and the antivirus scan on close), not bandwidth.
     /// </summary>
     public void ExtractDirectory(string prefix, string destination,
         IDictionary<string, PayloadFileIdentity>? identities = null)
     {
         prefix = NormalizeEntryName(prefix).TrimEnd('/') + "/";
         var destinationRoot = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        foreach (var entry in _zip.Entries)
+        var work = new List<(int Index, string Name, string Output)>();
+        var outputs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var entries = _zip.Entries;
+        for (var index = 0; index < entries.Count; index++)
         {
-            var normalizedEntry = NormalizeEntryName(entry.FullName);
+            var normalizedEntry = NormalizeEntryName(entries[index].FullName);
             if (!normalizedEntry.StartsWith(prefix, StringComparison.Ordinal) || normalizedEntry.EndsWith('/'))
                 continue;
             var relative = normalizedEntry[prefix.Length..].Replace('/', Path.DirectorySeparatorChar);
             var outputPath = Path.GetFullPath(Path.Combine(destinationRoot, relative));
             if (!outputPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException($"Unsafe payload path: {entry.FullName}");
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-            var identity = ExtractHashed(entry, outputPath);
-            if (identities is not null) identities[normalizedEntry] = identity;
+                throw new InvalidDataException($"Unsafe payload path: {entries[index].FullName}");
+            // Two workers must never write one file; a release built from a directory has no such pair.
+            if (!outputs.Add(outputPath))
+                throw new InvalidDataException($"The payload lists {entries[index].FullName} twice.");
+            work.Add((index, normalizedEntry, outputPath));
+        }
+        foreach (var directory in work.Select(item => Path.GetDirectoryName(item.Output)!)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+            Directory.CreateDirectory(directory);
+
+        var extracted = new PayloadFileIdentity[work.Count];
+        var workers = Math.Min(Environment.ProcessorCount, 8);
+        if (work.Count < ParallelExtractionThreshold || workers < 2)
+        {
+            for (var i = 0; i < work.Count; i++)
+                extracted[i] = ExtractHashed(entries[work[i].Index], work[i].Output);
+        }
+        else
+        {
+            try
+            {
+                // Contiguous ranges keep each worker reading the payload mostly forward.
+                Parallel.ForEach(Partitioner.Create(0, work.Count, 32),
+                    new ParallelOptions { MaxDegreeOfParallelism = workers },
+                    OpenWorkerArchive,
+                    (range, state, archive) =>
+                    {
+                        var workerEntries = archive.Zip.Entries;
+                        for (var i = range.Item1; i < range.Item2 && !state.ShouldExitCurrentIteration; i++)
+                        {
+                            var entry = workerEntries[work[i].Index];
+                            if (!string.Equals(NormalizeEntryName(entry.FullName), work[i].Name, StringComparison.Ordinal))
+                                throw new InvalidDataException("The installation payload changed while it was being extracted.");
+                            extracted[i] = ExtractHashed(entry, work[i].Output);
+                        }
+                        return archive;
+                    },
+                    archive => archive.Dispose());
+            }
+            catch (AggregateException ex)
+            {
+                // Callers and the user see the first failure itself (a full disk, a locked file), as
+                // they did when extraction ran on this thread.
+                ExceptionDispatchInfo.Capture(ex.Flatten().InnerExceptions[0]).Throw();
+            }
+        }
+        if (identities is null) return;
+        for (var i = 0; i < work.Count; i++)
+            identities[work[i].Name] = extracted[i];
+    }
+
+    private sealed record WorkerArchive(FileStream Stream, ZipArchive Zip) : IDisposable
+    {
+        public void Dispose()
+        {
+            Zip.Dispose();
+            Stream.Dispose();
+        }
+    }
+
+    /// <summary>A second, independent reader of this payload for one extraction worker.</summary>
+    private WorkerArchive OpenWorkerArchive()
+    {
+        var stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+        try
+        {
+            var zip = new ZipArchive(new SliceStream(stream, _offset, _length), ZipArchiveMode.Read, leaveOpen: true);
+            return new WorkerArchive(stream, zip);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
         }
     }
 
@@ -210,10 +299,12 @@ internal sealed class PayloadArchive : IDisposable
 
     private static PayloadFileIdentity ExtractHashed(ZipArchiveEntry entry, string outputPath)
     {
-        PayloadFileIdentity identity;
-        using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
-            identity = CopyHashed(entry, output);
-        NormalizeExtractedTimestamp(outputPath);
+        using var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16);
+        var identity = CopyHashed(entry, output);
+        // Stamped through the open handle once every byte is written, instead of reopening the
+        // file by path (a second open, and a second antivirus scan, per file).
+        output.Flush();
+        File.SetLastWriteTimeUtc(output.SafeFileHandle, NormalizedPayloadTimestampUtc);
         return identity;
     }
 
