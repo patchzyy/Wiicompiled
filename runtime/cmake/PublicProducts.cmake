@@ -228,17 +228,20 @@ function(mkw_configure_product target)
         target_link_libraries(${target} PRIVATE mkw::libco ${CMAKE_DL_LIBS})
     endif()
     if(MKW_PLATFORM_WINDOWS)
+        # The runtime DLLs the product loads come from the x86_64 target sysroot beside the
+        # compiler's bin directory (llvm-mingw/x86_64-w64-mingw32/bin), resolved from the compiler path
+        # instead of spawning the compiler for each DLL and product. The host compiler's own bin
+        # copies are deliberately never used: they belong to the compiler, not to the target.
+        if(NOT DEFINED MKW_LLVM_MINGW_TARGET_BIN)
+            get_filename_component(mkw_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+            get_filename_component(mkw_llvm_mingw_root "${mkw_compiler_bin}" DIRECTORY)
+            set(MKW_LLVM_MINGW_TARGET_BIN "${mkw_llvm_mingw_root}/x86_64-w64-mingw32/bin")
+        endif()
         foreach(runtime_dll libc++.dll libunwind.dll)
-            execute_process(
-                COMMAND "${CMAKE_CXX_COMPILER}" "--print-file-name=${runtime_dll}"
-                OUTPUT_VARIABLE runtime_dll_path
-                OUTPUT_STRIP_TRAILING_WHITESPACE)
+            set(runtime_dll_path "${MKW_LLVM_MINGW_TARGET_BIN}/${runtime_dll}")
             if(NOT EXISTS "${runtime_dll_path}")
-                get_filename_component(mkw_compiler_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
-                set(runtime_dll_path "${mkw_compiler_bin}/${runtime_dll}")
-            endif()
-            if(NOT EXISTS "${runtime_dll_path}")
-                message(FATAL_ERROR "llvm-mingw runtime DLL not found: ${runtime_dll}")
+                message(FATAL_ERROR
+                    "llvm-mingw x86_64 target runtime DLL not found: ${runtime_dll_path}")
             endif()
             add_custom_command(TARGET ${target} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different

@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using Translator.Core.Mods;
 
 namespace Translator.Core.Build;
@@ -18,7 +19,7 @@ public static class GeneratedOutputPruner
         IReadOnlySet<string> emittedPaths,
         BaseTranslationOutputMetadata? previousOutputMetadata = null)
     {
-        if (!Directory.Exists(baseOutDir))
+        if (!TrackedFs.OutputDirectoryExists(baseOutDir))
             return GeneratedOutputPruneResult.Empty;
 
         var comparison = OperatingSystem.IsWindows()
@@ -32,7 +33,7 @@ public static class GeneratedOutputPruner
         {
             // Compatibility migration for trees produced before translator-owned
             // metadata: every generated body under the root is a prune candidate.
-            candidates = Directory.EnumerateFiles(root, "*.cpp", SearchOption.AllDirectories);
+            candidates = TrackedFs.EnumerateOutputFiles(root, "*.cpp", SearchOption.AllDirectories);
         }
         else
         {
@@ -51,12 +52,12 @@ public static class GeneratedOutputPruner
                 warnings.Add($"refused to prune generated path outside output root: {fullPath}");
                 continue;
             }
-            if (emittedPaths.Contains(fullPath) || !File.Exists(fullPath))
+            if (emittedPaths.Contains(fullPath) || !TrackedFs.OutputFileExists(fullPath))
                 continue;
 
             try
             {
-                File.Delete(fullPath);
+                TrackedFs.Delete(fullPath);
                 removed++;
             }
             catch (Exception ex)

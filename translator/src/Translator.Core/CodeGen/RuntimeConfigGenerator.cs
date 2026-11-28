@@ -52,7 +52,7 @@ public sealed class RuntimeConfigGenerator
         sb.AppendLine("} // namespace RuntimeConfig");
         sb.AppendLine();
 
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+        TrackedFs.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         FileOutput.WriteTextIfChanged(outputPath, sb.ToString());
     }
 }

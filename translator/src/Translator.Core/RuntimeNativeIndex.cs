@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Text.RegularExpressions;
 using Translator.Core.Analysis;
 using Translator.Core.CodeGen;
@@ -75,10 +76,14 @@ public sealed record RuntimeNativeIndex(
 
 public static class RuntimeNativeIndexBuilder
 {
+    /// <summary>Every source file <see cref="Build"/> and the index digest read under <paramref name="nativeSourceDirectory"/>.</summary>
+    public static IEnumerable<string> EnumerateSourceFiles(string nativeSourceDirectory) =>
+        NativeSourceParsing.EnumerateSourcePaths(Path.GetFullPath(nativeSourceDirectory));
+
     public static RuntimeNativeIndex Build(string nativeSourceDirectory)
     {
         var sourceRoot = Path.GetFullPath(nativeSourceDirectory);
-        if (!Directory.Exists(sourceRoot))
+        if (!TrackedFs.DirectoryExists(sourceRoot))
             return new RuntimeNativeIndex([], [], []);
 
         var sources = NativeSourceParsing.ReadDirectory(sourceRoot);
@@ -107,10 +112,10 @@ public static class RuntimeNativeIndexBuilder
         string nativeSourceDirectory, string? indexPath, TextWriter? diagnostics = null)
     {
         var sourceRoot = Path.GetFullPath(nativeSourceDirectory);
-        if (string.IsNullOrWhiteSpace(indexPath) || !File.Exists(indexPath))
+        if (string.IsNullOrWhiteSpace(indexPath) || !TrackedFs.FileExists(indexPath))
             return Build(sourceRoot);
 
-        var expectedDigest = Directory.Exists(sourceRoot)
+        var expectedDigest = TrackedFs.DirectoryExists(sourceRoot)
             ? RuntimeNativeIndexFile.ComputeSourceDigest(sourceRoot)
             : null;
         if (RuntimeNativeIndexFile.TryLoad(indexPath, expectedDigest, out var index, out var reason))

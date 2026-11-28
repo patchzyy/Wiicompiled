@@ -18,15 +18,21 @@ fi
 
 if (( needs_workspace_refresh )); then
     printf 'Preparing the local build workspace...\n'
+    # shellcheck source=../build-cache.sh
+    source "$workspace_source/Launcher/build-cache.sh"
     if [[ ! -d "$workspace" ]]; then
         /usr/bin/ditto "$workspace_source" "$workspace"
+        # Lets the next package update compare only files that may have changed. Best effort:
+        # without it that update compares every file, as before.
+        mkw_sync_record_state "$workspace_source" "$workspace" aurora-main projects runtime Launcher || true
     else
         # Refresh only packaged source inputs. Assets and the staged Retro
         # Rewind package belong to the user and stay in place; unchanged files
         # keep their timestamps so the incremental native build survives.
-        # shellcheck source=../build-cache.sh
-        source "$workspace_source/Launcher/build-cache.sh"
-        mkw_sync_tree "$workspace_source" "$workspace" aurora-main projects runtime translator Launcher
+        mkw_sync_tree "$workspace_source" "$workspace" aurora-main projects runtime Launcher
+        # Packages no longer ship the translator sources (the bundled Translator.Cli is used),
+        # so a copy left by an older package is removed like any other dropped input.
+        rm -rf "$workspace/translator"
         /usr/bin/ditto "$source_bundle_version" "$workspace_bundle_version"
     fi
 fi

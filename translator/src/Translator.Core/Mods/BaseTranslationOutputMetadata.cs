@@ -177,7 +177,7 @@ public static class BaseTranslationOutputMetadataFile
 
     public static BaseTranslationOutputMetadata Read(string path)
     {
-        var metadata = JsonSerializer.Deserialize<BaseTranslationOutputMetadata>(File.ReadAllText(path), JsonOptions)
+        var metadata = JsonSerializer.Deserialize<BaseTranslationOutputMetadata>(TrackedFs.ReadAllText(path), JsonOptions)
             ?? throw new InvalidDataException($"Base translation output metadata is empty: {path}");
         Validate(metadata, path);
         return metadata;

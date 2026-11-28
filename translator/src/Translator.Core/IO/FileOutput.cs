@@ -20,15 +20,16 @@ public static class FileOutput
     public static bool WriteBytesIfChanged(string path, ReadOnlySpan<byte> content)
     {
         var fullPath = Path.GetFullPath(path);
+        // The target is this command's output whether or not its bytes change.
+        TrackedFs.KeepOutput(fullPath);
         if (ContentEquals(fullPath, content)) return false;
-        Directory.CreateDirectory(Path.GetDirectoryName(fullPath)!);
+        TrackedFs.CreateDirectory(Path.GetDirectoryName(fullPath)!);
         var temporary = $"{fullPath}.tmp.{Guid.NewGuid():N}";
-        using (var stream = new FileStream(
-                   temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None, CompareBufferSize))
+        using (var stream = TrackedFs.CreateNew(temporary, CompareBufferSize))
         {
             stream.Write(content);
         }
-        File.Move(temporary, fullPath, overwrite: true);
+        TrackedFs.Move(temporary, fullPath, overwrite: true);
         return true;
     }
 
@@ -38,11 +39,9 @@ public static class FileOutput
     /// </summary>
     public static bool ContentEquals(string path, ReadOnlySpan<byte> content)
     {
-        var info = new FileInfo(path);
-        if (!info.Exists || info.Length != content.Length) return false;
+        if (!TrackedFs.OutputFileExists(path) || TrackedFs.OutputFileLength(path) != content.Length) return false;
 
-        using var stream = new FileStream(
-            path, FileMode.Open, FileAccess.Read, FileShare.Read, CompareBufferSize, FileOptions.SequentialScan);
+        using var stream = TrackedFs.OpenOutputForCompare(path, CompareBufferSize);
         var buffer = ArrayPool<byte>.Shared.Rent(CompareBufferSize);
         try
         {
@@ -69,14 +68,10 @@ public static class FileOutput
     /// </summary>
     public static bool FilesEqual(string left, string right)
     {
-        var leftInfo = new FileInfo(left);
-        var rightInfo = new FileInfo(right);
-        if (leftInfo.Length != rightInfo.Length) return false;
+        if (TrackedFs.OutputFileLength(left) != TrackedFs.OutputFileLength(right)) return false;
 
-        using var leftStream = new FileStream(
-            left, FileMode.Open, FileAccess.Read, FileShare.Read, CompareBufferSize, FileOptions.SequentialScan);
-        using var rightStream = new FileStream(
-            right, FileMode.Open, FileAccess.Read, FileShare.Read, CompareBufferSize, FileOptions.SequentialScan);
+        using var leftStream = TrackedFs.OpenOutputForCompare(left, CompareBufferSize);
+        using var rightStream = TrackedFs.OpenOutputForCompare(right, CompareBufferSize);
         var leftBuffer = ArrayPool<byte>.Shared.Rent(CompareBufferSize);
         var rightBuffer = ArrayPool<byte>.Shared.Rent(CompareBufferSize);
         try

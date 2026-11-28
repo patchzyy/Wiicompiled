@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -69,12 +70,12 @@ public sealed class FunctionMap
 
     public static FunctionMap Load(string path)
     {
-        if (!File.Exists(path))
+        if (!TrackedFs.FileExists(path))
         {
             throw new FileNotFoundException("Configured function map was not found.", path);
         }
 
-        return Parse(File.ReadLines(path), path);
+        return Parse(TrackedFs.ReadLines(path), path);
     }
 
     public static FunctionMap Parse(IEnumerable<string> lines, string sourcePath)

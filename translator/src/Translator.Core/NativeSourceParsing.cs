@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -17,17 +18,17 @@ internal static class NativeSourceParsing
             .Select(path => new NativeSourceFile(
                 path,
                 RelativePath(root, path),
-                StripCommentsAndLiterals(File.ReadAllText(path))))
+                StripCommentsAndLiterals(TrackedFs.ReadAllText(path))))
             .ToArray();
     }
 
     /// <summary>Every file the scanner reads; the native index digest covers exactly this set.</summary>
     public static IEnumerable<string> EnumerateSourcePaths(string root)
     {
-        if (!Directory.Exists(root))
+        if (!TrackedFs.DirectoryExists(root))
             return [];
 
-        return Directory.EnumerateFiles(root, "*.*", SearchOption.AllDirectories)
+        return TrackedFs.EnumerateFiles(root, "*.*", SearchOption.AllDirectories)
             .Where(static path => path.EndsWith(".cpp", StringComparison.OrdinalIgnoreCase) ||
                                   path.EndsWith(".h", StringComparison.OrdinalIgnoreCase) ||
                                   path.EndsWith(".hpp", StringComparison.OrdinalIgnoreCase));

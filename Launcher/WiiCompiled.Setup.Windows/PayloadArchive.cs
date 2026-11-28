@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -46,6 +48,55 @@ internal sealed class PayloadArchive : IDisposable
         {
             stream.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>Opens a bare payload ZIP; used by self-tests that build a payload on disk.</summary>
+    internal static PayloadArchive OpenZip(string path)
+    {
+        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        try
+        {
+            var slice = new SliceStream(stream, 0, stream.Length);
+            var zip = new ZipArchive(slice, ZipArchiveMode.Read, leaveOpen: true);
+            return new PayloadArchive(stream, slice, zip);
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The shipped per-file inventory, or null when this payload has none or it does not describe
+    /// the manifest's toolkit. Without it every install falls back to extracting and re-hashing.
+    /// </summary>
+    public PayloadInventory? TryReadInventory(PayloadManifest manifest, Action<string>? diagnostic = null)
+    {
+        var entry = FindEntry(PayloadInventory.FileName);
+        if (entry is null)
+        {
+            diagnostic?.Invoke("This payload has no file inventory; installed files are re-hashed instead.");
+            return null;
+        }
+        try
+        {
+            using var stream = entry.Open();
+            var inventory = PayloadInventory.Parse(stream);
+            if (!inventory.ToolkitFingerprint.Equals(manifest.ToolkitFingerprint, StringComparison.Ordinal) ||
+                !inventory.ToolkitPackageFingerprint.Equals(manifest.ToolkitPackageFingerprint,
+                    StringComparison.Ordinal))
+            {
+                diagnostic?.Invoke("The payload inventory does not describe this release; it is ignored.");
+                return null;
+            }
+            return inventory;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or JsonException or IOException)
+        {
+            diagnostic?.Invoke("The payload inventory is unreadable and is ignored: " + ex.Message);
+            return null;
         }
     }
 
@@ -113,7 +164,14 @@ internal sealed class PayloadArchive : IDisposable
         NormalizeExtractedTimestamp(destination);
     }
 
-    public void ExtractDirectory(string prefix, string destination)
+    /// <summary>
+    /// Extracts every entry under <paramref name="prefix"/>. Each file's SHA-256 and size are computed
+    /// from the bytes as they stream out of the archive (never trusting the ZIP CRC) and, when
+    /// <paramref name="identities"/> is given, recorded under the entry's payload path so the caller
+    /// can verify them against the shipped inventory.
+    /// </summary>
+    public void ExtractDirectory(string prefix, string destination,
+        IDictionary<string, PayloadFileIdentity>? identities = null)
     {
         prefix = NormalizeEntryName(prefix).TrimEnd('/') + "/";
         var destinationRoot = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -127,9 +185,59 @@ internal sealed class PayloadArchive : IDisposable
             if (!outputPath.StartsWith(destinationRoot, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidDataException($"Unsafe payload path: {entry.FullName}");
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
-            entry.ExtractToFile(outputPath, overwrite: true);
-            NormalizeExtractedTimestamp(outputPath);
+            var identity = ExtractHashed(entry, outputPath);
+            if (identities is not null) identities[normalizedEntry] = identity;
         }
+    }
+
+    /// <summary>
+    /// The identity of every file entry under <paramref name="prefix"/>, hashed exactly as
+    /// <see cref="ExtractDirectory"/> hashes it but without writing anything, keyed the same way.
+    /// </summary>
+    public Dictionary<string, PayloadFileIdentity> HashDirectory(string prefix)
+    {
+        prefix = NormalizeEntryName(prefix).TrimEnd('/') + "/";
+        var identities = new Dictionary<string, PayloadFileIdentity>(StringComparer.Ordinal);
+        foreach (var entry in _zip.Entries)
+        {
+            var normalizedEntry = NormalizeEntryName(entry.FullName);
+            if (!normalizedEntry.StartsWith(prefix, StringComparison.Ordinal) || normalizedEntry.EndsWith('/'))
+                continue;
+            identities[normalizedEntry] = CopyHashed(entry, output: null);
+        }
+        return identities;
+    }
+
+    private static PayloadFileIdentity ExtractHashed(ZipArchiveEntry entry, string outputPath)
+    {
+        PayloadFileIdentity identity;
+        using (var output = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16))
+            identity = CopyHashed(entry, output);
+        NormalizeExtractedTimestamp(outputPath);
+        return identity;
+    }
+
+    private static PayloadFileIdentity CopyHashed(ZipArchiveEntry entry, Stream? output)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long size = 0;
+        var buffer = ArrayPool<byte>.Shared.Rent(1 << 16);
+        try
+        {
+            using var input = entry.Open();
+            int read;
+            while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                hash.AppendData(buffer, 0, read);
+                output?.Write(buffer, 0, read);
+                size += read;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+        return new PayloadFileIdentity(size, Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant());
     }
 
     internal static void NormalizeExtractedTimestamp(string path) =>

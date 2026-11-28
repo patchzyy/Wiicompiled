@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 namespace Translator.Core.Mods;
 
 /// <summary>
@@ -34,7 +35,7 @@ public static class ModDvdOverlayRoots
         };
 
         return candidates
-            .Where(candidate => Directory.Exists(candidate.Source))
+            .Where(candidate => TrackedFs.DirectoryExists(candidate.Source))
             .Select(candidate => candidate.Package.Replace('\\', '/'))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

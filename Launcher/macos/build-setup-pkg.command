@@ -153,7 +153,8 @@ copy_clean "$script_dir/sync-workspace.command" "$resources/sync-workspace.comma
 # Copy only the build inputs. This deliberately avoids a maintainer's ignored
 # output directories, local disc extraction, and developer-only packaging.
 mkdir -p "$resources/workspace"
-for source in aurora-main projects runtime translator; do
+# No translator/ sources: setup.command and wiicompiled-setup both run the bundled Translator.Cli.
+for source in aurora-main projects runtime; do
     [[ -d "$workspace/$source" ]] || fail "required workspace directory is missing: $source"
     [[ "$source" != aurora-main || -f "$workspace/$source/CMakeLists.txt" ]] ||
         fail "aurora-main is empty; run git submodule update --init --recursive"
@@ -177,12 +178,33 @@ chmod +x "$resources/workspace/Launcher/local-build-macos.command" "$resources/w
 # setup.command uses this marker to update source inputs in an existing user
 # workspace without replacing extracted game assets or Retro Rewind files.
 printf '%s\n' "$version" > "$resources/workspace/.bundle-version"
+# Content hashes and sizes of the packaged workspace (never mtimes), so sync-workspace.command only
+# compares workspace files that may have changed. Written last, once the workspace is final.
+# shellcheck source=../build-cache.sh
+source "$script_dir/../build-cache.sh"
+mkw_write_sync_manifest "$resources/workspace" || fail 'the workspace sync manifest could not be written'
 mkdir -p "$resources/tools/cmake" "$resources/tools/arm64" "$resources/tools/x86_64"
 copy_clean "$nodtool_arm64" "$resources/tools/arm64/nodtool"; chmod +x "$resources/tools/arm64/nodtool"
 copy_clean "$nodtool_x86_64" "$resources/tools/x86_64/nodtool"; chmod +x "$resources/tools/x86_64/nodtool"
 copy_clean "$translator_arm64" "$resources/tools/arm64/Translator.Cli"; chmod +x "$resources/tools/arm64/Translator.Cli"
 copy_clean "$translator_x86_64" "$resources/tools/x86_64/Translator.Cli"; chmod +x "$resources/tools/x86_64/Translator.Cli"
 copy_clean "$cmake_root" "$resources/tools/cmake"
+# Only the command-line tools are used. Drop the cmake-gui app (its executable, Qt frameworks and
+# plug-ins), the man pages and the HTML documentation. Every license stays: doc/cmake-*/LICENSE.rst,
+# the doc/cmake-*/cm*/ third-party notices and share/cmake-*/Licenses are never touched.
+rm -rf "$resources/tools/cmake/bin/cmake-gui" "$resources/tools/cmake/MacOS" \
+    "$resources/tools/cmake/Frameworks" "$resources/tools/cmake/PlugIns" "$resources/tools/cmake/man"
+for cmake_doc in "$resources/tools/cmake/doc"/cmake*; do
+    [[ -d "$cmake_doc" ]] || continue
+    for doc_entry in "$cmake_doc"/*; do
+        [[ -e "$doc_entry" || -L "$doc_entry" ]] || continue
+        case "${doc_entry##*/}" in
+            LICENSE*|COPYING*|NOTICE*|Copyright*|cm*) ;;
+            *) rm -rf "$doc_entry" ;;
+        esac
+    done
+done
+run_for_arch "$host_arch" 'the pruned bundled cmake' "$resources/tools/cmake/bin/cmake" --version
 copy_clean "$ninja_arm64" "$resources/tools/arm64/ninja"; chmod +x "$resources/tools/arm64/ninja"
 copy_clean "$ninja_x86_64" "$resources/tools/x86_64/ninja"; chmod +x "$resources/tools/x86_64/ninja"
 copy_clean "$workspace/LICENSE" "$resources/LICENSE"

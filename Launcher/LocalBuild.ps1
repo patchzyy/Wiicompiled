@@ -18,6 +18,15 @@ param(
     # mismatched identity degrades that cache to a clean rebuild, never the other way around.
     [string]$TranslationFingerprint = '',
     [string]$NativeToolchainFingerprint = '',
+    # 'project=identity;...': the translation identity narrowed to the files each translation
+    # project reads. The entry of the project selected for the extracted disc replaces
+    # -TranslationFingerprint; without one, -TranslationFingerprint applies unchanged.
+    [string]$TranslationFingerprintsByRelease = '',
+    # The compile identity the caller proved for exactly this toolkit (hashed in full, or verified
+    # while installing it). Only with it may a recorded or release-proved precompiled-package gate
+    # verdict stand in for re-running the gate; a development workspace always runs it.
+    [string]$VerifiedCompileIdentity = '',
+    [string]$AcceptedNativePrebuiltProvenanceSha256 = '',
     # Discards every cache first. Used when a product was reported broken/blocked, so a possibly
     # corrupted translation or build directory can never contribute to the repaired product.
     [switch]$ForceCleanBuild,
@@ -138,6 +147,15 @@ $selectedProject = Resolve-MkwProjectForAssets $Workspace $assets
 $project = $selectedProject.Path
 $pins = $selectedProject.Pins
 $retroWfcPayloadFile = "binary\payload.$(($pins.RetroWfcPayloadUri -split 'g=')[-1]).bin"
+# The caller derives one translation identity per translation project; the one for the project
+# this disc selects decides base-translation reuse. A malformed list simply falls back.
+$projectName = Split-Path -Leaf (Split-Path -Parent $project)
+foreach ($pair in @($TranslationFingerprintsByRelease -split ';')) {
+    if ($pair -cmatch '^([A-Za-z0-9._-]+)=([0-9a-f]{64})$' -and $Matches[1] -ceq $projectName) {
+        $TranslationFingerprint = $Matches[2]
+        break
+    }
+}
 
 # Three independent knobs: $translatorThreads (the translator's own worker threads; peak memory is
 # one heap that barely moves with thread count, so clamping it only slows translation), $translatedJobs
@@ -168,6 +186,10 @@ try {
         # The caller only supplies the identities to compare recorded provenance against.
         $translationProvenance = Join-Path $generated 'translation-provenance.json'
         $toolchainProvenance = Join-Path $build 'toolchain-provenance.json'
+        # Per-step records the translator itself writes and checks (--provenance-file): a step is
+        # skipped only when every input, scanned directory, probed path, output and the translator
+        # binary still match. Kept under generated/, so a forced clean build discards them too.
+        $stepProvenance = Join-Path $generated 'step-provenance'
 
         function Get-RecordedFingerprint([string]$Path, [string]$Property) {
             if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
@@ -300,11 +322,15 @@ try {
             } else {
                 throw 'Retro Rewind requires either -RetroWfcOfflineDirectory or -SkipRetroWfcPayload.'
             }
+            [IO.Directory]::CreateDirectory($stepProvenance) | Out-Null
+            $translateModArguments += @('--provenance-file', (Join-Path $stepProvenance 'translate-mod.json'))
             Invoke-Checked $translator $translateModArguments 'Translating the selected Retro Rewind Code.pul' `
                 -StepId 'translate-mod' -TimeoutSeconds $translatorTimeoutSeconds
         }
 
-        Invoke-Checked $translator @('generate-data-init', '--project', $project) `
+        [IO.Directory]::CreateDirectory($stepProvenance) | Out-Null
+        Invoke-Checked $translator @('generate-data-init', '--project', $project,
+            '--provenance-file', (Join-Path $stepProvenance 'generate-data-init.json')) `
             'Generating local game data initialization' -StepId 'generate-data-init' `
             -TimeoutSeconds $translatorTimeoutSeconds
 
@@ -318,8 +344,74 @@ try {
             $shardArgs += @('--resolved-profile', (Join-Path $retroOut 'resolved_dispatch_profile.json'),
                 '--retro-cpp-dir', (Join-Path $retroOut 'cpp'))
         }
+        $shardArgs += @('--provenance-file', (Join-Path $stepProvenance 'emit-build-shards.json'))
         Invoke-Checked $translator $shardArgs 'Preparing local native build shards' -StepId 'emit-build-shards' `
             -TimeoutSeconds $translatorTimeoutSeconds
+
+        $dependencies = Join-Path $Workspace 'Dependencies'
+        # The precompiled-package gate re-hashes aurora-main and runtime/third_party under Windows
+        # PowerShell, which takes long. Its verdict depends only on bytes the compile identity
+        # covers (compiler, configure flags, Dawn, aurora-main, runtime/third_party) plus the
+        # package's provenance.json, so for a compile identity the caller verified it is taken from
+        # the release build (which ran this exact gate on this exact toolkit) or from this
+        # workspace's record of a previous run, keyed on both. Anything else runs the full gate.
+        $nativePrebuiltPackage = Join-Path $dependencies 'native_prebuilt'
+        $nativePrebuiltProvenance = Join-Path $nativePrebuiltPackage 'provenance.json'
+        $prebuiltGateRecord = Join-Path $stepProvenance 'native-prebuilt-gate.json'
+        $nativePrebuiltProvenanceSha = if (Test-Path -LiteralPath $nativePrebuiltProvenance -PathType Leaf) {
+            Get-MkwFileSha256 $nativePrebuiltProvenance
+        } else { '' }
+        $nativePrebuilt = $null
+        if ($VerifiedCompileIdentity -cmatch '^[0-9a-f]{64}$' -and $nativePrebuiltProvenanceSha) {
+            $releaseProved = $AcceptedNativePrebuiltProvenanceSha256 -ceq $nativePrebuiltProvenanceSha
+            $recorded = (Get-RecordedFingerprint $prebuiltGateRecord 'CompileIdentity') -ceq $VerifiedCompileIdentity -and
+                (Get-RecordedFingerprint $prebuiltGateRecord 'ProvenanceSha256') -ceq $nativePrebuiltProvenanceSha
+            if ($releaseProved -or $recorded) {
+                Write-Host 'MKWCBUILD: Using the precompiled aurora and third-party libraries (verified for this toolkit)'
+                $nativePrebuilt = $nativePrebuiltPackage
+            }
+        }
+        if ($null -eq $nativePrebuilt) {
+            if (Test-Path -LiteralPath $prebuiltGateRecord) { Remove-Item -LiteralPath $prebuiltGateRecord -Force }
+            $nativePrebuilt = Resolve-MkwNativePrebuiltDirectory $dependencies $toolchainBin `
+                (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
+            if ($nativePrebuilt -and $VerifiedCompileIdentity -cmatch '^[0-9a-f]{64}$' -and $nativePrebuiltProvenanceSha) {
+                [IO.Directory]::CreateDirectory($stepProvenance) | Out-Null
+                $gateTemp = "$prebuiltGateRecord.tmp-$PID"
+                [ordered]@{ SchemaVersion = 1; CompileIdentity = $VerifiedCompileIdentity
+                    ProvenanceSha256 = $nativePrebuiltProvenanceSha } |
+                    ConvertTo-Json | Set-Content -LiteralPath $gateTemp -Encoding UTF8
+                Move-Item -LiteralPath $gateTemp -Destination $prebuiltGateRecord -Force
+            }
+        }
+        if ($X86CpuProfile -eq 'v2') {
+            Write-Host 'MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2'
+        }
+        $configure = Get-MkwNativeConfigureArguments `
+            -SourceDirectory (Join-Path $Workspace 'runtime') -BuildDirectory $build `
+            -Ninja $ninja -CCompiler $cc -CxxCompiler $cxx -ResourceCompiler $windres `
+            -DependenciesDirectory $dependencies -NativePrebuiltDirectory $nativePrebuilt `
+            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
+
+        # The native-toolchain identity covers the compiler, CMake and its modules, Ninja, and the
+        # shipped fixed configure flags. What it cannot see is recorded here beside the cache: the
+        # names of every -D option this run passes (values are paths or per-machine settings that
+        # CMake already tracks; a vanished or new option would leave a stale cache entry) and the
+        # CPU profile. MKW_TRANSLATED_COMPILE_JOBS is a per-machine job count and is left out.
+        $optionNames = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($argument in $configure) {
+            if ("$argument" -cmatch '^-D([^:=]+)' -and $Matches[1] -cne 'MKW_TRANSLATED_COMPILE_JOBS') {
+                [void]$optionNames.Add($Matches[1])
+            }
+        }
+        $configureOptionNames = @($optionNames) -join ','
+
+        $configureFlagsFile = Join-Path $Workspace 'native-configure-flags.txt'
+        $shippedFlagsCurrent = (Test-Path -LiteralPath $configureFlagsFile -PathType Leaf) -and
+            ([IO.File]::ReadAllText($configureFlagsFile) -ceq ((Get-MkwNativeFixedConfigureFlags) -join "`n"))
+        if (-not $shippedFlagsCurrent -and -not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint)) {
+            Write-Host 'MKWCBUILD: The shipped configure flags do not match the build script; the native build cache cannot be trusted'
+        }
 
         # The build directory is kept whenever the exact toolchain that filled it is the one
         # installed now and its CMake cache still belongs to this workspace path. Object files are
@@ -327,8 +419,11 @@ try {
         # CMake/Ninja exist to track, so a kept directory turns a small runtime or dependency
         # change into a recompile of just the affected objects instead of every shard.
         if (Test-Path -LiteralPath $build) {
-            $keepNativeBuild = -not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint) -and
+            $keepNativeBuild = $shippedFlagsCurrent -and
+                -not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint) -and
                 (Get-RecordedFingerprint $toolchainProvenance 'NativeToolchainFingerprint') -eq $NativeToolchainFingerprint -and
+                (Get-RecordedFingerprint $toolchainProvenance 'ConfigureOptionNames') -ceq $configureOptionNames -and
+                (Get-RecordedFingerprint $toolchainProvenance 'X86CpuProfile') -ceq $X86CpuProfile -and
                 (Test-Path -LiteralPath (Join-Path $build 'CMakeCache.txt') -PathType Leaf)
             if ($keepNativeBuild) {
                 # A moved workspace invalidates every absolute path in the cache; CMake would hard
@@ -350,21 +445,14 @@ try {
                 Remove-Item -LiteralPath $build -Recurse -Force
             }
         }
-        $dependencies = Join-Path $Workspace 'Dependencies'
-        $nativePrebuilt = Resolve-MkwNativePrebuiltDirectory $dependencies $toolchainBin `
-            (Join-Path $Workspace 'aurora-main') (Join-Path $Workspace 'runtime\third_party')
-        if ($X86CpuProfile -eq 'v2') {
-            Write-Host 'MKWCBUILD: This CPU does not support x86-64-v3; building for x86-64-v2'
-        }
-        $configure = Get-MkwNativeConfigureArguments `
-            -SourceDirectory (Join-Path $Workspace 'runtime') -BuildDirectory $build `
-            -Ninja $ninja -CCompiler $cc -CxxCompiler $cxx -ResourceCompiler $windres `
-            -DependenciesDirectory $dependencies -NativePrebuiltDirectory $nativePrebuilt `
-            -AdditionalArguments @("-DMKW_TRANSLATED_COMPILE_JOBS=$translatedJobs", "-DMKW_X86_CPU_PROFILE=$X86CpuProfile")
         Invoke-Checked $cmake $configure 'Configuring the bundled native toolchain' -StepId 'configure-native'
-        if (-not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint)) {
-            [ordered]@{ SchemaVersion = 1; NativeToolchainFingerprint = $NativeToolchainFingerprint } |
-                ConvertTo-Json | Set-Content -LiteralPath $toolchainProvenance -Encoding UTF8
+        if ($shippedFlagsCurrent -and -not [string]::IsNullOrWhiteSpace($NativeToolchainFingerprint)) {
+            [ordered]@{
+                SchemaVersion = 2
+                NativeToolchainFingerprint = $NativeToolchainFingerprint
+                ConfigureOptionNames = $configureOptionNames
+                X86CpuProfile = $X86CpuProfile
+            } | ConvertTo-Json | Set-Content -LiteralPath $toolchainProvenance -Encoding UTF8
         }
         $targets = switch ($Profile) {
             'base' { @('WiiCompiled') }

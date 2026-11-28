@@ -14,7 +14,8 @@ internal enum AppMode
     CheckProducts,
     RepairProducts,
     Version,
-    EmitPayloadIdentities
+    EmitPayloadIdentities,
+    VerifyPayload
 }
 
 /// <summary>
@@ -70,6 +71,7 @@ internal sealed class CommandLine
                 case "--repair-products": result.Mode = AppMode.RepairProducts; break;
                 case "--portable": result.Portable = true; break;
                 case "--emit-payload-identities": result.Mode = AppMode.EmitPayloadIdentities; break;
+                case "--verify-payload": result.Mode = AppMode.VerifyPayload; break;
                 case "--payload-root": result.PayloadRootPath = RequireValue(args, ref i); break;
                 case "--quiet": result.Quiet = true; break;
                 case "--progress-json": result.ProgressJson = true; break;
@@ -134,7 +136,8 @@ internal sealed class CommandLine
         [AppMode.EmitPayloadIdentities] = new ModeRules
         {
             Flag = "--emit-payload-identities", RequiresPayloadRoot = true
-        }
+        },
+        [AppMode.VerifyPayload] = new ModeRules { Flag = "--verify-payload" }
     };
 
     private void Validate()

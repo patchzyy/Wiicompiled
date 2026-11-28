@@ -1,3 +1,4 @@
+using Translator.Core.IO;
 using System.Text.Json;
 
 namespace Translator.Core.Mods;
@@ -43,7 +44,7 @@ public sealed class BaseFunctionIndex
 
     public static BaseFunctionIndex Load(string path)
     {
-        var json = File.ReadAllText(path);
+        var json = TrackedFs.ReadAllText(path);
         var manifest = JsonSerializer.Deserialize<BaseManifest>(json)
             ?? throw new InvalidDataException($"Failed to parse base manifest: {path}");
         return new BaseFunctionIndex(manifest.Functions);

@@ -114,6 +114,11 @@ if (-not (Test-Path -LiteralPath (Join-Path $portableTools 'llvm-mingw\bin\x86_6
 }
 Assert-File (Join-Path $portableTools 'CMake\bin\cmake.exe') 'Portable CMake'
 Assert-File (Join-Path $portableTools 'Ninja\ninja.exe') 'Portable Ninja'
+# PublicProducts.cmake copies the target runtime DLLs from the x86_64 sysroot, never from the host
+# compiler's own bin directory, and fails configure if they are missing.
+foreach ($runtimeDll in @('libc++.dll', 'libunwind.dll')) {
+    Assert-File (Join-Path $portableTools "llvm-mingw\x86_64-w64-mingw32\bin\$runtimeDll") "x86_64 target runtime $runtimeDll"
+}
 # native_prebuilt carries the aurora/third-party archives the user no longer has
 # to compile (launcher/Prepare-NativePrebuilt.ps1).
 # Kept in step with InstalledLayout.DependencyNames by Test-PinnedFacts.ps1: the installed host
@@ -225,17 +230,54 @@ $workspace = Join-Path $payloadRoot 'BuildWorkspace'
 Copy-Directory (Join-Path $portableTools 'llvm-mingw') (Join-Path $toolkit 'llvm-mingw')
 Copy-Directory (Join-Path $portableTools 'CMake') (Join-Path $toolkit 'CMake')
 Copy-Directory (Join-Path $portableTools 'Ninja') (Join-Path $toolkit 'Ninja')
-# Debuggers, Python bindings, and the CMake GUI are not part of the local build graph.
-# Leaving them out reduces the attack/dependency surface without removing compiler support files.
-foreach ($unused in @(
-    (Join-Path $toolkit 'llvm-mingw\python'),
-    (Join-Path $toolkit 'CMake\bin\cmake-gui.exe')
-)) {
+# Only what is verified unused by the x86_64 build, with the precompiled package or from source, is
+# left out: debuggers, Python, the CMake GUI/test/packaging tools and HTML/man documentation, the
+# four foreign target sysroots and their cross wrappers, busybox, clangd/clang-tidy, and the
+# sanitizer and non-x86_64 compiler runtimes. Licenses, the x86_64 sysroot, every x86_64 wrapper and
+# config, the compiler/linker/archiver/resource tools and their DLLs, and the builtins runtimes stay.
+# Test-PayloadBoundary.ps1 asserts the license files and target runtimes are still present.
+$llvmMingw = Join-Path $toolkit 'llvm-mingw'
+$cmakeRoot = Join-Path $toolkit 'CMake'
+$unusedPaths = [Collections.Generic.List[string]]::new()
+foreach ($relative in @(
+    'llvm-mingw\python', 'llvm-mingw\busybox',
+    'llvm-mingw\aarch64-w64-mingw32', 'llvm-mingw\arm64ec-w64-mingw32',
+    'llvm-mingw\armv7-w64-mingw32', 'llvm-mingw\i686-w64-mingw32',
+    'CMake\bin\cmake-gui.exe', 'CMake\bin\ctest.exe', 'CMake\bin\cpack.exe', 'CMake\bin\cmcldeps.exe',
+    'CMake\man'
+)) { $unusedPaths.Add((Join-Path $toolkit $relative)) }
+foreach ($docs in @(Get-ChildItem -LiteralPath (Join-Path $cmakeRoot 'doc') -Directory -Filter 'cmake*' -ErrorAction SilentlyContinue)) {
+    foreach ($name in @('html', 'CMake.qch', 'cmake.org.html')) { $unusedPaths.Add((Join-Path $docs.FullName $name)) }
+}
+foreach ($share in @(Get-ChildItem -LiteralPath (Join-Path $cmakeRoot 'share') -Directory -Filter 'cmake-*' -ErrorAction SilentlyContinue)) {
+    $unusedPaths.Add((Join-Path $share.FullName 'Help'))
+}
+foreach ($unused in $unusedPaths) {
     if (Test-Path -LiteralPath $unused) { Remove-Item -LiteralPath $unused -Recurse -Force }
 }
-Get-ChildItem -LiteralPath (Join-Path $toolkit 'llvm-mingw\bin') -File |
-    Where-Object { $_.Name -like 'lldb*' -or $_.Name -like 'liblldb*' } |
+Get-ChildItem -LiteralPath (Join-Path $llvmMingw 'bin') -File |
+    Where-Object {
+        $_.Name -like 'lldb*' -or $_.Name -like 'liblldb*' -or
+        $_.Name -match '^(aarch64|arm64ec|armv7|i686)-' -or
+        $_.Name -in @('clangd.exe', 'clang-tidy.exe') -or
+        $_.Name -like 'libpython*' -or $_.Name -like 'libffi*'
+    } |
     Remove-Item -Force
+# Compiler runtimes: keep every builtins archive and every non-sanitizer x86_64 runtime; the x86_64
+# sysroot is kept whole.
+$x64Sysroot = (Join-Path $llvmMingw 'x86_64-w64-mingw32').TrimEnd('\') + '\'
+Get-ChildItem -LiteralPath $llvmMingw -Recurse -File -Filter 'libclang_rt.*' |
+    Where-Object {
+        -not $_.FullName.StartsWith($x64Sysroot, [StringComparison]::OrdinalIgnoreCase) -and
+        $_.Name -notlike 'libclang_rt.builtins*' -and (
+            $_.Name -match '^libclang_rt\.(asan|hwasan|msan|tsan|ubsan|lsan|dfsan|memprof|cfi|nsan|rtsan|tysan|safestack|scudo|gwp_asan|dd|dyndd)' -or
+            $_.Name -match '-(i386|i686|aarch64|arm64ec|arm64|armhf|armv7|arm)\.'
+        )
+    } |
+    Remove-Item -Force
+foreach ($runtimeDll in @('libc++.dll', 'libunwind.dll')) {
+    Assert-File (Join-Path $llvmMingw "x86_64-w64-mingw32\bin\$runtimeDll") "Staged x86_64 target runtime $runtimeDll"
+}
 [IO.Directory]::CreateDirectory((Join-Path $toolkit 'Translator')) | Out-Null
 Copy-Item -LiteralPath $translator -Destination (Join-Path $toolkit 'Translator\Translator.Cli.exe')
 Copy-Item -LiteralPath $nodTool -Destination (Join-Path $toolkit 'nodtool.exe')
@@ -260,6 +302,10 @@ foreach ($releaseProject in $releaseProjects) {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'LocalBuild.ps1') -Destination (Join-Path $workspace 'LocalBuild.ps1')
 # LocalBuild.ps1 dot-sources the canonical configure flags from this sibling.
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'NativeBuildFlags.ps1') -Destination (Join-Path $workspace 'NativeBuildFlags.ps1')
+# The native-toolchain identity hashes the configure flags themselves rather than the scripts'
+# source text; LocalBuild.ps1 refuses to reuse a build directory when the two ever disagree.
+[IO.File]::WriteAllText((Join-Path $workspace 'native-configure-flags.txt'),
+    ((Get-MkwNativeFixedConfigureFlags) -join "`n"), [Text.UTF8Encoding]::new($false))
 [IO.Directory]::CreateDirectory((Join-Path $workspace 'Dependencies')) | Out-Null
 foreach ($name in $requiredDependencies) { Copy-Directory (Join-Path $dependencySources $name) (Join-Path $workspace "Dependencies\$name") }
 
@@ -296,6 +342,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Windows PowerShell rejects the staged precompiled aurora package (exit $LASTEXITCODE); every installation would build aurora from source."
 }
 Remove-Item -LiteralPath $prebuiltGate -Force
+# The gate's verdict depends only on bytes the compile identity covers (compiler, flags, Dawn,
+# aurora-main, runtime/third_party) plus this provenance document. Recording which document it
+# accepted lets a build whose compile identity was verified to be this release's skip re-proving it.
+$nativePrebuiltGateProvenanceSha256 = Get-MkwFileSha256 (Join-Path $workspace 'Dependencies\native_prebuilt\provenance.json')
 
 [IO.Directory]::CreateDirectory((Join-Path $payloadRoot 'host')) | Out-Null
 Copy-Item $setupHost (Join-Path $payloadRoot 'host\WiiCompiled-Setup.exe')
@@ -344,15 +394,28 @@ Microsoft license terms: https://visualstudio.microsoft.com/license-terms/
 "@ | Set-Content (Join-Path $payloadRoot 'licenses\Microsoft-VC-Runtime.txt') -Encoding UTF8
 # Compute the payload's content identities once, here, with the same code every installed host
 # uses. Shipping them in the manifest is what keeps user machines from re-hashing the toolkit
-# during installation; only --repair-products re-derives content identity locally.
+# during installation; only --repair-products re-derives content identity locally. This also
+# writes payload-inventory.json (every shipped file's size and SHA-256, and the files each
+# translation project reads, as the staged translator lists them) beside the manifest.
 Write-Host 'Computing the payload content identities (hashes the staged toolkit once)...'
 $identityJson = & $setupHost --emit-payload-identities --payload-root $payloadRoot
 if ($LASTEXITCODE -ne 0) { throw "Payload identity computation failed with exit code $LASTEXITCODE." }
 $identities = ($identityJson -join '') | ConvertFrom-Json
 foreach ($required in @('ToolkitFingerprint','TranslationFingerprint','NativeToolchainFingerprint',
-    'ToolkitPackageFingerprint','RuntimeAssetsFingerprint')) {
+    'ToolkitPackageFingerprint','RuntimeAssetsFingerprint','ToolchainPackageFingerprint',
+    'TranslatorPackageFingerprint')) {
     if ([string]::IsNullOrWhiteSpace($identities.$required)) { throw "Payload identity output is missing $required." }
 }
+$translationFingerprintsByRelease = [ordered]@{}
+foreach ($property in $identities.TranslationFingerprintsByRelease.PSObject.Properties) {
+    $translationFingerprintsByRelease[$property.Name] = [string]$property.Value
+}
+foreach ($releaseProject in $releaseProjects) {
+    if (-not $translationFingerprintsByRelease.Contains($releaseProject.Name)) {
+        throw "Payload identity output has no translation identity for the $($releaseProject.Name) project."
+    }
+}
+Assert-File (Join-Path $payloadRoot 'payload-inventory.json') 'Payload file inventory'
 
 $productVersion = ((& $setupHost --version) -join '').Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($productVersion)) { throw 'The setup host did not report its version.' }
@@ -369,6 +432,12 @@ $manifest = [ordered]@{
     RuntimeAssetsFingerprint = $identities.RuntimeAssetsFingerprint
     TranslationFingerprint = $identities.TranslationFingerprint
     NativeToolchainFingerprint = $identities.NativeToolchainFingerprint
+    # Additive within schema 3: older readers ignore them, and setup falls back to the whole-
+    # toolkit identities above wherever one is absent.
+    ToolchainPackageFingerprint = $identities.ToolchainPackageFingerprint
+    TranslatorPackageFingerprint = $identities.TranslatorPackageFingerprint
+    TranslationFingerprintsByRelease = $translationFingerprintsByRelease
+    NativePrebuiltGateProvenanceSha256 = $nativePrebuiltGateProvenanceSha256
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $payloadRoot 'payload-manifest.json') -Encoding UTF8
 
@@ -383,7 +452,7 @@ Write-Host '[4/6] Enforcing the copyright and generated-code boundary...'
 Write-Host '[5/6] Creating the canonical installer payload...'
 $payloadZip = Join-Path $workRoot 'payload.zip'
 Compress-Zip $payloadRoot $payloadZip @(
-    'Toolkit','BuildWorkspace','host','licenses','payload-manifest.json')
+    'Toolkit','BuildWorkspace','host','licenses','payload-manifest.json','payload-inventory.json')
 
 Write-Host '[6/6] Producing the single-file setup executable...'
 $outputSetup = Join-Path $outputRoot 'WiiCompiled-Setup.exe'
@@ -401,6 +470,12 @@ try {
         $writer.Write([Int64]$length)
     } finally { $writer.Dispose() }
 } finally { $outputStream.Dispose() }
+
+# Every install rejects a payload that disagrees with payload-inventory.json, so prove the archive
+# tar actually wrote (symlinks, name encoding, files changed after hashing) matches it.
+Write-Host 'Verifying the embedded payload against its inventory...'
+& $outputSetup --verify-payload
+if ($LASTEXITCODE -ne 0) { throw "The embedded payload does not match its inventory (exit code $LASTEXITCODE)." }
 
 $setupItem = Get-Item -LiteralPath $outputSetup
 Write-Host ("{0}: {1} MiB; SHA-256 {2}" -f $setupItem.Name,

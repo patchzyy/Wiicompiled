@@ -140,11 +140,11 @@ jobs:
         run: |
           dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
             -c Release -r osx-arm64 --self-contained true \
-            -p:PublishSingleFile=true \
+            -p:PublishSingleFile=true -p:DebugType=None \
             -o Launcher/artifacts/macos/translator-arm64
           dotnet publish translator/src/Translator.Cli/Translator.Cli.csproj \
             -c Release -r osx-x64 --self-contained true \
-            -p:PublishSingleFile=true \
+            -p:PublishSingleFile=true -p:DebugType=None \
             -o Launcher/artifacts/macos/translator-x86_64
 
       - name: Publish self-contained setup CLI
@@ -152,11 +152,11 @@ jobs:
         run: |
           dotnet publish Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj \
             -c Release -r osx-arm64 --self-contained true \
-            -p:PublishSingleFile=true \
+            -p:PublishSingleFile=true -p:DebugType=None \
             -o Launcher/artifacts/macos/setup-arm64
           dotnet publish Launcher/WiiCompiled.Setup.Linux/WiiCompiled.Setup.Linux.csproj \
             -c Release -r osx-x64 --self-contained true \
-            -p:PublishSingleFile=true \
+            -p:PublishSingleFile=true -p:DebugType=None \
             -o Launcher/artifacts/macos/setup-x86_64
 
       - name: Download pinned universal Ninja

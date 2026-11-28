@@ -5,7 +5,7 @@ using WiiCompiled.Setup.Common;
 
 namespace WiiCompiled.Setup.Windows;
 
-internal static class SelfTests
+internal static partial class SelfTests
 {
     public static int Run()
     {
@@ -64,6 +64,7 @@ internal static class SelfTests
         Test("Toolkit fingerprint", TestToolkitFingerprint, failures);
         Test("Retro Rewind inspection state machine", TestCodePulStateMachine, failures);
         Test("Products report contract", TestProductsReport, failures);
+        RegisterPayloadTests(failures);
         foreach (var failure in failures) Console.Error.WriteLine("FAILED " + failure);
         return failures.Count == 0 ? 0 : 1;
     }
@@ -282,19 +283,46 @@ internal static class SelfTests
 
     private static void TestToolkitRefreshDecision()
     {
-        if (!InstallerEngine.MustRefreshToolkit(sameToolkit: false, samePackageContent: true,
-                nodToolPresent: true))
-            throw new Exception("A republished workspace kept the installed toolkit; the shipped " +
-                                "translator and project file could come from different releases.");
-        if (!InstallerEngine.MustRefreshToolkit(sameToolkit: true, samePackageContent: false,
-                nodToolPresent: true))
+        var statCalls = 0;
+        Func<bool> Stat(bool result) => () => { statCalls++; return result; };
+        ToolkitRefresh Plan(bool inventory, bool sameToolkit, bool samePackage, bool nodTool, bool toolkitStat,
+            bool sameToolchain = false, bool toolchainStat = false) =>
+            InstallerEngine.PlanToolkitRefresh(inventory, sameToolkit, samePackage, nodTool, Stat(toolkitStat),
+                sameToolchain, Stat(toolchainStat));
+
+        // Without a release inventory nothing can be proved cheaply: the original rule applies.
+        if (Plan(inventory: false, sameToolkit: false, samePackage: true, nodTool: true, toolkitStat: true) !=
+            ToolkitRefresh.Full)
+            throw new Exception("Without an inventory, a republished workspace kept an unproven installed toolkit.");
+        if (Plan(false, true, false, true, true) != ToolkitRefresh.Full)
             throw new Exception("Changed toolkit package content was not extracted.");
-        if (!InstallerEngine.MustRefreshToolkit(sameToolkit: true, samePackageContent: true,
-                nodToolPresent: false))
+        if (Plan(false, true, true, false, true) != ToolkitRefresh.Full)
             throw new Exception("A missing nodtool.exe did not force toolkit extraction.");
-        if (InstallerEngine.MustRefreshToolkit(sameToolkit: true, samePackageContent: true,
-                nodToolPresent: true))
+        if (Plan(false, true, true, true, true) != ToolkitRefresh.None)
             throw new Exception("An unchanged toolkit was needlessly re-extracted.");
+
+        // With the inventory, an unchanged package is reused exactly when its files pass the stat
+        // check - whether or not the workspace (sameToolkit) changed with it.
+        if (Plan(true, false, true, true, toolkitStat: true) != ToolkitRefresh.None)
+            throw new Exception("An unchanged, intact toolkit package was re-extracted for a workspace-only update.");
+        if (Plan(true, false, true, true, toolkitStat: false) != ToolkitRefresh.Full)
+            throw new Exception("A toolkit failing its stat check was reused.");
+        if (Plan(true, true, true, true, toolkitStat: false) != ToolkitRefresh.Full)
+            throw new Exception("A same-release toolkit failing its stat check was reused.");
+        if (Plan(true, true, true, nodTool: false, toolkitStat: true) != ToolkitRefresh.Full)
+            throw new Exception("A missing nodtool.exe did not force toolkit extraction.");
+        if (Plan(true, false, false, true, true, sameToolchain: true, toolchainStat: true) !=
+            ToolkitRefresh.TranslatorOnly)
+            throw new Exception("A translator-only update re-extracted the whole toolchain.");
+        if (Plan(true, false, false, true, true, sameToolchain: true, toolchainStat: false) != ToolkitRefresh.Full)
+            throw new Exception("A translator-only update reused a toolchain failing its stat check.");
+        if (Plan(true, false, false, true, true, sameToolchain: false, toolchainStat: true) != ToolkitRefresh.Full)
+            throw new Exception("A changed toolchain was not extracted.");
+        statCalls = 0;
+        Plan(true, false, false, nodTool: false, toolkitStat: true, sameToolchain: true, toolchainStat: true);
+        Plan(false, true, true, true, true);
+        if (statCalls != 0)
+            throw new Exception("The stat check ran although its answer could not change the plan.");
     }
 
     /// <summary>

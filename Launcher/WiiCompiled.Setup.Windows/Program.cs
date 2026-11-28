@@ -51,6 +51,9 @@ internal static class Program
             if (command.Mode == AppMode.EmitPayloadIdentities)
                 return ConsoleCommands.EmitPayloadIdentities(command);
 
+            if (command.Mode == AppMode.VerifyPayload)
+                return ConsoleCommands.VerifyPayload();
+
             if (command.Mode == AppMode.CheckProducts)
             {
                 using var cancellationSignal = CancellationSignal.ObserveEnvironment();

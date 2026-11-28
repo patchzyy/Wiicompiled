@@ -40,20 +40,106 @@ internal static class ConsoleCommands
                 "directories.");
         }
 
-        var components = ToolkitFingerprint.ComputeComponents(root);
+        var inventory = BuildPayloadInventory(root, ToolkitFingerprint.RunTranslatorLister);
+        var hashes = inventory.Hashes();
+        var components = ToolkitFingerprint.ComputeComponentsFromHashes(hashes,
+            relative => File.ReadAllText(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar))),
+            inventory.TranslationInputLists());
+        // The install path derives every identity from this inventory instead of the disk, so the
+        // release build proves on the real payload that the two derivations agree.
+        var disk = ToolkitFingerprint.ComputeComponents(root, lister: ToolkitFingerprint.RunTranslatorLister,
+            strictTranslationInputs: true);
+        if (!components.SameIdentities(disk))
+            throw new InvalidDataException(
+                "The payload inventory and the staged payload produce different toolkit identities.");
+        var packages = ToolkitFingerprint.ComputePackageComponentsFromHashes(hashes);
+        if (packages.Package != ToolkitFingerprint.ComputePackage(root))
+            throw new InvalidDataException(
+                "The payload inventory and the staged payload produce different package identities.");
+
+        inventory.ToolkitFingerprint = components.Compile;
+        inventory.ToolkitPackageFingerprint = packages.Package;
+        inventory.Validate();
+        inventory.Write(Path.Combine(root, PayloadInventory.FileName));
+
         var identities = new PayloadIdentities(
             components.Compile,
             components.Translation,
             components.NativeToolchain,
-            ToolkitFingerprint.ComputePackage(root),
-            ToolkitFingerprint.ComputeRuntimeAssets(root));
+            packages.Package,
+            ToolkitFingerprint.ComputeRuntimeAssets(root),
+            packages.Toolchain,
+            packages.Translator,
+            new SortedDictionary<string, string>(components.TranslationByRelease.ToDictionary(),
+                StringComparer.Ordinal));
         Console.Out.WriteLine(JsonSerializer.Serialize(identities));
         return 0;
     }
 
+    /// <summary>
+    /// Release-build check of this setup executable: every install trusts the shipped inventory
+    /// and rejects the payload when it disagrees, so the archive must be proven to match it here.
+    /// </summary>
+    public static int VerifyPayload()
+    {
+        using var payload = PayloadArchive.OpenCurrent();
+        var count = VerifyPayloadInventory(payload, payload.ReadManifest());
+        Console.Out.WriteLine($"The payload matches its inventory ({count} files).");
+        return 0;
+    }
+
+    internal static int VerifyPayloadInventory(PayloadArchive payload, PayloadManifest manifest)
+    {
+        var problems = new List<string>();
+        var inventory = payload.TryReadInventory(manifest, problems.Add)
+                        ?? throw new InvalidDataException("The payload has no usable file inventory: " +
+                                                          string.Join(" ", problems));
+        var hashed = payload.HashDirectory(InstalledLayout.ToolkitDirectoryName);
+        foreach (var (path, identity) in payload.HashDirectory(InstalledLayout.WorkspaceDirectoryName))
+            hashed[path] = identity;
+        inventory.VerifyExtracted(InstalledLayout.ToolkitEntryPrefix, hashed);
+        inventory.VerifyExtracted(InstalledLayout.WorkspaceEntryPrefix, hashed);
+        return hashed.Count;
+    }
+
+    /// <summary>
+    /// Hashes every shipped Toolkit/BuildWorkspace file and records the files each translation
+    /// project reads, as the staged translator itself reports them.
+    /// </summary>
+    internal static PayloadInventory BuildPayloadInventory(string root, TranslationInputLister lister,
+        CancellationToken cancellationToken = default)
+    {
+        root = Path.GetFullPath(root);
+        var files = new System.Collections.Concurrent.ConcurrentBag<PayloadInventoryFile>();
+        var all = new[] { InstalledLayout.Toolkit(root), InstalledLayout.Workspace(root) }
+            .Where(Directory.Exists)
+            .SelectMany(directory => Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+            .ToList();
+        Parallel.ForEach(all,
+            new ParallelOptions { CancellationToken = cancellationToken, MaxDegreeOfParallelism = Math.Max(2, Environment.ProcessorCount) },
+            file =>
+            {
+                var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+                files.Add(new PayloadInventoryFile
+                {
+                    Path = relative, Size = new FileInfo(file).Length, Sha256 = InputValidation.Sha256File(file)
+                });
+            });
+        var translationInputs = ToolkitFingerprint.ListTranslationInputs(root, lister, strict: true,
+            diagnostic: null, cancellationToken)!;
+        return new PayloadInventory
+        {
+            SchemaVersion = PayloadInventory.CurrentSchemaVersion,
+            Files = files.OrderBy(file => file.Path, StringComparer.Ordinal).ToList(),
+            TranslationInputs = translationInputs.ToDictionary(pair => pair.Key, pair => pair.Value.ToList(),
+                StringComparer.Ordinal)
+        };
+    }
+
     private sealed record PayloadIdentities(string ToolkitFingerprint, string TranslationFingerprint,
         string NativeToolchainFingerprint, string ToolkitPackageFingerprint,
-        string RuntimeAssetsFingerprint);
+        string RuntimeAssetsFingerprint, string ToolchainPackageFingerprint,
+        string TranslatorPackageFingerprint, SortedDictionary<string, string> TranslationFingerprintsByRelease);
 
     public static int VerifyInputs(CommandLine command)
     {

@@ -32,7 +32,7 @@ public sealed class RelFile
 
     public static RelFile Load(string path)
     {
-        var raw = File.ReadAllBytes(path);
+        var raw = TrackedFs.ReadAllBytes(path);
         using var stream = new MemoryStream(raw, writable: false);
         using var reader = new BigEndianBinaryReader(stream, leaveOpen: true);
 
