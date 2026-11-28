@@ -1,9 +1,9 @@
 #pragma once
 
 // Physical Wii Remotes on the PC. Each one is attached to one of the four
-// virtual remotes of the emulated Bluetooth controller and its HID reports are
-// passed through unchanged, so the game's own WPAD/KPAD drive it (IR, speaker,
-// rumble, extensions, battery).
+// virtual remotes of the emulated Bluetooth controller. SDL HIDAPI reports pass
+// through unchanged; the optional Linux libxwiimote backend synthesizes a
+// limited HID protocol from kernel events. Both use the game's own WPAD/KPAD.
 
 #include "bluetooth/bt_controller.h"
 
@@ -33,7 +33,7 @@ struct PairingInfo {
 void ConfigureSdlHints(bool enabled);
 // Starts device scanning when Wii Remotes are enabled.
 void Initialize();
-// Powers the remotes off, like a console shutting down, and stops the threads.
+// Stops the threads. SDL remotes power off; kernel-managed remotes are released.
 void Shutdown();
 
 Bluetooth::RemoteHost& Host();
@@ -42,7 +42,8 @@ SlotInfo Slot(size_t slot);
 PairingInfo Pairing();
 // The console's SYNC button: look for remotes in pairing mode for a while.
 void StartPairing();
-// Ends the game's connection to the remote on `slot` and powers it off.
+// Ends the guest connection. SDL remotes power off; kernel-managed remotes
+// sleep until another button press, keeping their OS Bluetooth connection.
 void Disconnect(size_t slot);
 // Setup problems worth showing (kernel driver, missing permissions), else empty.
 std::string PlatformNotice();

@@ -299,12 +299,32 @@ add_test(NAME mkw_motion_trick_tests COMMAND mkw_motion_trick_tests)
 # The emulated Bluetooth controller is pure host code.
 add_executable(mkw_bluetooth_controller_tests
     "${MKW_TEST_RUNTIME_DIR}/tests/bluetooth_controller_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/wiimote/wiimote_native_protocol.cpp"
     "${MKW_TEST_RUNTIME_DIR}/src/hle/bluetooth/bt_controller.cpp"
     "${MKW_TEST_RUNTIME_DIR}/src/hle/bluetooth/bt_remote_link.cpp"
     "${MKW_TEST_RUNTIME_DIR}/src/hle/bluetooth/bt_sdp.cpp")
 target_include_directories(mkw_bluetooth_controller_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
 target_compile_features(mkw_bluetooth_controller_tests PRIVATE cxx_std_20)
 add_test(NAME mkw_bluetooth_controller_tests COMMAND mkw_bluetooth_controller_tests)
+
+add_executable(mkw_wiimote_native_protocol_tests
+    "${MKW_TEST_RUNTIME_DIR}/tests/wiimote_native_protocol_tests.cpp"
+    "${MKW_TEST_RUNTIME_DIR}/src/wiimote/wiimote_native_protocol.cpp")
+target_include_directories(mkw_wiimote_native_protocol_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+target_compile_features(mkw_wiimote_native_protocol_tests PRIVATE cxx_std_17)
+add_test(NAME mkw_wiimote_native_protocol_tests COMMAND mkw_wiimote_native_protocol_tests)
+
+if(MKW_ENABLE_XWIIMOTE)
+    find_package(Threads REQUIRED)
+    add_executable(mkw_wiimote_xwiimote_tests
+        "${MKW_TEST_RUNTIME_DIR}/tests/wiimote_xwiimote_tests.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/src/wiimote/wiimote_xwiimote.cpp"
+        "${MKW_TEST_RUNTIME_DIR}/src/wiimote/wiimote_native_protocol.cpp")
+    target_include_directories(mkw_wiimote_xwiimote_tests PRIVATE "${MKW_TEST_RUNTIME_DIR}/include")
+    target_compile_features(mkw_wiimote_xwiimote_tests PRIVATE cxx_std_17)
+    target_link_libraries(mkw_wiimote_xwiimote_tests PRIVATE mkw::xwiimote Threads::Threads)
+    add_test(NAME mkw_wiimote_xwiimote_tests COMMAND mkw_wiimote_xwiimote_tests)
+endif()
 
 # HostContext deliberately keeps the platform-specific context primitive out
 # of fiber_manager.cpp. Exercise the Linux libco handoff directly so future

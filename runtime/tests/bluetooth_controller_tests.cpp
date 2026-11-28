@@ -1,5 +1,6 @@
 #include "bluetooth/bt_controller.h"
 #include "bluetooth/bt_sdp.h"
+#include "wiimote_native_protocol.h"
 
 #include <array>
 #include <cstdio>
@@ -353,12 +354,78 @@ void TestSdp() {
           found[11] == 0x5A);
 }
 
+void TestNativeProtocolThroughHle() {
+    struct NativeHost : FakeHost {
+        Wiimote::Native::Protocol protocol;
+        bool PopInputReport(size_t slot, Bytes& report) override {
+            if (slot == 2 && protocol.PopReply(report)) return true;
+            return FakeHost::PopInputReport(slot, report);
+        }
+        void SendOutputReport(size_t slot, const uint8_t* report, size_t size) override {
+            CHECK(slot == 2);
+            FakeHost::SendOutputReport(slot, report, size);
+            protocol.Output(report, size);
+        }
+    } host;
+    Controller controller(host);
+    Guest guest{controller};
+    controller.Open(guest.now);
+    host.attached[2] = host.wake[2] = true;
+    guest.Run(0x0C1A, {2});
+    guest.Tick();
+    guest.Events();
+    const BdAddr address = Controller::RemoteAddress(2);
+    Bytes accept(address.begin(), address.end());
+    accept.push_back(0);
+    guest.Run(0x0409, accept);
+    guest.Tick();
+    const uint16_t control = AcceptRemoteChannel(guest, 0x0102, 0x0011, 0x0041);
+    guest.Tick();
+    const uint16_t interrupt = AcceptRemoteChannel(guest, 0x0102, 0x0013, 0x0042);
+    CHECK(host.states[2] == LinkState::Ready);
+    const auto reports = [&] {
+        guest.Tick();
+        guest.Events();
+        std::vector<Bytes> result;
+        for (const auto& packet : guest.Acl()) {
+            CHECK(Le16(packet, 0) == 0x2102 && Le16(packet, 6) == 0x0042 && packet[8] == 0xA1);
+            result.emplace_back(packet.begin() + 9, packet.end());
+        }
+        return result;
+    };
+    // SET_REPORT control handshake is distinct from Wii status/ACK reports.
+    guest.SendL2cap(0x0102, control, {0x52, 0x15, 0});
+    const auto handshake = guest.Acl();
+    CHECK(handshake.size() == 1 && handshake[0][8] == 0);
+    auto input = reports();
+    CHECK(input.size() == 1 && input[0].size() == 7 && input[0][0] == 0x20 && (input[0][3] & 2) == 0);
+    guest.SendL2cap(0x0102, interrupt, {0xA2, 0x17, 0, 0, 0, 0x16, 0, 10});
+    input = reports();
+    CHECK(input.size() == 1 && input[0][0] == 0x21 && input[0][3] == 0x90 && input[0][6] == 128);
+    guest.SendL2cap(0x0102, interrupt, {0xA2, 0x12, 6, 0x31});
+    input = reports();
+    CHECK(input == std::vector<Bytes>({{0x22, 0, 0, 0x12, 0}}));
+    host.protocol.SetButtons(0x0108); // physical LEFT + A, no sideways remapping
+    host.protocol.SetAccel(0, 104, 0);
+    Bytes sample;
+    CHECK(host.protocol.Sample(sample));
+    host.input[2].push_back(sample);
+    input = reports();
+    CHECK(input == std::vector<Bytes>({{0x31, 1, 8, 128, 154, 128}}));
+    // Probing an absent extension returns a Wii memory error, through the HLE.
+    guest.SendL2cap(0x0102, interrupt, {0xA2, 0x17, 4, 0xA4, 0, 0xFA, 0, 6});
+    input = reports();
+    CHECK(input.size() == 1 && input[0][0] == 0x21 && input[0][3] == 0xF7);
+    CHECK(host.states[0] == LinkState::Down && host.states[1] == LinkState::Down);
+}
+
 } // namespace
 
 int main() {
     TestBootAndConnection();
     TestInquiryAndPaging();
     TestSdp();
+    TestNativeProtocolThroughHle();
     if (g_failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return EXIT_FAILURE;

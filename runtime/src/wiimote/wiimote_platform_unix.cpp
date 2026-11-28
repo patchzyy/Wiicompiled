@@ -467,8 +467,13 @@ bool Usable(const SDL_hid_device_info& info) {
 #if defined(__linux__)
     if (info.path == nullptr) return false;
     if (DriverOf(info.path) == "wiimote") {
-        SetNotice("The Linux hid-wiimote driver holds the Wii Remote, so the game cannot use it. Run "
-                  "\"sudo modprobe -r hid_wiimote\" and add \"blacklist hid_wiimote\" to /etc/modprobe.d/wiimote.conf.");
+#if defined(MKW_ENABLE_XWIIMOTE)
+        SetNotice("Kernel-managed Wii Remotes use the experimental libxwiimote backend. "
+                  "Gen 1 core buttons and accelerometer are supported; check the runtime log for access errors.");
+#else
+        SetNotice("The Linux hid-wiimote driver owns this remote. This build has no libxwiimote backend; "
+                  "build with MKW_ENABLE_XWIIMOTE=ON for experimental Gen 1 support. Keep the kernel driver loaded.");
+#endif
         return false;
     }
     if (access(info.path, R_OK | W_OK) != 0) {

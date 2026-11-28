@@ -62,6 +62,9 @@ endfunction()
 
 # scope is PRIVATE for a compiled target and INTERFACE for the imported archive.
 function(mkw_runtime_link_dependencies target scope)
+    if(MKW_ENABLE_XWIIMOTE)
+        target_link_libraries(${target} ${scope} mkw::xwiimote)
+    endif()
     target_link_libraries(${target} ${scope}
         aurora::gx aurora::pad aurora::si aurora::vi aurora::mtx)
     target_link_libraries(${target} ${scope} mkw_platform mkw::pugixml mkw::toml11 mkw::cryptopp mkw::mbedtls)
@@ -140,6 +143,13 @@ endfunction()
 # runtime's objects only when it was built from exactly this workspace's
 # runtime inputs for the same x86-64 profile.
 function(mkw_select_runtime_provider)
+    # Keep the experimental backend on the source path until optional native
+    # dependencies have been validated in prebuilt package exports.
+    if(MKW_ENABLE_XWIIMOTE)
+        set(MKW_RUNTIME_USE_PREBUILT FALSE PARENT_SCOPE)
+        message(STATUS "Native runtime: compiled from source (experimental libxwiimote enabled)")
+        return()
+    endif()
     set(_archive "${MKW_NP_RUNTIME_ARCHIVE_PATH}")
     set(_exists FALSE)
     if(_archive AND EXISTS "${_archive}")

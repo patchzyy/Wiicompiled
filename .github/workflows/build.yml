@@ -74,6 +74,38 @@ jobs:
           cmake --build build-platform --parallel 3
           ctest --test-dir build-platform --output-on-failure
 
+  linux_xwiimote:
+    name: Linux native Wii Remote (no hardware or game assets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Linux runtime and optional controller headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build pkg-config libxwiimote-dev \
+            libasound2-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev \
+            libxcursor-dev libxfixes-dev libxi-dev libxss-dev libxtst-dev \
+            libxkbcommon-dev libdrm-dev libgbm-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libgles2-mesa-dev libdbus-1-dev libusb-1.0-0-dev libudev-dev
+
+      - name: Configure source runtime and controller regressions
+        run: >-
+          cmake -S runtime -B build-xwiimote -G Ninja
+          -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DMKW_BUILD_PRODUCTS=OFF -DMKW_ENABLE_XWIIMOTE=ON
+          -DMKW_BUILD_WIIMOTE_RUNTIME_PROBE=ON
+          -DMKW_NATIVE_PREBUILT_EXPORT_DIR=build-xwiimote-export
+
+      - name: Build and test without accessing Bluetooth
+        run: |
+          cmake --build build-xwiimote --parallel 3 --target mkw_runtime mkw_wiimote_runtime_probe mkw_wiimote_runtime_probe_sdl mkw_wiimote_native_protocol_tests mkw_wiimote_xwiimote_tests mkw_wiimote_native_manager_tests mkw_bluetooth_controller_tests
+          ctest --test-dir build-xwiimote -R 'wiimote|bluetooth_controller' --output-on-failure
+
   macos_substrate:
     name: macOS arm64 (configure + substrate tests)
     runs-on: macos-15
